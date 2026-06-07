@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1419">
+  <title>КП — коммерческие предложения</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="layout">
+    <header class="header">
+      <div class="header__brand">
+        <span class="header__logo">КП</span>
+        <div>
+          <h1>AI-агент коммерческих предложений</h1>
+          <p class="header__subtitle">Каталог · реестр · прайсы · Excel КП</p>
+        </div>
+      </div>
+      <div class="header__stats" id="headerStats"></div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tabs__btn tabs__btn--active" data-tab="kp" role="tab">Формирование КП</button>
+      <button class="tabs__btn" data-tab="lookup" role="tab">Поиск позиций</button>
+      <button class="tabs__btn" data-tab="prices" role="tab">Прайсы</button>
+      <button class="tabs__btn" data-tab="status" role="tab">Статус</button>
+    </nav>
+
+    <main>
+      <section class="panel panel--active" id="panel-kp" data-panel="kp">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Загрузить ТЗ</h2>
+            <p class="muted">Файл технического задания: .docx, .pdf, .xlsx, .xls</p>
+            <label class="upload-zone" id="uploadZone">
+              <input type="file" id="tzFile" accept=".docx,.pdf,.xlsx,.xls" hidden>
+              <span class="upload-zone__icon">📄</span>
+              <span>Перетащите файл или нажмите для выбора</span>
+              <span class="upload-zone__name" id="fileName"></span>
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" id="useAiUpload" checked>
+              Использовать AI для сложных позиций
+            </label>
+            <div class="markup-bar">
+              <label class="markup-bar__label" for="markupPercent">Наценка, %</label>
+              <input
+                type="number"
+                id="markupPercent"
+                class="input input--compact"
+                value="30"
+                min="0"
+                max="1000"
+                step="0.1"
+              >
+              <button class="btn btn--secondary" type="button" id="btnApplyMarkup">Применить</button>
+            </div>
+            <div class="actions">
+              <button class="btn btn--primary" id="btnProcess" disabled>Обработать ТЗ</button>
+            </div>
+          </div>
+
+          <div class="card card--summary" id="summaryCard">
+            <h2>Результат</h2>
+            <div class="empty-state" id="summaryEmpty">
+              Загрузите ТЗ — здесь появится сводка и таблица позиций.
+            </div>
+            <div class="summary hidden" id="summaryBlock"></div>
+          </div>
+        </div>
+
+        <div class="card hidden" id="resultsCard">
+          <div class="card__head">
+            <h2>Детализация позиций</h2>
+            <a class="btn btn--primary" id="downloadBtn" href="#" download>Скачать Excel</a>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="resultsTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Позиция ТЗ</th>
+                  <th>Найдено</th>
+                  <th>Статус</th>
+                  <th>Количество</th>
+                  <th>Цена</th>
+                  <th>Цена КП</th>
+                  <th>Сумма</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-lookup" data-panel="lookup">
+        <div class="card">
+          <h2>Поиск по каталогу и прайсам</h2>
+          <p class="muted">Пример: <code>термометр лабораторный | цена, остаток</code></p>
+          <div class="lookup-form">
+            <input type="text" id="lookupQuery" class="input" placeholder="Название позиции | поля">
+            <button class="btn btn--primary" id="btnLookup">Найти</button>
+          </div>
+          <div class="lookup-result hidden" id="lookupResult"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-prices" data-panel="prices">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Добавить прайс</h2>
+            <div class="form-stack">
+              <input type="text" id="priceName" class="input" placeholder="Название">
+              <input type="text" id="priceSupplier" class="input" placeholder="Поставщик">
+              <input type="file" id="priceFile" class="input" accept=".xls,.xlsx">
+              <button class="btn btn--primary" id="btnAddPrice">Загрузить прайс</button>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Загруженные таблицы</h2>
+            <p class="muted">Каталог, реестр остатков и прайсы поставщиков</p>
+            <div class="table-wrap">
+              <table class="data-table" id="pricesTable">
+                <thead>
+                  <tr>
+                    <th>Тип</th>
+                    <th>Название</th>
+                    <th>Позиций</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-status" data-panel="status">
+        <div class="stats-grid" id="statusGrid"></div>
+        <div class="card">
+          <h2>Подключённые таблицы</h2>
+          <ul class="price-list" id="statusPriceList"></ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+  <div class="overlay hidden" id="overlay">
+    <div class="spinner"></div>
+    <p id="overlayText">Обработка...</p>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+services:
+  kp-bot:
+    build: .
+    container_name: comm-proposals-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+    environment:
+      - PYTHONPATH=/app
