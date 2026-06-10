@@ -32,10 +32,17 @@ mkdir -p output data
 
 if [[ ! -f .env ]]; then
   cp env.example .env
-  sed -i 's/^WEB_HOST=.*/WEB_HOST=0.0.0.0/' .env
-  sed -i 's/^WEB_BEHIND_PROXY=.*/WEB_BEHIND_PROXY=true/' .env
-  echo "Создан .env из env.example — заполните PROXYAPI_API_KEY и другие секреты"
+  echo "Создан .env из env.example"
+fi
+
+sed -i 's/^WEB_HOST=.*/WEB_HOST=0.0.0.0/' .env
+grep -q '^WEB_BEHIND_PROXY=' .env || echo 'WEB_BEHIND_PROXY=true' >> .env
+sed -i 's/^WEB_BEHIND_PROXY=.*/WEB_BEHIND_PROXY=true/' .env
+
+if grep -q '^PROCUREMENT_REPORT_PATH=\.\./' .env 2>/dev/null; then
+  sed -i 's|^PROCUREMENT_REPORT_PATH=.*|PROCUREMENT_REPORT_PATH=|' .env
 fi
 
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs --tail=20 kp-web || true

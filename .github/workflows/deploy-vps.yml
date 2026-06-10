@@ -27,4 +27,7 @@ jobs:
             cd "$APP_DIR"
             git fetch origin
             git reset --hard origin/main
+            if [ -n "${{ secrets.VPS_DOTENV }}" ]; then
+              printf '%s\n' "${{ secrets.VPS_DOTENV }}" > "$APP_DIR/.env"
+            fi
             bash scripts/vps_remote_setup.sh
