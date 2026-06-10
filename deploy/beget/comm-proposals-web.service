@@ -1,0 +1,17 @@
+[Unit]
+Description=Comm Proposals Web (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/comm-proposals
+Environment=PYTHONPATH=/opt/comm-proposals
+EnvironmentFile=/opt/comm-proposals/.env
+ExecStart=/opt/comm-proposals/.venv/bin/python -m src.web.server
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

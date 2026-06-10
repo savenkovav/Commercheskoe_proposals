@@ -27,6 +27,21 @@ class FuzzyHit:
     detail: str = ""
 
 
+_CATALOG_DISTINCTIVE_MARKERS = (
+    ("голов", "голов"),
+    ("натюрморт", "натюрморт"),
+    ("натюрмор", "натюрмор"),
+    ("растен", "растен"),
+    ("геометрич", "геометрич"),
+    ("фрукт", "фрукт"),
+    ("овощ", "овощ"),
+    ("гриб", "гриб"),
+    ("портрет", "портрет"),
+    ("художник", "художник"),
+    ("муляж", "муляж"),
+)
+
+
 class ItemMatcher:
     def __init__(
         self,
@@ -98,9 +113,29 @@ class ItemMatcher:
             score += length_bonus
         return min(score, 100.0)
 
+    @staticmethod
+    def is_distinctive_mismatch(query: str, choice: str) -> bool:
+        q = normalize_name(query)
+        c = normalize_name(choice)
+        for query_marker, choice_marker in _CATALOG_DISTINCTIVE_MARKERS:
+            if query_marker in q and choice_marker not in c:
+                return True
+        return False
+
     def pick_best_hit(self, query: str, hits: list[FuzzyHit]) -> FuzzyHit | None:
         if not hits:
             return None
+
+        filtered = [
+            hit
+            for hit in hits
+            if not (
+                hit.source == MatchSource.CATALOG
+                and self.is_distinctive_mismatch(query, hit.name)
+            )
+        ]
+        hits = filtered or hits
+
         if len(hits) == 1:
             return hits[0]
 
@@ -203,12 +238,16 @@ class ItemMatcher:
         catalog_best = self._best_catalog_hit(candidates["catalog"], tz_item)
         if (
             catalog_best
+            and not self.is_distinctive_mismatch(tz_item.name, catalog_best.name)
             and catalog_best.score >= SIMILAR_MATCH_THRESHOLD
             and isinstance(catalog_best.payload, CatalogItem)
             and catalog_best.payload.cost is not None
             and catalog_best.score >= best.score - 5
         ):
             best = catalog_best
+
+        if self.is_distinctive_mismatch(tz_item.name, best.name):
+            return None
 
         if best.score < SIMILAR_MATCH_THRESHOLD:
             return None

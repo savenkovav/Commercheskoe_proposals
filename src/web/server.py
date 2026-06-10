@@ -16,11 +16,14 @@ from src.config import (
     OUTPUT_DIR,
     PROJECT_ROOT,
     REGISTRY_PHOTOS_DIR,
+    USE_AI_INTERNET_SEARCH,
+    WEB_BEHIND_PROXY,
     WEB_HOST,
     WEB_PORT,
 )
+from src.services.kp_chat_service import KpChatService
 from src.services.markup_settings import get_markup_percent, set_markup_percent
-from src.services.models import MatchResult, MatchStatus
+from src.services.models import KitComponentLine, MatchResult, MatchStatus, PriceQuote
 from src.services.tz_parser import resolve_tz_upload_filename
 from src.services.price_list_manager import get_price_list_manager
 from src.services.product_lookup import (
@@ -56,10 +59,47 @@ class MarkupUpdate(BaseModel):
     markup_percent: float = Field(ge=0, le=1000)
 
 
+class KpChatRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=64)
+    message: str = Field(min_length=1, max_length=4000)
+
+
+def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
+    return {
+        "source": quote.source,
+        "label": quote.label,
+        "matched_name": quote.matched_name,
+        "price": quote.price,
+        "cost": quote.cost,
+        "supplier": quote.supplier,
+        "purchase_date": quote.purchase_date,
+        "match_score": round(quote.match_score, 1),
+        "url": quote.url,
+        "notes": quote.notes,
+    }
+
+
+def _kit_component_to_dict(line: KitComponentLine) -> dict[str, Any]:
+    return {
+        "name": line.name,
+        "unit_cost": line.unit_cost,
+        "unit_price": line.unit_price,
+        "quantity": line.quantity,
+        "supplier": line.supplier,
+        "purchase_date": line.purchase_date,
+        "price_list_price": line.price_list_price,
+        "competitor_url": line.competitor_url,
+        "competitor_platform": line.competitor_platform,
+        "found_in_catalog": line.found_in_catalog,
+        "catalog_matched_name": line.catalog_matched_name,
+    }
+
+
 def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
     return {
         "number": result.tz_item.number,
         "name": result.tz_item.name,
+        "specifications": result.tz_item.specifications,
         "quantity": result.tz_item.quantity,
         "unit": result.tz_item.unit,
         "status": result.status.value,
@@ -77,7 +117,19 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
         "total_cost": result.total_cost,
         "total_price": result.total_price,
         "notes": result.notes,
+        "source_detail": result.source_detail,
         "alternatives": result.alternatives[:5],
+        "supplier": result.supplier,
+        "purchase_date": result.purchase_date,
+        "is_kit": result.is_kit,
+        "comparison": [_price_quote_to_dict(q) for q in result.comparison],
+        "competitors": [_price_quote_to_dict(q) for q in result.competitors],
+        "kit_components": [_kit_component_to_dict(k) for k in result.kit_components],
+        "price_list_check": (
+            _price_quote_to_dict(result.price_list_check)
+            if result.price_list_check
+            else None
+        ),
     }
 
 
@@ -127,17 +179,47 @@ def _static_source_response(source_id: str) -> dict[str, Any]:
     return {"entry": manager.to_dict(source_id, counts[source_id])}
 
 
+def _kp_chat_service() -> KpChatService:
+    return KpChatService(get_processor())
+
+
 def _process_tz_path(tz_path: Path, use_ai: bool) -> dict[str, Any]:
     processor = get_processor()
-    effective_ai = use_ai and processor.ai.enabled
-    output_path, summary, results = processor.process_tz_file(
+    output_path, summary, results, tz_items = processor.process_tz_file(
         tz_path,
-        use_ai=effective_ai,
+        use_ai=use_ai,
+    )
+    session_id = _kp_chat_service().create_session(
+        tz_items,
+        results,
+        summary,
+        output_path,
+        use_ai=use_ai,
     )
     return {
+        "session_id": session_id,
         "summary": _summary_to_dict(summary, output_path.name),
         "items": [_match_result_to_dict(r) for r in results],
-        "ai_used": effective_ai,
+        "ai_used": use_ai and processor.ai.enabled,
+        "web_used": USE_AI_INTERNET_SEARCH and use_ai and processor.ai.enabled,
+    }
+
+
+def _kp_chat_response(chat_result: dict[str, Any], session_id: str) -> dict[str, Any]:
+    processor = get_processor()
+    summary = chat_result["summary"]
+    results = chat_result["results"]
+    output_path = chat_result["output_path"]
+    return {
+        "session_id": session_id,
+        "reply": chat_result["reply"],
+        "preferences": chat_result["preferences"],
+        "markup_percent": chat_result["markup_percent"],
+        "actions": chat_result["actions"],
+        "summary": _summary_to_dict(summary, output_path.name),
+        "items": [_match_result_to_dict(r) for r in results],
+        "ai_used": processor.ai.enabled,
+        "web_used": processor.ai.enabled,
     }
 
 
@@ -194,6 +276,23 @@ def api_process_demo(use_ai: bool = True) -> dict[str, Any]:
     except Exception as exc:
         logger.exception("Demo processing failed")
         raise HTTPException(status_code=500, detail=f"Ошибка обработки: {exc}") from exc
+
+
+@app.post("/api/kp/chat")
+def api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
+    if not get_processor().ai.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Чат корректировки требует настроенный PROXYAPI_API_KEY",
+        )
+    try:
+        chat_result = _kp_chat_service().chat(body.session_id, body.message)
+        return _kp_chat_response(chat_result, body.session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("KP chat failed")
+        raise HTTPException(status_code=500, detail=f"Ошибка чата: {exc}") from exc
 
 
 @app.post("/api/process/upload")
@@ -515,6 +614,8 @@ def main() -> None:
         host=WEB_HOST,
         port=WEB_PORT,
         reload=False,
+        proxy_headers=WEB_BEHIND_PROXY,
+        forwarded_allow_ips="*" if WEB_BEHIND_PROXY else None,
     )
 
 

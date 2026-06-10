@@ -29,7 +29,7 @@ def main() -> None:
     args = parser.parse_args()
 
     processor = ProposalProcessor()
-    output_path, summary, results = processor.process_tz_file(
+    output_path, summary, results, _ = processor.process_tz_file(
         args.tz,
         use_ai=not args.no_ai,
     )

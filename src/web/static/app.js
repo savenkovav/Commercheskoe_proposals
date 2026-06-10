@@ -198,6 +198,311 @@ async function loadStatus() {
   }
 }
 
+const SOURCE_LABELS = {
+  catalog: "Каталог",
+  registry: "Реестр",
+  price_list: "Прайс",
+  web: "Интернет",
+  ai: "AI",
+  none: "—",
+};
+
+function hasItemDetails(item) {
+  return (
+    item.status === "similar" ||
+    item.status === "not_found" ||
+    (item.comparison && item.comparison.length) ||
+    (item.competitors && item.competitors.length) ||
+    (item.kit_components && item.kit_components.length) ||
+    item.matched_name ||
+    item.notes ||
+    (item.alternatives && item.alternatives.length)
+  );
+}
+
+function renderPrimaryMatchBlock(item) {
+  const lines = [
+    item.matched_name
+      ? `<strong>Выбрано:</strong> ${escapeHtml(item.matched_name)} (${Math.round(item.match_score || 0)}%)`
+      : null,
+    item.source
+      ? `<strong>Источник:</strong> ${escapeHtml(SOURCE_LABELS[item.source] || item.source)}`
+      : null,
+    item.source_detail
+      ? `<strong>Детали:</strong> ${escapeHtml(item.source_detail)}`
+      : null,
+    item.unit_base_price != null
+      ? `<strong>Цена баз.:</strong> ${fmtMoney(item.unit_base_price)}`
+      : null,
+    item.unit_price != null
+      ? `<strong>Цена КП:</strong> ${fmtMoney(item.unit_price)}`
+      : null,
+    item.notes ? `<strong>Примечание:</strong> ${escapeHtml(item.notes)}` : null,
+    item.alternatives && item.alternatives.length
+      ? `<strong>Альтернативы:</strong> ${item.alternatives.map(escapeHtml).join(" · ")}`
+      : null,
+  ].filter(Boolean);
+  if (!lines.length) return "";
+  return `<div class="compare-block__primary">${lines.join("<br>")}</div>`;
+}
+
+function renderComparisonTable(item) {
+  const comparison = item.comparison || [];
+  const primaryBlock = renderPrimaryMatchBlock(item);
+  if (!comparison.length && !(item.kit_components || []).length && !primaryBlock) {
+    return "";
+  }
+
+  const comparisonRows = comparison
+    .map(
+      (q) => `
+      <tr class="${q.source === "web" ? "compare-row--competitor" : ""}">
+        <td>${escapeHtml(q.label)}</td>
+        <td>${escapeHtml(q.matched_name || "—")}</td>
+        <td>${fmtMoney(q.cost ?? (q.source === "web" ? null : q.price))}</td>
+        <td>${fmtMoney(q.price)}</td>
+        <td>${escapeHtml(q.supplier || "—")}</td>
+        <td>${escapeHtml(q.purchase_date || "—")}</td>
+        <td>${q.match_score ? `${Math.round(q.match_score)}%` : "—"}</td>
+        <td>${q.url ? `<a href="${escapeHtml(q.url)}" target="_blank" rel="noopener">${escapeHtml(q.label)}</a>` : escapeHtml(q.notes || "")}</td>
+      </tr>`,
+    )
+    .join("");
+
+  const kitRows = (item.kit_components || [])
+    .map((k) => {
+      const catalogLabel = k.found_in_catalog
+        ? `<br><small class="muted">каталог: ${escapeHtml(k.catalog_matched_name || k.name)}</small>`
+        : "";
+      const supplierCell = k.found_in_catalog ? escapeHtml(k.supplier || "—") : "—";
+      const dateCell = k.found_in_catalog ? escapeHtml(k.purchase_date || "—") : "—";
+      const supplierRow =
+        k.found_in_catalog && k.supplier
+          ? `
+      <tr class="compare-row--supplier">
+        <td colspan="2">↳ ${escapeHtml(k.supplier)}</td>
+        <td>—</td>
+        <td>${fmtMoney(k.unit_price)}</td>
+        <td>${escapeHtml(k.supplier)}</td>
+        <td>${escapeHtml(k.purchase_date || "—")}</td>
+        <td>${fmtQty(k.quantity, "шт")}</td>
+        <td>${k.price_list_price != null ? `прайс: ${fmtMoney(k.price_list_price)}` : "—"}</td>
+      </tr>`
+          : "";
+      return `
+      <tr>
+        <td colspan="2">${escapeHtml(k.name)}${catalogLabel}</td>
+        <td>${fmtMoney(k.unit_cost)}</td>
+        <td>${fmtMoney(k.unit_price)}</td>
+        <td>${supplierCell}</td>
+        <td>${dateCell}</td>
+        <td>${fmtQty(k.quantity, "шт")}</td>
+        <td>${k.competitor_url ? `<a href="${escapeHtml(k.competitor_url)}" target="_blank" rel="noopener">${escapeHtml(k.competitor_platform || "конкурент")}</a>` : k.price_list_price != null ? `прайс: ${fmtMoney(k.price_list_price)}` : "—"}</td>
+      </tr>${supplierRow}`;
+    })
+    .join("");
+
+  const meta = [];
+  if (item.supplier) meta.push(`Поставщик: ${escapeHtml(item.supplier)}`);
+  if (item.purchase_date) meta.push(`Дата покупки: ${escapeHtml(item.purchase_date)}`);
+  if (item.is_kit) meta.push("Комплект");
+
+  return `
+    <div class="compare-block">
+      ${primaryBlock}
+      ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
+      ${
+        comparisonRows
+          ? `
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th>Источник</th>
+            <th>Найдено</th>
+            <th>Себест.</th>
+            <th>Цена</th>
+            <th>Поставщик</th>
+            <th>Дата покупки</th>
+            <th>Совпадение</th>
+            <th>Примечание</th>
+          </tr>
+        </thead>
+        <tbody>${comparisonRows}</tbody>
+      </table>`
+          : ""
+      }
+      ${
+        kitRows
+          ? `
+      <h4 class="compare-block__subtitle">Состав комплекта</h4>
+      <table class="compare-table compare-table--kit">
+        <thead>
+          <tr>
+            <th colspan="2">Позиция</th>
+            <th>Себест.</th>
+            <th>Цена</th>
+            <th>Поставщик</th>
+            <th>Дата покупки</th>
+            <th>Кол-во</th>
+            <th>Прайс</th>
+          </tr>
+        </thead>
+        <tbody>${kitRows}</tbody>
+      </table>`
+          : ""
+      }
+    </div>`;
+}
+
+let kpSessionId = null;
+let kpChatMessages = [];
+let kpChatLoading = false;
+
+function renderKpChatMessages() {
+  const box = $("#kpChatMessages");
+  if (!box) return;
+
+  if (!kpChatMessages.length) {
+    box.innerHTML = `
+      <div class="chat-welcome">
+        <p>Сформируйте КП — здесь можно попросить нейросеть скорректировать результат. Excel обновится автоматически.</p>
+      </div>`;
+    return;
+  }
+
+  box.innerHTML = kpChatMessages
+    .map((msg) => {
+      if (msg.role === "user") {
+        return `
+          <div class="chat-msg chat-msg--user">
+            <div class="chat-msg__bubble">${escapeHtml(msg.text)}</div>
+            <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+          </div>`;
+      }
+      if (msg.role === "error") {
+        return `
+          <div class="chat-msg chat-msg--error">
+            <div class="chat-msg__bubble">${escapeHtml(msg.text)}</div>
+            <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+          </div>`;
+      }
+      const actions = msg.actions?.reprocessed_items?.length
+        ? `<div class="kp-chat-actions">Пересчитаны позиции: ${msg.actions.reprocessed_items.join(", ")}</div>`
+        : msg.actions?.reprocess_all
+          ? `<div class="kp-chat-actions">Пересчитаны все позиции</div>`
+          : "";
+      return `
+        <div class="chat-msg chat-msg--assistant">
+          <div class="chat-msg__bubble">${escapeHtml(msg.text)}${actions}</div>
+          <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+        </div>`;
+    })
+    .join("");
+
+  if (kpChatLoading) {
+    box.insertAdjacentHTML(
+      "beforeend",
+      `<div class="chat-msg chat-msg--assistant">
+        <div class="chat-msg__bubble">
+          <span class="chat-msg__typing"><span></span><span></span><span></span></span>
+          Корректирую КП...
+        </div>
+      </div>`,
+    );
+  }
+
+  requestAnimationFrame(() => {
+    box.scrollTop = box.scrollHeight;
+  });
+}
+
+function updateKpChatFormState() {
+  const input = $("#kpChatInput");
+  const sendBtn = $("#btnKpChatSend");
+  const enabled = Boolean(kpSessionId) && !kpChatLoading;
+  if (input) input.disabled = !enabled;
+  if (sendBtn) sendBtn.disabled = !enabled;
+  $("#kpChatHints")?.querySelectorAll(".kp-chat-hint").forEach((btn) => {
+    btn.disabled = !enabled;
+  });
+}
+
+function resetKpChat(sessionId) {
+  kpSessionId = sessionId || null;
+  kpChatMessages = [];
+  kpChatLoading = false;
+  updateKpChatFormState();
+  renderKpChatMessages();
+}
+
+async function sendKpChatMessage(text) {
+  const message = text.trim();
+  if (!message || kpChatLoading || !kpSessionId) return;
+
+  if (!cachedStatus?.ai_enabled) {
+    showToast("Для чата нужен настроенный PROXYAPI_API_KEY", true);
+    return;
+  }
+
+  kpChatMessages.push({ role: "user", text: message, ts: Date.now() });
+  kpChatLoading = true;
+  updateKpChatFormState();
+  renderKpChatMessages();
+
+  try {
+    const data = await api("/api/kp/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: kpSessionId, message }),
+    });
+    kpChatMessages.push({
+      role: "assistant",
+      text: data.reply,
+      actions: data.actions,
+      ts: Date.now(),
+    });
+    if (data.markup_percent != null) {
+      setMarkupInput(data.markup_percent);
+    }
+    renderProcessResult(data);
+    showToast("КП обновлено");
+  } catch (e) {
+    kpChatMessages.push({ role: "error", text: e.message, ts: Date.now() });
+    showToast(e.message, true);
+  } finally {
+    kpChatLoading = false;
+    updateKpChatFormState();
+    renderKpChatMessages();
+  }
+}
+
+function initKpChat() {
+  const form = $("#kpChatForm");
+  if (!form) return;
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = $("#kpChatInput");
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    sendKpChatMessage(text);
+  });
+
+  $("#kpChatInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  $("#kpChatHints")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-hint]");
+    if (!btn) return;
+    sendKpChatMessage(btn.dataset.hint);
+  });
+}
+
 function renderProcessResult(data) {
   const s = data.summary;
   $("#summaryEmpty").classList.add("hidden");
@@ -212,7 +517,7 @@ function renderProcessResult(data) {
       <div class="metric"><div class="metric__label">Цена без наценки</div><div class="metric__value">${fmtMoney(s.total_base_price)}</div></div>
       <div class="metric"><div class="metric__label">Цена КП</div><div class="metric__value">${fmtMoney(s.total_price)}</div></div>
     </div>
-    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · AI: ${data.ai_used ? "да" : "нет"}</p>
+    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · AI-подбор: ${data.ai_used ? "да" : "нет"} · Интернет: ${data.web_used ? "да" : "нет"}</p>
   `;
 
   $("#resultsCard").classList.remove("hidden");
@@ -223,24 +528,49 @@ function renderProcessResult(data) {
         const unitPrice = item.unit_base_price ?? item.unit_price;
         const lineTotalKp =
           item.total_price ?? lineSum(item.unit_price, item.quantity);
+        const hasDetails = hasItemDetails(item);
+        const detailId = `tz-detail-${item.number}`;
         return `
-      <tr>
+      <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
         <td>${item.number}</td>
-        <td>${item.name}</td>
-        <td>${item.matched_name || "—"}<br><small class="muted">${Math.round(item.match_score)}%</small></td>
+        <td>${escapeHtml(item.name)}${hasDetails ? ' <span class="tz-row__hint">▼</span>' : ""}</td>
+        <td>${escapeHtml(item.matched_name || "—")}<br><small class="muted">${Math.round(item.match_score)}%</small></td>
         <td>${statusBadge(item.status)}</td>
         <td>${fmtQty(item.quantity, item.unit)}</td>
         <td>${fmtMoney(unitPrice)}</td>
         <td>${fmtMoney(item.unit_price)}</td>
         <td>${fmtMoney(lineTotalKp)}</td>
-      </tr>`;
+      </tr>
+      ${
+        hasDetails
+          ? `<tr class="tz-detail hidden" id="${detailId}"><td colspan="8">${renderComparisonTable(item)}</td></tr>`
+          : ""
+      }`;
       },
     )
     .join("");
 
+  tbody.querySelectorAll(".tz-row--expandable").forEach((row) => {
+    row.addEventListener("click", () => {
+      const detail = document.getElementById(row.dataset.detail);
+      if (!detail) return;
+      detail.classList.toggle("hidden");
+      row.classList.toggle("tz-row--open");
+    });
+  });
+
   const btn = $("#downloadBtn");
-  btn.href = s.download_url;
+  btn.href = `${s.download_url}?t=${Date.now()}`;
   btn.download = s.filename;
+
+  if (data.session_id) {
+    if (data.session_id !== kpSessionId) {
+      kpSessionId = data.session_id;
+      kpChatMessages = [];
+    }
+    updateKpChatFormState();
+    renderKpChatMessages();
+  }
 }
 
 async function processUpload() {
@@ -302,24 +632,228 @@ function initUpload() {
   btn.addEventListener("click", processUpload);
 }
 
-async function doLookup() {
-  const query = $("#lookupQuery").value.trim();
-  if (!query) return;
+const CHAT_STORAGE_KEY = "kp_lookup_chat_v1";
 
-  showOverlay("Поиск...");
+let chatMessages = [];
+let chatHistoryIndex = [];
+let chatLoading = false;
+
+function loadChatState() {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.messages)) {
+      chatMessages = data.messages;
+    }
+    if (Array.isArray(data.history)) {
+      chatHistoryIndex = data.history;
+    }
+  } catch {
+    chatMessages = [];
+    chatHistoryIndex = [];
+  }
+}
+
+function saveChatState() {
+  localStorage.setItem(
+    CHAT_STORAGE_KEY,
+    JSON.stringify({ messages: chatMessages, history: chatHistoryIndex }),
+  );
+}
+
+function formatChatTime(ts) {
+  const date = new Date(ts);
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function addHistoryEntry(query, messageId) {
+  chatHistoryIndex = [
+    { id: messageId, query, ts: Date.now() },
+    ...chatHistoryIndex.filter((item) => item.query !== query),
+  ].slice(0, 50);
+}
+
+function renderChatHistorySidebar() {
+  const list = $("#chatHistoryList");
+  if (!chatHistoryIndex.length) {
+    list.innerHTML = `<li class="chat-history__empty muted">Пока нет запросов</li>`;
+    return;
+  }
+
+  list.innerHTML = chatHistoryIndex
+    .map(
+      (item) => `
+      <li>
+        <button type="button" class="chat-history__item" data-scroll-to="${escapeHtml(item.id)}">
+          <span class="chat-history__text">${escapeHtml(item.query)}</span>
+          <span class="chat-history__meta">${formatChatTime(item.ts)}</span>
+        </button>
+      </li>`,
+    )
+    .join("");
+
+  list.querySelectorAll("[data-scroll-to]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const entry = chatHistoryIndex.find((item) => item.id === btn.dataset.scrollTo);
+      if (entry) {
+        $("#chatInput").value = entry.query;
+      }
+      const target = document.getElementById(btn.dataset.scrollTo);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("chat-msg--highlight");
+        setTimeout(() => target.classList.remove("chat-msg--highlight"), 1200);
+      }
+    });
+  });
+}
+
+function scrollChatToBottom() {
+  const box = $("#chatMessages");
+  requestAnimationFrame(() => {
+    box.scrollTop = box.scrollHeight;
+  });
+}
+
+function renderChatMessages() {
+  const box = $("#chatMessages");
+  if (!chatMessages.length) {
+    box.innerHTML = `
+      <div class="chat-welcome">
+        <p>Задайте вопрос о товаре — я поищу в каталоге, прайсах и реестре. Если совпадений нет, подключу нейросеть.</p>
+      </div>`;
+    return;
+  }
+
+  box.innerHTML = chatMessages
+    .map((msg) => {
+      if (msg.role === "user") {
+        return `
+          <div class="chat-msg chat-msg--user" id="${escapeHtml(msg.id)}">
+            <div class="chat-msg__bubble">${escapeHtml(msg.text)}</div>
+            <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+          </div>`;
+      }
+      if (msg.role === "error") {
+        return `
+          <div class="chat-msg chat-msg--error" id="${escapeHtml(msg.id)}">
+            <div class="chat-msg__bubble">${escapeHtml(msg.text)}</div>
+            <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+          </div>`;
+      }
+      return `
+        <div class="chat-msg chat-msg--assistant" id="${escapeHtml(msg.id)}">
+          <div class="chat-msg__bubble chat-result">${renderLookupResultHtml(msg.result)}</div>
+          <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+        </div>`;
+    })
+    .join("");
+
+  if (chatLoading) {
+    box.insertAdjacentHTML(
+      "beforeend",
+      `<div class="chat-msg chat-msg--assistant" id="chatTyping">
+        <div class="chat-msg__bubble">
+          <span class="chat-msg__typing"><span></span><span></span><span></span></span>
+          Ищу в каталоге и прайсах...
+        </div>
+      </div>`,
+    );
+  }
+
+  scrollChatToBottom();
+}
+
+function newChatId() {
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function sendChatMessage(text) {
+  const query = text.trim();
+  if (!query || chatLoading) return;
+
+  const userMsg = { id: newChatId(), role: "user", text: query, ts: Date.now() };
+  chatMessages.push(userMsg);
+  addHistoryEntry(query, userMsg.id);
+  chatLoading = true;
+  renderChatMessages();
+  renderChatHistorySidebar();
+  saveChatState();
+
   try {
     const data = await api("/api/lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query }),
     });
-
-    renderLookupResult(data);
+    chatMessages.push({
+      id: newChatId(),
+      role: "assistant",
+      result: data,
+      ts: Date.now(),
+    });
   } catch (e) {
-    showToast(e.message, true);
+    chatMessages.push({
+      id: newChatId(),
+      role: "error",
+      text: e.message,
+      ts: Date.now(),
+    });
   } finally {
-    hideOverlay();
+    chatLoading = false;
+    renderChatMessages();
+    saveChatState();
   }
+}
+
+function clearChatHistory() {
+  if (!chatMessages.length && !chatHistoryIndex.length) return;
+  if (!confirm("Очистить историю чата?")) return;
+  chatMessages = [];
+  chatHistoryIndex = [];
+  chatLoading = false;
+  saveChatState();
+  renderChatMessages();
+  renderChatHistorySidebar();
+}
+
+function startNewChat() {
+  chatMessages = [];
+  chatLoading = false;
+  saveChatState();
+  renderChatMessages();
+  $("#chatInput").focus();
+}
+
+function initChat() {
+  loadChatState();
+  renderChatMessages();
+  renderChatHistorySidebar();
+
+  $("#chatForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = $("#chatInput");
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    sendChatMessage(text);
+  });
+
+  $("#chatInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      $("#chatForm").requestSubmit();
+    }
+  });
+
+  $("#btnClearChatHistory").addEventListener("click", clearChatHistory);
+  $("#btnNewChat").addEventListener("click", startNewChat);
 }
 
 function renderMatchVariants(title, block, buildLines, missingText) {
@@ -359,6 +893,19 @@ function renderMatchVariants(title, block, buildLines, missingText) {
     </div>`;
 }
 
+function renderPhotoButton(url, alt, imgClass = "lookup-result__photo") {
+  return `
+    <button
+      type="button"
+      class="lookup-result__photo-btn"
+      data-photo-src="${escapeHtml(url)}"
+      data-photo-alt="${escapeHtml(alt)}"
+      aria-label="Увеличить фото: ${escapeHtml(alt)}"
+    >
+      <img class="${imgClass}" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" loading="lazy" onerror="this.parentElement.remove()">
+    </button>`;
+}
+
 function renderRegistryPhotos(registry) {
   const urls =
     registry?.photo_urls?.length > 0
@@ -369,22 +916,84 @@ function renderRegistryPhotos(registry) {
   const alt = registry?.found ? registry.name : "Нет фото";
 
   if (!urls.length) {
-    return `<img class="lookup-result__photo" src="/no-photo.svg" alt="${alt}">`;
+    return `<img class="lookup-result__photo lookup-result__photo--empty" src="/no-photo.svg" alt="${escapeHtml(alt)}">`;
   }
 
   const [mainUrl, ...extraUrls] = urls;
   const extras = extraUrls
-    .map(
-      (url) =>
-        `<img class="lookup-result__photo lookup-result__photo--thumb" src="${url}" alt="${alt}" onerror="this.src='/no-photo.svg'">`,
-    )
+    .map((url) => renderPhotoButton(url, alt, "lookup-result__photo lookup-result__photo--thumb"))
     .join("");
 
   return `
     <div class="lookup-result__photos">
-      <img class="lookup-result__photo" src="${mainUrl}" alt="${alt}" onerror="this.src='/no-photo.svg'">
+      ${renderPhotoButton(mainUrl, alt)}
       ${extras ? `<div class="lookup-result__photo-stack">${extras}</div>` : ""}
     </div>`;
+}
+
+function fitPhotoModalImage(img) {
+  const previewSize = 220;
+  const target = previewSize * 3;
+  const maxW = window.innerWidth * 0.7;
+  const maxH = window.innerHeight * 0.7;
+  const { naturalWidth: w, naturalHeight: h } = img;
+  if (!w || !h) return;
+
+  const scaleUp = Math.max(target / w, target / h, 1);
+  const scaleDown = Math.min(maxW / w, maxH / h);
+  const scale = Math.min(scaleUp, scaleDown);
+
+  img.style.width = `${Math.round(w * scale)}px`;
+  img.style.height = `${Math.round(h * scale)}px`;
+}
+
+function openPhotoModal(src, alt) {
+  if (!src || src.includes("no-photo")) return;
+  const modal = $("#photoModal");
+  const img = $("#photoModalImage");
+  img.style.width = "";
+  img.style.height = "";
+  img.alt = alt || "Фото позиции";
+  img.onload = () => {
+    img.onload = null;
+    fitPhotoModalImage(img);
+  };
+  img.src = src;
+  if (img.complete) {
+    img.onload = null;
+    fitPhotoModalImage(img);
+  }
+  modal.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+}
+
+function closePhotoModal() {
+  const modal = $("#photoModal");
+  modal.classList.add("hidden");
+  const img = $("#photoModalImage");
+  img.src = "";
+  img.style.width = "";
+  img.style.height = "";
+  document.body.style.overflow = "";
+}
+
+function initPhotoModal() {
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".lookup-result__photo-btn");
+    if (btn?.dataset.photoSrc) {
+      openPhotoModal(btn.dataset.photoSrc, btn.dataset.photoAlt);
+      return;
+    }
+    if (e.target.closest("[data-close-photo]")) {
+      closePhotoModal();
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#photoModal").classList.contains("hidden")) {
+      closePhotoModal();
+    }
+  });
 }
 
 function renderAiInsightBlock(ai) {
@@ -448,10 +1057,7 @@ function renderAiInsightBlock(ai) {
     </div>`;
 }
 
-function renderLookupResult(data) {
-  const block = $("#lookupResult");
-  block.classList.remove("hidden");
-
+function renderLookupResultHtml(data) {
   const photoHtml = renderRegistryPhotos(data.registry);
 
   const registryBlock = data.registry?.found
@@ -498,41 +1104,41 @@ function renderLookupResult(data) {
   const aiBlock = renderAiInsightBlock(data.ai_insight);
 
   if (data.not_found) {
-    block.innerHTML = `
+    return `
       <div class="lookup-result__layout">
         <div>
-          <h3>Не найдено: «${data.query_name}»</h3>
+          <h3>Не найдено: «${escapeHtml(data.query_name)}»</h3>
           ${catalogBlock}
           ${priceBlock}
           ${registryBlock}
           ${aiBlock}
           ${
             data.alternatives.length
-              ? `<p class="muted" style="margin-top:12px">Похожие: ${data.alternatives.join(" · ")}</p>`
+              ? `<p class="muted" style="margin-top:12px">Похожие: ${data.alternatives.map(escapeHtml).join(" · ")}</p>`
               : ""
           }
         </div>
         <div>${photoHtml}</div>
       </div>`;
-    return;
   }
 
   const kv = Object.entries(data.values)
-    .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`)
+    .map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`)
     .join("");
 
-  block.innerHTML = `
+  return `
     <div class="lookup-result__layout">
       <div>
-        <h3>${data.matched_name}</h3>
-        <p class="muted">Запрос: «${data.query_name}» · ${Math.round(data.match_score)}% · ${data.status}</p>
+        <h3>${escapeHtml(data.matched_name)}</h3>
+        <p class="muted">Запрос: «${escapeHtml(data.query_name)}» · ${Math.round(data.match_score)}% · ${escapeHtml(data.status)}</p>
         <dl class="lookup-kv">${kv}</dl>
         ${catalogBlock}
         ${priceBlock}
         ${registryBlock}
+        ${aiBlock}
         ${
           data.alternatives.length
-            ? `<p class="muted" style="margin-top:12px">Альтернативы: ${data.alternatives.join(" · ")}</p>`
+            ? `<p class="muted" style="margin-top:12px">Альтернативы: ${data.alternatives.map(escapeHtml).join(" · ")}</p>`
             : ""
         }
       </div>
@@ -710,10 +1316,10 @@ document.addEventListener("DOMContentLoaded", () => {
   initUpload();
   initMarkup();
   initAiToggle();
-  $("#btnLookup").addEventListener("click", doLookup);
-  $("#lookupQuery").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") doLookup();
-  });
+  initChat();
+  initKpChat();
+  updateKpChatFormState();
+  initPhotoModal();
   $("#btnAddPrice").addEventListener("click", addPrice);
   loadInitialStatus();
 });

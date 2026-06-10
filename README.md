@@ -1,6 +1,6 @@
 # AI-агент коммерческих предложений (MVP)
 
-Telegram-бот на Python для автоматического формирования коммерческих предложений (КП) в Excel с наценкой 30%.
+Чат-бот на Python для автоматического формирования коммерческих предложений (КП) в Excel с выставляемой наценкой.
 
 ## Возможности MVP
 
@@ -116,7 +116,28 @@ PII_EXTRA_TERMS=Фамилия Иванов|Название заказчика
 
 ## Деплой на облачный сервер
 
-### Docker (рекомендуется)
+### Домен savenkoff.beget.tech (Beget VPS)
+
+Сейчас поддомен `savenkoff.beget.tech` указывает на **shared-хостинг** (PHP).  
+FastAPI на нём не запустить — нужен **VPS Beget** (или другой сервер с Docker).
+
+1. **Панель Beget → DNS** — A-запись `savenkoff.beget.tech` → IP вашего VPS.
+2. На VPS установите Docker и откройте порты 80/443.
+3. Скопируйте `.env` на сервер (`WEB_HOST=0.0.0.0`, `WEB_BEHIND_PROXY=true`).
+4. Деплой с локальной машины:
+
+```bash
+chmod +x scripts/deploy_beget_vps.sh
+BEGET_SSH=ваш_логин@IP_VPS ./scripts/deploy_beget_vps.sh
+```
+
+На сервере поднимается `docker compose -f docker-compose.prod.yml` (приложение + nginx).
+
+HTTPS: в панели Beget для VPS или `certbot --nginx -d savenkoff.beget.tech`.
+
+Конфиги: `deploy/beget/nginx-docker.conf`, `deploy/beget/nginx-savenkoff.beget.tech.conf`.
+
+### Docker (бот + локальный веб)
 
 ```bash
 # На сервере

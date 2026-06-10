@@ -168,7 +168,7 @@ async def _process_tz(
 
         processor = get_processor()
         use_ai = processor.ai.enabled
-        output_path, summary, _ = processor.process_tz_file(
+        output_path, summary, _, _ = processor.process_tz_file(
             tz_path,
             use_ai=use_ai,
         )

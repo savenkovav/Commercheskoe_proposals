@@ -8,7 +8,7 @@ import xlrd
 from openpyxl import load_workbook
 
 from src.config import REGISTRY_PHOTOS_DIR
-from src.services.models import CatalogItem, PriceListItem, RegistryItem
+from src.services.models import CatalogItem, GoodsReportItem, PriceListItem, RegistryItem
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,19 @@ def _normalize_name(value: str) -> str:
     return text
 
 
+def _classify_catalog_row(name: str, cost: float | None, price: float | None) -> tuple[str, str | None]:
+    lower = name.lower()
+    if "составляющие" in lower:
+        return "components_header", name
+    if cost is None and price is None:
+        return "section", None
+    if "комплект" in lower and price is not None and cost is None:
+        return "kit_total", None
+    if "комплект" in lower and cost is not None:
+        return "sub_kit", None
+    return "item", None
+
+
 def load_catalog(path: Path) -> list[CatalogItem]:
     if not path.exists():
         return []
@@ -30,15 +43,27 @@ def load_catalog(path: Path) -> list[CatalogItem]:
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb[wb.sheetnames[0]]
 
-    for row in ws.iter_rows(min_row=2, values_only=True):
+    current_group: str | None = None
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         name = str(row[0]).strip() if row[0] else ""
         if not name:
             continue
 
         cost = row[3] if isinstance(row[3], (int, float)) else None
         sale_price = row[1] if isinstance(row[1], (int, float)) else None
-        unit = str(row[4]).strip() if row[4] else "шт"
+        unit = str(row[4]).strip() if len(row) > 4 and row[4] else "шт"
         stock = row[2] if isinstance(row[2], (int, float)) else None
+        markup = row[5] if len(row) > 5 and isinstance(row[5], (int, float)) else None
+
+        entry_type, group_name = _classify_catalog_row(
+            name,
+            float(cost) if cost is not None else None,
+            float(sale_price) if sale_price is not None else None,
+        )
+        if entry_type == "components_header":
+            current_group = group_name
+        elif entry_type == "section":
+            current_group = None
 
         items.append(
             CatalogItem(
@@ -48,11 +73,146 @@ def load_catalog(path: Path) -> list[CatalogItem]:
                 unit=unit or "шт",
                 stock=float(stock) if stock is not None else None,
                 source_file=path.name,
+                actual_markup_pct=float(markup) if markup is not None else None,
+                entry_type=entry_type,
+                components_group=current_group,
+                row_index=row_idx,
             )
         )
 
     wb.close()
     return items
+
+
+def _parse_excel_date(value) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "strftime"):
+        return value.strftime("%d.%m.%Y")
+    text = str(value).strip()
+    return text or None
+
+
+_SUPPLIER_MARKERS = re.compile(
+    r"\b(ооо|оао|зао|пао|ип|ао|нпо|тд|чп)\b|[«\"]",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_supplier(name: str) -> bool:
+    return bool(_SUPPLIER_MARKERS.search(name))
+
+
+def _is_procurement_report(ws) -> bool:
+    for row in ws.iter_rows(min_row=1, max_row=12, values_only=True):
+        for cell in row[:3]:
+            if cell and "отчет по закупкам" in str(cell).lower():
+                return True
+    return False
+
+
+def _load_standard_goods_report(ws, source_file: str) -> list[GoodsReportItem]:
+    items: list[GoodsReportItem] = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        name = str(row[0]).strip() if row[0] else ""
+        if not name:
+            continue
+
+        supplier = str(row[1]).strip() if len(row) > 1 and row[1] else None
+        purchase_date = _parse_excel_date(row[2]) if len(row) > 2 else None
+        cost = row[3] if len(row) > 3 and isinstance(row[3], (int, float)) else None
+        sale_price = row[4] if len(row) > 4 and isinstance(row[4], (int, float)) else None
+        unit = str(row[5]).strip() if len(row) > 5 and row[5] else "шт"
+
+        items.append(
+            GoodsReportItem(
+                name=name,
+                supplier=supplier or None,
+                purchase_date=purchase_date,
+                cost=float(cost) if cost is not None else None,
+                price=float(sale_price) if sale_price is not None else None,
+                unit=unit or "шт",
+                source_file=source_file,
+            )
+        )
+    return items
+
+
+def _load_procurement_report(ws, source_file: str) -> list[GoodsReportItem]:
+    rows = list(ws.iter_rows(values_only=True))
+    items: list[GoodsReportItem] = []
+    period: str | None = None
+
+    for row in rows[:6]:
+        cell = row[0] if row else None
+        if cell and re.search(r"\d{2}\.\d{2}\.\d{4}", str(cell)):
+            period = str(cell).strip()
+
+    idx = 0
+    while idx < len(rows):
+        row = rows[idx]
+        name = str(row[0]).strip() if row and row[0] else ""
+        qty = row[1] if row and len(row) > 1 else None
+        unit = row[2] if row and len(row) > 2 else None
+        price = row[3] if row and len(row) > 3 else None
+
+        idx += 1
+        if not name or not isinstance(qty, (int, float)) or not isinstance(price, (int, float)):
+            continue
+        if not unit or not str(unit).strip():
+            continue
+
+        supplier: str | None = None
+        if idx < len(rows):
+            next_row = rows[idx]
+            next_name = str(next_row[0]).strip() if next_row and next_row[0] else ""
+            next_unit = next_row[2] if next_row and len(next_row) > 2 else None
+            if next_name and not (next_unit and str(next_unit).strip()) and _looks_like_supplier(
+                next_name
+            ):
+                supplier = next_name
+                idx += 1
+
+        items.append(
+            GoodsReportItem(
+                name=name,
+                supplier=supplier,
+                purchase_date=period,
+                cost=float(price),
+                price=float(price),
+                unit=str(unit).strip() or "шт",
+                source_file=f"procurement:{source_file}",
+            )
+        )
+
+    return items
+
+
+def load_goods_report(path: Path) -> list[GoodsReportItem]:
+    if not path.exists():
+        return []
+
+    wb = load_workbook(path, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    if _is_procurement_report(ws):
+        items = _load_procurement_report(ws, path.name)
+    else:
+        items = _load_standard_goods_report(ws, path.name)
+    wb.close()
+    return items
+
+
+def merge_goods_reports(*sources: list[GoodsReportItem]) -> list[GoodsReportItem]:
+    merged: list[GoodsReportItem] = []
+    seen: set[str] = set()
+    for items in sources:
+        for item in items:
+            key = normalize_name(item.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
 
 
 def _extract_registry_photos(path: Path, photos_dir: Path) -> None:

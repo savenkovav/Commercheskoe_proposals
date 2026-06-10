@@ -1,0 +1,30 @@
+name: Deploy VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          script_stop: true
+          script: |
+            export APP_DIR=/opt/comm-proposals
+            export REPO_URL=https://github.com/savenkovav/Comm_proposals.git
+            if [ ! -f "$APP_DIR/scripts/vps_remote_setup.sh" ]; then
+              apt-get update -qq
+              apt-get install -y -qq git curl ca-certificates
+              git clone "$REPO_URL" "$APP_DIR"
+            fi
+            cd "$APP_DIR"
+            git fetch origin
+            git reset --hard origin/main
+            bash scripts/vps_remote_setup.sh

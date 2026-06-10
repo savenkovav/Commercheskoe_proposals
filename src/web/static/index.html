@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <title>КП — коммерческие предложения</title>
-  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/app.css?v=20260609h">
 </head>
 <body>
   <div class="layout">
@@ -22,7 +22,7 @@
 
     <nav class="tabs" role="tablist">
       <button class="tabs__btn tabs__btn--active" data-tab="kp" role="tab">Формирование КП</button>
-      <button class="tabs__btn" data-tab="lookup" role="tab">Поиск позиций</button>
+      <button class="tabs__btn" data-tab="lookup" role="tab">Чат поиска</button>
       <button class="tabs__btn" data-tab="prices" role="tab">Прайсы</button>
       <button class="tabs__btn" data-tab="status" role="tab">Статус</button>
     </nav>
@@ -93,17 +93,72 @@
             </table>
           </div>
         </div>
+
+        <div class="card" id="kpChatCard">
+          <div class="chat-header">
+            <h2>Корректировка КП с нейросетью</h2>
+            <p class="muted">Уточните расчёт после формирования: пересчитайте позиции, исключите площадку, считайте по составляющим комплекта и т.д.</p>
+          </div>
+          <div class="kp-chat-hints" id="kpChatHints">
+            <button type="button" class="kp-chat-hint" data-hint="Не используй Ozon в ссылках">Не использовать Ozon</button>
+            <button type="button" class="kp-chat-hint" data-hint="Пересчитай комплекты по составляющим из ТЗ">По составляющим</button>
+            <button type="button" class="kp-chat-hint" data-hint="Пересчитай все позиции заново">Пересчитать всё</button>
+            <button type="button" class="kp-chat-hint" data-hint="Отключи интернет-источник, используй только каталог и прайсы">Без интернета</button>
+          </div>
+          <div class="chat-messages kp-chat-messages" id="kpChatMessages" aria-live="polite">
+            <div class="chat-welcome">
+              <p>Сформируйте КП — здесь можно попросить нейросеть скорректировать результат. Excel обновится автоматически.</p>
+            </div>
+          </div>
+          <form class="chat-compose" id="kpChatForm">
+            <textarea
+              id="kpChatInput"
+              class="input chat-compose__input"
+              rows="2"
+              placeholder="Например: пересчитай позицию 10 по составу, наценка 25%, не используй Wildberries..."
+              autocomplete="off"
+            ></textarea>
+            <button class="btn btn--primary chat-compose__send" type="submit" id="btnKpChatSend">Отправить</button>
+          </form>
+        </div>
       </section>
 
       <section class="panel" id="panel-lookup" data-panel="lookup">
-        <div class="card">
-          <h2>Поиск по каталогу и прайсам</h2>
-          <p class="muted">Пример: <code>термометр лабораторный | цена, остаток</code></p>
-          <div class="lookup-form">
-            <input type="text" id="lookupQuery" class="input" placeholder="Название позиции | поля">
-            <button class="btn btn--primary" id="btnLookup">Найти</button>
+        <div class="chat-layout">
+          <aside class="chat-sidebar card">
+            <div class="chat-sidebar__head">
+              <h2>История</h2>
+              <div class="chat-sidebar__actions">
+                <button class="btn btn--secondary btn--small" type="button" id="btnNewChat">Новый</button>
+                <button class="btn btn--danger btn--small" type="button" id="btnClearChatHistory">Очистить</button>
+              </div>
+            </div>
+            <ul class="chat-history" id="chatHistoryList">
+              <li class="chat-history__empty muted">Пока нет запросов</li>
+            </ul>
+          </aside>
+
+          <div class="chat-main card">
+            <div class="chat-header">
+              <h2>Поиск с нейросетью</h2>
+              <p class="muted">Спросите о позиции в каталоге, прайсе или реестре. Пример: <code>термометр лабораторный | цена, остаток</code></p>
+            </div>
+            <div class="chat-messages" id="chatMessages" aria-live="polite">
+              <div class="chat-welcome">
+                <p>Задайте вопрос о товаре — я поищу в каталоге, прайсах и реестре. Если совпадений нет, подключу нейросеть.</p>
+              </div>
+            </div>
+            <form class="chat-compose" id="chatForm">
+              <textarea
+                id="chatInput"
+                class="input chat-compose__input"
+                rows="2"
+                placeholder="Название позиции или вопрос..."
+                autocomplete="off"
+              ></textarea>
+              <button class="btn btn--primary chat-compose__send" type="submit" id="btnChatSend">Отправить</button>
+            </form>
           </div>
-          <div class="lookup-result hidden" id="lookupResult"></div>
         </div>
       </section>
 
@@ -154,6 +209,14 @@
     <p id="overlayText">Обработка...</p>
   </div>
 
-  <script src="/app.js"></script>
+  <div class="photo-modal hidden" id="photoModal" role="dialog" aria-modal="true" aria-label="Просмотр фото">
+    <div class="photo-modal__backdrop" data-close-photo></div>
+    <div class="photo-modal__dialog">
+      <button type="button" class="photo-modal__close" data-close-photo aria-label="Закрыть">×</button>
+      <img class="photo-modal__image" id="photoModalImage" src="" alt="">
+    </div>
+  </div>
+
+  <script src="/app.js?v=20260609h"></script>
 </body>
 </html>

@@ -20,6 +20,13 @@ TELEGRAM_PROXY_AUTO = os.getenv("TELEGRAM_PROXY_AUTO", "true").lower() in {
 }
 WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
+WEB_BEHIND_PROXY = os.getenv("WEB_BEHIND_PROXY", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 PROXYAPI_API_KEY = os.getenv("PROXYAPI_API_KEY", "")
 PROXYAPI_BASE_URL = os.getenv("PROXYAPI_BASE_URL", "https://api.proxyapi.ru/openai/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -35,6 +42,17 @@ PAYMENT_TERMS = os.getenv("PAYMENT_TERMS", "безналичный расчет"
 DELIVERY_DAYS = os.getenv("DELIVERY_DAYS", "15 рабочих дней после получения денежных средств")
 
 CATALOG_PATH = PROJECT_ROOT / os.getenv("CATALOG_PATH", "data/catalog.xlsx")
+GOODS_REPORT_PATH = PROJECT_ROOT / os.getenv("GOODS_REPORT_PATH", "data/goods_report.xlsx")
+_procurement_report_raw = os.getenv("PROCUREMENT_REPORT_PATH", "").strip()
+PROCUREMENT_REPORT_PATH = (
+    PROJECT_ROOT / _procurement_report_raw if _procurement_report_raw else None
+)
+USE_GOODS_REPORT = os.getenv("USE_GOODS_REPORT", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 REGISTRY_PATH = PROJECT_ROOT / os.getenv("REGISTRY_PATH", "data/registry.xlsx")
 REGISTRY_PHOTOS_DIR = PROJECT_ROOT / os.getenv("REGISTRY_PHOTOS_DIR", "data/registry_photos")
 
@@ -87,6 +105,22 @@ PII_REDACT_ORG_DATA = os.getenv("PII_REDACT_ORG_DATA", "true").lower() in {
 }
 _extra_pii = os.getenv("PII_EXTRA_TERMS", "").strip()
 PII_EXTRA_TERMS = [term.strip() for term in _extra_pii.split("|") if term.strip()]
+
+USE_AI_INTERNET_SEARCH = os.getenv("USE_AI_INTERNET_SEARCH", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+KP_PARALLEL_WORKERS = max(1, int(os.getenv("KP_PARALLEL_WORKERS", "4")))
+
+SEARCH_KIT_COMPONENT_LINKS = os.getenv("SEARCH_KIT_COMPONENT_LINKS", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 TZ_PDF_OCR_ENABLED = os.getenv("TZ_PDF_OCR_ENABLED", "true").lower() in {
     "1",

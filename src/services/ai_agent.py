@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 
 from openai import OpenAI
@@ -32,6 +33,8 @@ class AIAgent:
             self.client = OpenAI(
                 api_key=PROXYAPI_API_KEY,
                 base_url=PROXYAPI_BASE_URL,
+                timeout=20.0,
+                max_retries=1,
             )
 
     def match_item(
@@ -171,6 +174,199 @@ class AIAgent:
                 "notes": "Ошибка AI-оценки",
                 "alternatives": [],
             }
+
+    def search_competitors(self, tz_item: TZItem, limit: int = 3) -> list[dict]:
+        if not self.enabled or not self.client:
+            return []
+
+        prompt_body, session = self.anonymizer.anonymize_estimate_payload(
+            tz_name=tz_item.name,
+            tz_specs=tz_item.specifications[:1200],
+        )
+        self.anonymizer.log_session(session, "search_competitors")
+
+        prompt = f"""{prompt_body}
+
+Верни JSON с оценкой цен ближайших конкурентов на российском рынке:
+{{
+  "competitors": [
+    {{
+      "name": "наименование товара у конкурента",
+      "platform": "Ozon|Яндекс.Маркет|другой магазин",
+      "price": число,
+      "match_score": число 40-80,
+      "url": "ссылка на поиск товара на площадке (ozon.ru/search, market.yandex.ru/search и т.п.)",
+      "notes": "кратко"
+    }}
+  ]
+}}
+
+Верни ровно {limit} позиции-конкурента с разными площадками если возможно.
+В поле url укажи только ссылку на страницу поиска площадки с названием товара, не выдумывай карточки товаров."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты эксперт по ценам учебного и лабораторного оборудования в России. "
+                            "Возвращай только JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or "{}"
+            result = json.loads(content)
+            cleaned = self.anonymizer.deanonymize_response(result, session)
+            items = cleaned.get("competitors") or []
+            if not isinstance(items, list):
+                return []
+            return items[:limit]
+        except Exception as exc:
+            logger.exception("AI competitor search failed: %s", exc)
+            return []
+
+    def interpret_kp_refinement(
+        self,
+        user_message: str,
+        items_summary: list[dict],
+        preferences: dict,
+        chat_history: list[dict],
+        markup_percent: float,
+    ) -> dict:
+        if not self.enabled or not self.client:
+            return self._fallback_kp_refinement(user_message)
+
+        history_text = "\n".join(
+            f"{turn.get('role', 'user')}: {turn.get('text', '')}"
+            for turn in chat_history[-8:]
+        )
+        items_text = json.dumps(items_summary[:30], ensure_ascii=False)
+        prefs_text = json.dumps(preferences, ensure_ascii=False)
+
+        prompt = f"""Пользователь формирует коммерческое предложение (КП) и просит скорректировать результат.
+
+Текущая наценка: {markup_percent}%
+Текущие настройки: {prefs_text}
+
+Позиции КП (кратко):
+{items_text}
+
+История чата:
+{history_text or "—"}
+
+Новое сообщение пользователя:
+{user_message}
+
+Верни JSON:
+{{
+  "reply": "понятный ответ на русском — что сделано",
+  "excluded_platforms_add": ["Ozon"],
+  "excluded_platforms_remove": [],
+  "disabled_sources_add": ["web"],
+  "disabled_sources_remove": [],
+  "search_kit_component_links": true или false или null,
+  "force_kit_component_pricing": true или false или null,
+  "markup_percent": число или null,
+  "reprocess_items": [номера позиций ТЗ] или [],
+  "reprocess_all": true или false
+}}
+
+Правила:
+- excluded_platforms_add/remove: площадки конкурентов (Ozon, Яндекс.Маркет, Wildberries и т.п.)
+- disabled_sources_add: catalog, price_list, registry, web — отключить источник
+- search_kit_component_links=true — искать ссылки по составляющим комплекта (медленно)
+- force_kit_component_pricing=true — пересчитать цену комплекта по сумме составляющих
+- reprocess_items — номера позиций из ТЗ для повторного подбора
+- reprocess_all=true — пересчитать все позиции
+- markup_percent — новая наценка в %, если пользователь просит изменить
+- Если просят «не используй Ozon» — excluded_platforms_add: ["Ozon"], reprocess_all: true
+- Если просят «считай по составляющим» — force_kit_component_pricing: true, reprocess_items: номера комплектов
+- null в полях = не менять настройку
+- Отвечай только JSON"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты помощник менеджера по коммерческим предложениям. "
+                            "Возвращай только валидный JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or "{}"
+            return json.loads(content)
+        except Exception as exc:
+            logger.exception("AI KP refinement failed: %s", exc)
+            return self._fallback_kp_refinement(user_message)
+
+    @staticmethod
+    def _fallback_kp_refinement(user_message: str) -> dict:
+        text = user_message.lower()
+        patch: dict = {
+            "reply": "Применены базовые правила (AI недоступен).",
+            "excluded_platforms_add": [],
+            "excluded_platforms_remove": [],
+            "disabled_sources_add": [],
+            "disabled_sources_remove": [],
+            "search_kit_component_links": None,
+            "force_kit_component_pricing": None,
+            "markup_percent": None,
+            "reprocess_items": [],
+            "reprocess_all": False,
+        }
+
+        for platform in ("ozon", "wildberries", "яндекс", "маркет", "авито"):
+            if platform in text and ("не использ" in text or "исключ" in text or "убери" in text):
+                label = {
+                    "ozon": "Ozon",
+                    "wildberries": "Wildberries",
+                    "яндекс": "Яндекс.Маркет",
+                    "маркет": "Яндекс.Маркет",
+                    "авито": "Авито",
+                }[platform]
+                patch["excluded_platforms_add"].append(label)
+                patch["reprocess_all"] = True
+
+        if "составляющ" in text or "по составу" in text:
+            patch["force_kit_component_pricing"] = True
+            patch["reprocess_all"] = True
+            patch["reply"] = "Пересчитываю комплекты по составляющим."
+
+        if "ссылк" in text and "состав" in text:
+            patch["search_kit_component_links"] = True
+            patch["reprocess_all"] = True
+
+        if "интернет" in text and ("не использ" in text or "отключ" in text):
+            patch["disabled_sources_add"].append("web")
+            patch["reprocess_all"] = True
+
+        markup_match = re.search(r"наценк\w*\s*(\d+(?:[.,]\d+)?)\s*%?", text)
+        if markup_match:
+            patch["markup_percent"] = float(markup_match.group(1).replace(",", "."))
+            patch["reply"] = f"Наценка изменена на {patch['markup_percent']}%."
+
+        numbers = [int(n) for n in re.findall(r"(?:позици\w*|№|#)\s*(\d+)", text)]
+        if numbers:
+            patch["reprocess_items"] = numbers
+            patch["reply"] = f"Пересчитываю позиции: {', '.join(map(str, numbers))}."
+
+        if "пересчит" in text and "все" in text:
+            patch["reprocess_all"] = True
+
+        return patch
 
     @staticmethod
     def _fallback_response() -> dict:
