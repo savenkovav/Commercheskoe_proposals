@@ -815,7 +815,8 @@ class ProductLookupService:
         if not hits:
             return None
         if query:
-            return self.matcher.pick_best_hit(query, hits)
+            mini = TZItem(number=0, name=query, unit="шт", quantity=1)
+            return self.matcher.pick_best_hit(mini, hits)
         return hits[0]
 
     @staticmethod

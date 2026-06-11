@@ -231,6 +231,132 @@ class AIAgent:
             logger.exception("AI competitor search failed: %s", exc)
             return []
 
+    def interpret_assistant_message(
+        self,
+        user_message: str,
+        items_summary: list[dict],
+        preferences: dict,
+        chat_history: list[dict],
+        markup_percent: float,
+        *,
+        task_mode: str,
+        stage: str,
+        search_completed: bool,
+    ) -> dict:
+        if not self.enabled or not self.client:
+            from src.services.assistant_intent import detect_assistant_intent
+
+            patch = detect_assistant_intent(
+                user_message,
+                has_items=bool(items_summary),
+                search_completed=search_completed,
+            )
+            patch.update(self._extract_refinement_fields(patch, user_message))
+            return patch
+
+        history_text = "\n".join(
+            f"{turn.get('role', 'user')}: {turn.get('text', '')}"
+            for turn in chat_history[-10:]
+        )
+        items_text = json.dumps(items_summary[:30], ensure_ascii=False)
+        prefs_text = json.dumps(preferences, ensure_ascii=False)
+
+        prompt = f"""Ты — КП-Ассистент (версия 2.0). Веди диалог с менеджером по коммерческим предложениям.
+
+ВАЖНО: не запускай поиск в каталогах, прайсах, складе и интернете, пока пользователь явно не попросил.
+Сначала уточни задачу, задай вопросы при неполных данных, предложи кнопки действий.
+
+Текущий режим задачи: {task_mode}
+Стадия сессии: {stage}
+Поиск уже выполнялся: {"да" if search_completed else "нет"}
+Наценка: {markup_percent}%
+Настройки: {prefs_text}
+Позиции: {items_text}
+История:
+{history_text or "—"}
+
+Сообщение пользователя:
+{user_message}
+
+Верни JSON:
+{{
+  "reply": "ответ на русском — что понял и что предлагает сделать дальше",
+  "task_mode": "task1|task1_task2|null",
+  "run_local_search": false,
+  "run_web_search": false,
+  "generate_excel": false,
+  "save_rule": "текст правила или null",
+  "markup_percent": число или null,
+  "reprocess_items": [],
+  "reprocess_all": false,
+  "excluded_platforms_add": [],
+  "excluded_platforms_remove": [],
+  "disabled_sources_add": [],
+  "disabled_sources_remove": [],
+  "search_kit_component_links": null,
+  "force_kit_component_pricing": null
+}}
+
+Правила:
+- run_local_search=true ТОЛЬКО если пользователь явно просит найти/обработать/подобрать в каталогах, прайсах, складе
+- run_web_search=true ТОЛЬКО для задачи 1+2 и явной просьбы про конкурентов/интернет/рынок
+- generate_excel=true только если поиск уже был и пользователь просит сформировать/выгрузить КП
+- task1 = только поиск и себестоимость; task1_task2 = + конкуренты и рекомендация цены
+- save_rule — если пользователь пишет «запомни как правило»
+- Если позиций нет — предложи загрузить ТЗ, run_local_search=false
+- Если характеристики неполные — задай уточняющий вопрос в reply, run_local_search=false
+- null = не менять настройку
+- Отвечай только JSON"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты оркестратор КП-Ассистента. "
+                            "Не запускай поиск без явной команды пользователя. "
+                            "Возвращай только валидный JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or "{}"
+            return json.loads(content)
+        except Exception as exc:
+            logger.exception("AI assistant message failed: %s", exc)
+            from src.services.assistant_intent import detect_assistant_intent
+
+            patch = detect_assistant_intent(
+                user_message,
+                has_items=bool(items_summary),
+                search_completed=search_completed,
+            )
+            patch.update(self._extract_refinement_fields(patch, user_message))
+            return patch
+
+    @staticmethod
+    def _extract_refinement_fields(patch: dict, user_message: str) -> dict:
+        fallback = AIAgent._fallback_kp_refinement(user_message)
+        for key in (
+            "excluded_platforms_add",
+            "excluded_platforms_remove",
+            "disabled_sources_add",
+            "disabled_sources_remove",
+            "search_kit_component_links",
+            "force_kit_component_pricing",
+            "markup_percent",
+            "reprocess_items",
+            "reprocess_all",
+        ):
+            if not patch.get(key) and fallback.get(key):
+                patch[key] = fallback[key]
+        return patch
+
     def interpret_kp_refinement(
         self,
         user_message: str,

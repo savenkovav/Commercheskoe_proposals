@@ -1,6 +1,6 @@
 # AI-агент коммерческих предложений (MVP)
 
-Чат-бот на Python для автоматического формирования коммерческих предложений (КП) в Excel с выставляемой наценкой.
+Веб-приложение на Python для автоматического формирования коммерческих предложений (КП) в Excel с выставляемой наценкой.
 
 ## Возможности MVP
 
@@ -12,7 +12,7 @@
 - AI-подбор через **ProxyAPI** (OpenAI-compatible) при неоднозначных совпадениях
 - Оценка рыночной цены через AI, если позиция не найдена локально
 - Расчёт себестоимости и наценки 30%
-- Генерация Excel с 3 листами:
+- Генерация Excel с листами:
   - **КП** — коммерческое предложение для заказчика (по образцу)
   - **Детализация** — статусы, источники, себестоимость, наценка, примечания
   - **Сводка** — статистика обработки
@@ -34,11 +34,10 @@ cp env.example .env
 
 | Переменная | Описание |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | Токен от [@BotFather](https://t.me/BotFather) |
 | `PROXYAPI_API_KEY` | Ключ с [proxyapi.ru](https://proxyapi.ru) |
 | `MARKUP_PERCENT` | Наценка (по умолчанию 30) |
 
-### 3. Демо без Telegram (локальный матчинг)
+### 3. CLI-демо (локальный матчинг)
 
 ```bash
 python scripts/run_demo.py --no-ai
@@ -52,39 +51,19 @@ python scripts/run_demo.py
 
 Результат сохраняется в `output/KP_*.xlsx`.
 
-### 4. Запуск Telegram-бота
+### 4. Запуск веб-интерфейса
 
 ```bash
-python -m src.main
+./scripts/start_web.sh
 ```
 
-Команды бота:
-- `/start` — приветствие
-- `/demo` — обработать демо-ТЗ из `data/sample_tz.docx`
-- `/status` — статистика загруженных данных
-- Отправка `.docx` — обработка вашего ТЗ
-
-### Админ-команды (управление прайсами)
-
-В `.env` укажите свой Telegram ID в `ADMIN_USER_IDS` (узнать ID: [@userinfobot](https://t.me/userinfobot)).
-
-| Команда | Описание |
-|---|---|
-| `/admin` | Справка по админ-командам |
-| `/prices` | Список загруженных прайсов |
-| `/price_add Название\|Поставщик` | Добавить прайс → отправить `.xls`/`.xlsx` |
-| `/price_replace id` | Заменить файл прайса → отправить новый файл |
-| `/price_rename id Название\|Поставщик` | Изменить название/поставщика |
-| `/price_remove id` | Удалить прайс |
-| `/cancel` | Отменить ожидание загрузки |
-
-Прайсы хранятся в `data/prices/`, реестр — `data/prices_registry.json`. После добавления/замены поиск обновляется автоматически.
+Откройте http://127.0.0.1:8080 — загрузка ТЗ, формирование КП, управление прайсами и поиск позиций.
 
 ## Защита персональных данных (ПДн)
 
 Перед каждым запросом к OpenAI через ProxyAPI данные проходят обезличивание:
 
-- email, телефоны, URL, Telegram `@username`
+- email, телефоны, URL, `@username`
 - ИНН / КПП / ОГРН (с метками)
 - СНИЛС, паспорт, банковские реквизиты
 - адреса, ФИО (формат «Фамилия Имя Отчество»)
@@ -101,51 +80,26 @@ PII_EXTRA_TERMS=Фамилия Иванов|Название заказчика
 
 Проверка: `python scripts/test_pii_anonymizer.py`
 
-## Поиск позиции по названию
-
-Команда `/find` или текстовый запрос на естественном языке:
-
-```
-/find термометр лабораторный | цена, остаток
-/find мольберт | себестоимость, количество
-сколько стоит палочка стеклянная?
-```
-
-Доступные поля: `цена`, `себестоимость`, `остаток`, `количество`, `единица`, `код`, `поставщик`.
-Если поля не указаны — выводятся себестоимость, цена КП, остаток и ед. изм.
-
 ## Деплой на облачный сервер
 
 ### Домен savenkoff.beget.tech (Beget VPS)
 
-Сейчас поддомен `savenkoff.beget.tech` указывает на **shared-хостинг** (PHP).  
-FastAPI на нём не запустить — нужен **VPS Beget** (или другой сервер с Docker).
-
 1. **Панель Beget → DNS** — A-запись `savenkoff.beget.tech` → IP вашего VPS.
 2. На VPS установите Docker и откройте порты 80/443.
 3. Скопируйте `.env` на сервер (`WEB_HOST=0.0.0.0`, `WEB_BEHIND_PROXY=true`).
-4. Деплой с локальной машины:
+4. Деплой через GitHub Actions (секреты `VPS_HOST`, `VPS_USER`, `VPS_PASSWORD`) или:
 
 ```bash
-chmod +x scripts/deploy_beget_vps.sh
-BEGET_SSH=ваш_логин@IP_VPS ./scripts/deploy_beget_vps.sh
+VPS_PASSWORD='...' ./scripts/vps_rsync_deploy.sh
 ```
 
 На сервере поднимается `docker compose -f docker-compose.prod.yml` (приложение + nginx).
 
-HTTPS: в панели Beget для VPS или `certbot --nginx -d savenkoff.beget.tech`.
-
-Конфиги: `deploy/beget/nginx-docker.conf`, `deploy/beget/nginx-savenkoff.beget.tech.conf`.
-
-### Docker (бот + локальный веб)
+### Docker (локально)
 
 ```bash
-# На сервере
-git clone <your-repo-url> /opt/comm-proposals
-cd /opt/comm-proposals
 cp env.example .env
-nano .env  # заполните ключи
-
+nano .env
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -153,9 +107,9 @@ docker compose logs -f
 ### Systemd (без Docker)
 
 ```bash
-# /etc/systemd/system/kp-bot.service
+# /etc/systemd/system/comm-proposals-web.service
 [Unit]
-Description=KP Telegram Bot
+Description=Comm Proposals Web
 After=network.target
 
 [Service]
@@ -163,17 +117,12 @@ Type=simple
 User=deploy
 WorkingDirectory=/opt/comm-proposals
 Environment=PYTHONPATH=/opt/comm-proposals
-ExecStart=/opt/comm-proposals/.venv/bin/python -m src.main
+ExecStart=/opt/comm-proposals/.venv/bin/python -m src.web.server
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl enable kp-bot
-sudo systemctl start kp-bot
 ```
 
 ## Структура проекта
@@ -183,9 +132,8 @@ sudo systemctl start kp-bot
 ├── output/                  # Сгенерированные КП
 ├── scripts/run_demo.py      # CLI-демо
 ├── src/
-│   ├── main.py              # Точка входа бота
 │   ├── config.py            # Конфигурация из .env
-│   ├── bot/handlers.py      # Telegram handlers
+│   ├── web/server.py        # Веб-интерфейс (FastAPI)
 │   └── services/
 │       ├── data_loader.py   # Загрузка Excel/docx
 │       ├── matcher.py       # Fuzzy-поиск (rapidfuzz)
@@ -220,14 +168,6 @@ Excel КП (наценка 30%)
 - `registry.xlsx` — реестр остатков
 - `price_prirodovedenie.xls` — прайс поставщика (~2156 позиций)
 - `sample_tz.docx` — демо-ТЗ (14 позиций)
-
-## Масштабирование
-
-Для production-версии планируется:
-- PostgreSQL / Elasticsearch для каталога на тысячи позиций
-- Несколько прайсов через `PRICE_LISTS` (comma-separated)
-- Веб-поиск реальных цен (API маркетплейсов)
-- Админ-панель для управления каталогом
 
 ## Лицензия
 

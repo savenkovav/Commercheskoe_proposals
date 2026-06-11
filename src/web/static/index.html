@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
-  <title>КП — коммерческие предложения</title>
-  <link rel="stylesheet" href="/app.css?v=20260609h">
+  <title>КП-Ассистент</title>
+  <link rel="stylesheet" href="/app.css?v=20260611a">
 </head>
 <body>
   <div class="layout">
@@ -13,26 +13,61 @@
       <div class="header__brand">
         <span class="header__logo">КП</span>
         <div>
-          <h1>AI-агент коммерческих предложений</h1>
-          <p class="header__subtitle">Каталог · реестр · прайсы · Excel КП</p>
+          <h1>КП-Ассистент</h1>
+          <p class="header__subtitle">Поиск · себестоимость · конкуренты · Excel КП</p>
         </div>
       </div>
       <div class="header__stats" id="headerStats"></div>
     </header>
 
     <nav class="tabs" role="tablist">
-      <button class="tabs__btn tabs__btn--active" data-tab="kp" role="tab">Формирование КП</button>
-      <button class="tabs__btn" data-tab="lookup" role="tab">Чат поиска</button>
+      <button class="tabs__btn tabs__btn--active" data-tab="kp" role="tab">КП-Ассистент</button>
+      <button class="tabs__btn" data-tab="lookup" role="tab">Быстрый поиск</button>
       <button class="tabs__btn" data-tab="prices" role="tab">Прайсы</button>
       <button class="tabs__btn" data-tab="status" role="tab">Статус</button>
     </nav>
 
     <main>
       <section class="panel panel--active" id="panel-kp" data-panel="kp">
+        <div class="card" id="kpChatCard">
+          <div class="chat-header">
+            <h2>Диалог с КП-Ассистентом</h2>
+            <p class="muted">Загрузите ТЗ или опишите позиции. Поиск в каталогах и прайсах — только по вашей команде.</p>
+            <div class="assistant-mode" id="assistantMode">
+              <span class="assistant-mode__label">Задача:</span>
+              <span class="assistant-mode__value" id="taskModeLabel">не выбрана</span>
+              <span class="assistant-mode__sep">·</span>
+              <span class="assistant-mode__value" id="stageLabel">ожидание ТЗ</span>
+            </div>
+          </div>
+          <div class="kp-chat-hints" id="kpChatHints">
+            <button type="button" class="kp-chat-hint" data-hint="Задача 1: только поиск в каталогах и прайсах">Только поиск</button>
+            <button type="button" class="kp-chat-hint" data-hint="Задача 1+2: найди в каталогах и подбери конкурентные цены">Поиск + конкуренты</button>
+            <button type="button" class="kp-chat-hint" data-hint="Рассчитай с наценкой 30% и сформируй Excel">Наценка 30%</button>
+            <button type="button" class="kp-chat-hint" data-hint="Сформируй Excel КП">Сформировать Excel</button>
+            <button type="button" class="kp-chat-hint" data-hint="Запомни как правило: для гипсовых моделей бери составляющие из прайса ПИШ">Запомни правило</button>
+          </div>
+          <div class="chat-messages kp-chat-messages" id="kpChatMessages" aria-live="polite">
+            <div class="chat-welcome">
+              <p>Я КП-Ассистент. Загрузите ТЗ или напишите запрос. Поиск начну только когда вы попросите.</p>
+            </div>
+          </div>
+          <form class="chat-compose" id="kpChatForm">
+            <textarea
+              id="kpChatInput"
+              class="input chat-compose__input"
+              rows="2"
+              placeholder="Например: найди в каталогах · уточни характеристики · наценка 25%..."
+              autocomplete="off"
+            ></textarea>
+            <button class="btn btn--primary chat-compose__send" type="submit" id="btnKpChatSend">Отправить</button>
+          </form>
+        </div>
+
         <div class="grid-2">
           <div class="card">
             <h2>Загрузить ТЗ</h2>
-            <p class="muted">Файл технического задания: .docx, .pdf, .xlsx, .xls</p>
+            <p class="muted">Файл: .docx, .pdf, .xlsx, .xls — только разбор позиций, без автопоиска</p>
             <label class="upload-zone" id="uploadZone">
               <input type="file" id="tzFile" accept=".docx,.pdf,.xlsx,.xls" hidden>
               <span class="upload-zone__icon">📄</span>
@@ -57,14 +92,14 @@
               <button class="btn btn--secondary" type="button" id="btnApplyMarkup">Применить</button>
             </div>
             <div class="actions">
-              <button class="btn btn--primary" id="btnProcess" disabled>Обработать ТЗ</button>
+              <button class="btn btn--primary" id="btnProcess" disabled>Расчитать КП</button>
             </div>
           </div>
 
           <div class="card card--summary" id="summaryCard">
-            <h2>Результат</h2>
+            <h2>Сводка</h2>
             <div class="empty-state" id="summaryEmpty">
-              Загрузите ТЗ — здесь появится сводка и таблица позиций.
+              Загрузите ТЗ — сводка и цены появятся после автопоиска в каталогах.
             </div>
             <div class="summary hidden" id="summaryBlock"></div>
           </div>
@@ -94,33 +129,6 @@
           </div>
         </div>
 
-        <div class="card" id="kpChatCard">
-          <div class="chat-header">
-            <h2>Корректировка КП с нейросетью</h2>
-            <p class="muted">Уточните расчёт после формирования: пересчитайте позиции, исключите площадку, считайте по составляющим комплекта и т.д.</p>
-          </div>
-          <div class="kp-chat-hints" id="kpChatHints">
-            <button type="button" class="kp-chat-hint" data-hint="Не используй Ozon в ссылках">Не использовать Ozon</button>
-            <button type="button" class="kp-chat-hint" data-hint="Пересчитай комплекты по составляющим из ТЗ">По составляющим</button>
-            <button type="button" class="kp-chat-hint" data-hint="Пересчитай все позиции заново">Пересчитать всё</button>
-            <button type="button" class="kp-chat-hint" data-hint="Отключи интернет-источник, используй только каталог и прайсы">Без интернета</button>
-          </div>
-          <div class="chat-messages kp-chat-messages" id="kpChatMessages" aria-live="polite">
-            <div class="chat-welcome">
-              <p>Сформируйте КП — здесь можно попросить нейросеть скорректировать результат. Excel обновится автоматически.</p>
-            </div>
-          </div>
-          <form class="chat-compose" id="kpChatForm">
-            <textarea
-              id="kpChatInput"
-              class="input chat-compose__input"
-              rows="2"
-              placeholder="Например: пересчитай позицию 10 по составу, наценка 25%, не используй Wildberries..."
-              autocomplete="off"
-            ></textarea>
-            <button class="btn btn--primary chat-compose__send" type="submit" id="btnKpChatSend">Отправить</button>
-          </form>
-        </div>
       </section>
 
       <section class="panel" id="panel-lookup" data-panel="lookup">
@@ -140,12 +148,12 @@
 
           <div class="chat-main card">
             <div class="chat-header">
-              <h2>Поиск с нейросетью</h2>
-              <p class="muted">Спросите о позиции в каталоге, прайсе или реестре. Пример: <code>термометр лабораторный | цена, остаток</code></p>
+              <h2>Быстрый поиск позиции</h2>
+              <p class="muted">Одна позиция — поиск сразу. Пример: <code>термометр лабораторный | цена, остаток</code></p>
             </div>
             <div class="chat-messages" id="chatMessages" aria-live="polite">
               <div class="chat-welcome">
-                <p>Задайте вопрос о товаре — я поищу в каталоге, прайсах и реестре. Если совпадений нет, подключу нейросеть.</p>
+                <p>Задайте вопрос о товаре — поиск в каталоге, прайсах и реестре выполняется по отправке запроса.</p>
               </div>
             </div>
             <form class="chat-compose" id="chatForm">
@@ -217,6 +225,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260609h"></script>
+  <script src="/app.js?v=20260611g"></script>
 </body>
 </html>

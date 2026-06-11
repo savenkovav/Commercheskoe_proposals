@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from src.config import LOCAL_MATCH_THRESHOLD, WEB_SEARCH_EXACT_THRESHOLD
+from src.services.web_quote_priority import is_search_listing_url
+
 
 @dataclass
 class KpPreferences:
@@ -9,6 +12,7 @@ class KpPreferences:
     disabled_sources: list[str] = field(default_factory=list)
     search_kit_component_links: bool = False
     force_kit_component_pricing: bool = False
+    rules: list[str] = field(default_factory=list)
 
     def merge_ai_patch(self, patch: dict) -> None:
         for platform in patch.get("excluded_platforms_add") or []:
@@ -37,12 +41,18 @@ class KpPreferences:
         if patch.get("force_kit_component_pricing") is False:
             self.force_kit_component_pricing = False
 
+    def add_rule(self, rule_text: str) -> None:
+        text = rule_text.strip()
+        if text and text not in self.rules:
+            self.rules.append(text)
+
     def to_dict(self) -> dict:
         return {
             "excluded_platforms": list(self.excluded_platforms),
             "disabled_sources": list(self.disabled_sources),
             "search_kit_component_links": self.search_kit_component_links,
             "force_kit_component_pricing": self.force_kit_component_pricing,
+            "rules": list(self.rules),
         }
 
 
@@ -51,6 +61,19 @@ def platform_is_excluded(label: str, url: str | None, excluded: list[str]) -> bo
         return False
     haystack = f"{label} {url or ''}".lower()
     return any(token.lower() in haystack for token in excluded if token)
+
+
+def web_quote_meets_match_threshold(quote: object) -> bool:
+    if getattr(quote, "source", None) != "web":
+        return True
+    return float(getattr(quote, "match_score", 0) or 0) >= WEB_SEARCH_EXACT_THRESHOLD
+
+
+def local_quote_meets_match_threshold(quote: object) -> bool:
+    source = str(getattr(quote, "source", "") or "")
+    if source == "web":
+        return web_quote_meets_match_threshold(quote)
+    return float(getattr(quote, "match_score", 0) or 0) >= LOCAL_MATCH_THRESHOLD
 
 
 def filter_comparison_quotes(quotes: list, preferences: KpPreferences) -> list:
@@ -62,12 +85,18 @@ def filter_comparison_quotes(quotes: list, preferences: KpPreferences) -> list:
         if source == "web":
             if "web" in preferences.disabled_sources:
                 continue
+            if not web_quote_meets_match_threshold(quote):
+                continue
+            if is_search_listing_url(getattr(quote, "url", None)):
+                continue
             if platform_is_excluded(
                 getattr(quote, "label", ""),
                 getattr(quote, "url", None),
                 preferences.excluded_platforms,
             ):
                 continue
+        elif not local_quote_meets_match_threshold(quote):
+            continue
         filtered.append(quote)
     return filtered
 

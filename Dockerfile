@@ -16,4 +16,4 @@ ENV PYTHONUNBUFFERED=1
 
 RUN mkdir -p output
 
-CMD ["python", "-m", "src.main"]
+CMD ["python", "-m", "src.web.server"]

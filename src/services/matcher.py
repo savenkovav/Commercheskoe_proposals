@@ -5,8 +5,15 @@ from typing import Optional
 
 from rapidfuzz import fuzz, process
 
-from src.config import EXACT_MATCH_THRESHOLD, SIMILAR_MATCH_THRESHOLD
+from src.config import EXACT_MATCH_THRESHOLD, LOCAL_MATCH_THRESHOLD, SIMILAR_MATCH_THRESHOLD
 from src.services.data_loader import normalize_name
+from src.services.fuzzy_scoring import name_match_score
+from src.services.tz_search import (
+    build_search_queries,
+    is_relevant_match,
+    primary_search_text,
+    relevance_score,
+)
 from src.services.models import (
     CatalogItem,
     MatchResult,
@@ -32,6 +39,7 @@ _CATALOG_DISTINCTIVE_MARKERS = (
     ("натюрморт", "натюрморт"),
     ("натюрмор", "натюрмор"),
     ("растен", "растен"),
+    ("гипсов", "гипсов"),
     ("геометрич", "геометрич"),
     ("фрукт", "фрукт"),
     ("овощ", "овощ"),
@@ -64,6 +72,7 @@ class ItemMatcher:
         payloads: list,
         source: MatchSource,
         limit: int = 5,
+        tz_item: TZItem | None = None,
     ) -> list[FuzzyHit]:
         if not choices:
             return []
@@ -71,14 +80,22 @@ class ItemMatcher:
         results = process.extract(
             query,
             choices,
-            scorer=fuzz.token_set_ratio,
-            limit=limit,
+            scorer=name_match_score,
+            limit=max(limit, 8),
         )
 
         hits: list[FuzzyHit] = []
         for choice, score, idx in results:
             payload = payloads[idx]
-            adjusted_score = self._adjust_score(query, choice, float(score))
+            payload_name = getattr(payload, "name", str(payload))
+            if tz_item and not is_relevant_match(
+                tz_item,
+                payload_name,
+                score=float(score),
+            ):
+                continue
+            adjusted_score = relevance_score(tz_item, payload_name) if tz_item else float(score)
+            adjusted_score = self._adjust_score(query, choice, adjusted_score)
             detail = ""
             if source == MatchSource.PRICE_LIST and isinstance(payload, PriceListItem):
                 detail = f"{payload.supplier} / {payload.sheet} / код {payload.code}"
@@ -89,7 +106,7 @@ class ItemMatcher:
 
             hits.append(
                 FuzzyHit(
-                    name=getattr(payload, "name", str(payload)),
+                    name=payload_name,
                     score=adjusted_score,
                     payload=payload,
                     source=source,
@@ -98,7 +115,32 @@ class ItemMatcher:
             )
 
         hits.sort(key=lambda h: h.score, reverse=True)
-        return hits
+        return hits[:limit]
+
+    def _search_source(
+        self,
+        tz_item: TZItem,
+        choices: list[str],
+        payloads: list,
+        source: MatchSource,
+        limit: int = 5,
+    ) -> list[FuzzyHit]:
+        merged: dict[str, FuzzyHit] = {}
+        for query in build_search_queries(tz_item):
+            norm_query = normalize_name(query)
+            for hit in self._best_fuzzy(
+                norm_query,
+                choices,
+                payloads,
+                source,
+                limit=limit,
+                tz_item=tz_item,
+            ):
+                existing = merged.get(hit.name)
+                if existing is None or hit.score > existing.score:
+                    merged[hit.name] = hit
+        hits = sorted(merged.values(), key=lambda hit: hit.score, reverse=True)
+        return hits[:limit]
 
     @staticmethod
     def _adjust_score(query: str, choice: str, base_score: float) -> float:
@@ -122,24 +164,27 @@ class ItemMatcher:
                 return True
         return False
 
-    def pick_best_hit(self, query: str, hits: list[FuzzyHit]) -> FuzzyHit | None:
+    def pick_best_hit(self, tz_item: TZItem, hits: list[FuzzyHit]) -> FuzzyHit | None:
         if not hits:
             return None
 
         filtered = [
             hit
             for hit in hits
-            if not (
+            if is_relevant_match(tz_item, hit.name, score=hit.score)
+            and not (
                 hit.source == MatchSource.CATALOG
-                and self.is_distinctive_mismatch(query, hit.name)
+                and self.is_distinctive_mismatch(tz_item.name, hit.name)
             )
         ]
-        hits = filtered or hits
+        hits = filtered
+        if not hits:
+            return None
 
         if len(hits) == 1:
             return hits[0]
 
-        norm_query = normalize_name(query)
+        norm_query = normalize_name(primary_search_text(tz_item))
         query_tokens = set(norm_query.split())
 
         def rank_key(hit: FuzzyHit) -> tuple[float, int, int, float, int, int]:
@@ -191,27 +236,24 @@ class ItemMatcher:
         return unique
 
     def find_candidates(self, tz_item: TZItem) -> dict:
-        query = normalize_name(tz_item.name)
-        full_query = normalize_name(f"{tz_item.name} {tz_item.specifications[:200]}")
-
-        catalog_hits = self._best_fuzzy(
-            query, self._catalog_names, self.catalog, MatchSource.CATALOG
+        catalog_hits = self._search_source(
+            tz_item,
+            self._catalog_names,
+            self.catalog,
+            MatchSource.CATALOG,
         )
-        if not catalog_hits or catalog_hits[0].score < SIMILAR_MATCH_THRESHOLD:
-            catalog_hits = self._best_fuzzy(
-                full_query, self._catalog_names, self.catalog, MatchSource.CATALOG
-            )
-
-        registry_hits = self._best_fuzzy(
-            query, self._registry_names, self.registry, MatchSource.REGISTRY
+        registry_hits = self._search_source(
+            tz_item,
+            self._registry_names,
+            self.registry,
+            MatchSource.REGISTRY,
         )
-        price_hits = self._best_fuzzy(
-            query, self._price_names, self.price_lists, MatchSource.PRICE_LIST
+        price_hits = self._search_source(
+            tz_item,
+            self._price_names,
+            self.price_lists,
+            MatchSource.PRICE_LIST,
         )
-        if not price_hits or price_hits[0].score < SIMILAR_MATCH_THRESHOLD:
-            price_hits = self._best_fuzzy(
-                full_query, self._price_names, self.price_lists, MatchSource.PRICE_LIST
-            )
 
         return {
             "catalog": catalog_hits,
@@ -226,7 +268,7 @@ class ItemMatcher:
         for key in ("catalog", "price", "registry"):
             hits = candidates[key]
             if hits:
-                prioritized.append(self.pick_best_hit(tz_item.name, hits) or hits[0])
+                prioritized.append(self.pick_best_hit(tz_item, hits) or hits[0])
 
         if not prioritized:
             return None
@@ -239,7 +281,7 @@ class ItemMatcher:
         if (
             catalog_best
             and not self.is_distinctive_mismatch(tz_item.name, catalog_best.name)
-            and catalog_best.score >= SIMILAR_MATCH_THRESHOLD
+            and catalog_best.score >= LOCAL_MATCH_THRESHOLD
             and isinstance(catalog_best.payload, CatalogItem)
             and catalog_best.payload.cost is not None
             and catalog_best.score >= best.score - 5
@@ -248,8 +290,15 @@ class ItemMatcher:
 
         if self.is_distinctive_mismatch(tz_item.name, best.name):
             return None
+        if not is_relevant_match(tz_item, best.name, score=best.score):
+            return None
 
-        if best.score < SIMILAR_MATCH_THRESHOLD:
+        min_score = (
+            LOCAL_MATCH_THRESHOLD
+            if best.source in (MatchSource.CATALOG, MatchSource.PRICE_LIST)
+            else SIMILAR_MATCH_THRESHOLD
+        )
+        if best.score < min_score:
             return None
 
         status = (
@@ -267,7 +316,7 @@ class ItemMatcher:
 
         if unit_base_price is None and best.source == MatchSource.CATALOG:
             price_hit = candidates["price"][0] if candidates["price"] else None
-            if price_hit and price_hit.score >= SIMILAR_MATCH_THRESHOLD:
+            if price_hit and price_hit.score >= LOCAL_MATCH_THRESHOLD:
                 fallback_price = self._extract_price(price_hit)
                 if fallback_price is not None:
                     unit_base_price = fallback_price
@@ -380,7 +429,7 @@ class ItemMatcher:
 
         if hit.source == MatchSource.CATALOG:
             price_hit = candidates["price"][0] if candidates["price"] else None
-            if price_hit and price_hit.score >= SIMILAR_MATCH_THRESHOLD:
+            if price_hit and price_hit.score >= LOCAL_MATCH_THRESHOLD:
                 return self._extract_price(price_hit)
 
         return None

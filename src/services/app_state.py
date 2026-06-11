@@ -12,7 +12,7 @@ def get_processor() -> ProposalProcessor:
     return _processor
 
 
-def reload_processor(bot_data: dict | None = None) -> int:
+def reload_processor() -> int:
     processor = get_processor()
     processor.reload_catalog()
     processor.reload_registry()

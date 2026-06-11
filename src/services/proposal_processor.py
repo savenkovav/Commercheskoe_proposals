@@ -15,7 +15,7 @@ from src.config import (
     REGISTRY_PATH,
     USE_GOODS_REPORT,
 )
-from src.services.markup_settings import get_markup_percent
+from src.services.pricing_rules import apply_kp_pricing
 from src.services.ai_agent import AIAgent
 from src.services.catalog_structure import CatalogStructure
 from src.services.data_loader import (
@@ -27,7 +27,7 @@ from src.services.data_loader import (
 from src.services.tz_parser import parse_tz
 from src.services.excel_generator import ExcelGenerator
 from src.services.matcher import ItemMatcher
-from src.services.models import MatchResult, MatchStatus, ProposalSummary
+from src.services.models import MatchResult, MatchSource, MatchStatus, ProposalSummary
 from src.services.price_list_manager import PriceListManager, get_price_list_manager
 from src.services.tz_match_service import TZMatchService
 
@@ -104,12 +104,98 @@ class ProposalProcessor:
             self.catalog_structure,
         )
 
+    @staticmethod
+    def stub_results(tz_items: list) -> list[MatchResult]:
+        from src.services.models import MatchResult, MatchSource, MatchStatus
+
+        return [
+            MatchResult(
+                tz_item=item,
+                status=MatchStatus.NOT_FOUND,
+                source=MatchSource.NONE,
+                notes="Ожидает поиска по команде пользователя",
+            )
+            for item in tz_items
+        ]
+
+    @staticmethod
+    def empty_summary(item_count: int) -> ProposalSummary:
+        return ProposalSummary(
+            total_items=item_count,
+            exact_count=0,
+            similar_count=0,
+            not_found_count=item_count,
+            total_cost=0.0,
+            total_base_price=0.0,
+            total_price=0.0,
+            processing_seconds=0.0,
+        )
+
+    def parse_tz_file(self, tz_path: Path) -> list:
+        tz_items = parse_tz(tz_path)
+        if not tz_items:
+            raise ValueError("Не удалось извлечь позиции из ТЗ")
+        return tz_items
+
+    def search_tz_items(
+        self,
+        tz_items: list,
+        use_ai: bool = True,
+        preferences=None,
+        *,
+        include_web: bool = True,
+        numbers: set[int] | None = None,
+    ) -> list[MatchResult]:
+        from src.services.kp_preferences import KpPreferences
+
+        targets = tz_items
+        if numbers is not None:
+            targets = [item for item in tz_items if item.number in numbers]
+
+        prefs = preferences or KpPreferences()
+        if not include_web and "web" not in prefs.disabled_sources:
+            prefs.disabled_sources = [*prefs.disabled_sources, "web"]
+
+        if len(targets) <= 1:
+            results: list[MatchResult] = []
+            for tz_item in targets:
+                result = self.tz_matcher.match_item(
+                    tz_item,
+                    use_ai=use_ai,
+                    preferences=prefs,
+                )
+                self._apply_pricing(result)
+                results.append(result)
+            return results
+
+        workers = min(KP_PARALLEL_WORKERS, len(targets))
+        indexed_results: list[MatchResult | None] = [None] * len(targets)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    self.tz_matcher.match_item,
+                    tz_item,
+                    use_ai,
+                    prefs,
+                ): index
+                for index, tz_item in enumerate(targets)
+            }
+            for future in futures:
+                index = futures[future]
+                result = future.result()
+                self._apply_pricing(result)
+                indexed_results[index] = result
+
+        return [result for result in indexed_results if result is not None]
+
     def process_tz_file(
         self,
         tz_path: Path,
         output_dir: Path | None = None,
         use_ai: bool = True,
         request_number: str = "б/н",
+        *,
+        include_web: bool = True,
     ) -> tuple[Path, ProposalSummary, list[MatchResult], list]:
         start = time.perf_counter()
         tz_items = parse_tz(tz_path)
@@ -160,21 +246,7 @@ class ProposalProcessor:
 
     @staticmethod
     def _apply_pricing(result: MatchResult) -> None:
-        qty = result.tz_item.quantity
-
-        if result.unit_cost is not None:
-            result.total_cost = round(result.unit_cost * qty, 2)
-        else:
-            result.total_cost = None
-
-        if result.unit_base_price is None:
-            result.unit_price = None
-            result.total_price = None
-            return
-
-        multiplier = 1 + get_markup_percent() / 100
-        result.unit_price = round(result.unit_base_price * multiplier, 2)
-        result.total_price = round(result.unit_price * qty, 2)
+        apply_kp_pricing(result)
 
     @staticmethod
     def _build_summary(results: list[MatchResult], elapsed: float) -> ProposalSummary:
@@ -201,16 +273,3 @@ class ProposalProcessor:
             processing_seconds=elapsed,
         )
 
-    @staticmethod
-    def format_summary_text(summary: ProposalSummary) -> str:
-        return (
-            f"📊 *Результат обработки ТЗ*\n\n"
-            f"Всего позиций: *{summary.total_items}*\n"
-            f"✅ Точных совпадений: *{summary.exact_count}*\n"
-            f"⚠️ Похожих (проверить): *{summary.similar_count}*\n"
-            f"❌ Не найдено: *{summary.not_found_count}*\n\n"
-            f"💰 Себестоимость: *{summary.total_cost:,.2f}* ₽\n"
-            f"🏷 Цена без наценки: *{summary.total_base_price:,.2f}* ₽\n"
-            f"📈 Цена КП (+{get_markup_percent()}%): *{summary.total_price:,.2f}* ₽\n"
-            f"⏱ Время: *{summary.processing_seconds:.1f}* сек"
-        ).replace(",", " ")

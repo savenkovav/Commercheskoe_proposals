@@ -511,6 +511,32 @@ body {
   margin-top: 12px;
 }
 
+.assistant-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 0.9rem;
+}
+
+.assistant-mode__label {
+  color: var(--text-muted);
+}
+
+.assistant-mode__value {
+  font-weight: 600;
+}
+
+.assistant-mode__sep {
+  color: var(--text-muted);
+}
+
+.badge--pending {
+  background: rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+}
+
 .kp-chat-hints {
   display: flex;
   flex-wrap: wrap;
@@ -815,6 +841,14 @@ body {
 
 .compare-row--competitor td:first-child {
   color: #c4b5fd;
+}
+
+.compare-row--selected td {
+  background: rgba(196, 181, 253, 0.12);
+}
+
+.compare-table--web {
+  margin-bottom: 12px;
 }
 
 .compare-row--supplier td {

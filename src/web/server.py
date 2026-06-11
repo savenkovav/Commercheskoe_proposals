@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.bot.app_state import get_processor, reload_processor
+from src.services.app_state import get_processor, reload_processor
 from src.config import (
     OUTPUT_DIR,
     PROJECT_ROOT,
@@ -22,8 +24,10 @@ from src.config import (
     WEB_PORT,
 )
 from src.services.kp_chat_service import KpChatService
+from src.services.kp_preferences import KpPreferences
 from src.services.markup_settings import get_markup_percent, set_markup_percent
-from src.services.models import KitComponentLine, MatchResult, MatchStatus, PriceQuote
+from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
+from src.services.web_quote_priority import pick_internet_url
 from src.services.tz_parser import resolve_tz_upload_filename
 from src.services.price_list_manager import get_price_list_manager
 from src.services.product_lookup import (
@@ -95,6 +99,11 @@ def _kit_component_to_dict(line: KitComponentLine) -> dict[str, Any]:
     }
 
 
+def _internet_url_from_result(result: MatchResult) -> str | None:
+    web_quotes = [q for q in result.comparison if q.source == "web"]
+    return pick_internet_url(web_quotes)
+
+
 def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
     return {
         "number": result.tz_item.number,
@@ -122,6 +131,8 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
         "supplier": result.supplier,
         "purchase_date": result.purchase_date,
         "is_kit": result.is_kit,
+        "internet_priced": result.internet_priced,
+        "internet_url": _internet_url_from_result(result),
         "comparison": [_price_quote_to_dict(q) for q in result.comparison],
         "competitors": [_price_quote_to_dict(q) for q in result.competitors],
         "kit_components": [_kit_component_to_dict(k) for k in result.kit_components],
@@ -145,8 +156,23 @@ def _summary_to_dict(summary, filename: str) -> dict[str, Any]:
         "processing_seconds": round(summary.processing_seconds, 1),
         "markup_percent": get_markup_percent(),
         "filename": filename,
-        "download_url": f"/api/files/{filename}",
+        "download_url": None,
     }
+
+
+def _attach_download_info(payload: dict[str, Any], output_path: Path | None) -> None:
+    if (
+        output_path
+        and output_path.name.startswith("KP_")
+        and output_path.suffix == ".xlsx"
+        and output_path.exists()
+    ):
+        payload["has_download"] = True
+        payload["summary"]["filename"] = output_path.name
+        payload["summary"]["download_url"] = f"/api/files/{output_path.name}"
+    else:
+        payload["has_download"] = False
+        payload["summary"]["download_url"] = None
 
 
 def _safe_output_path(filename: str) -> Path:
@@ -183,7 +209,60 @@ def _kp_chat_service() -> KpChatService:
     return KpChatService(get_processor())
 
 
-def _process_tz_path(tz_path: Path, use_ai: bool) -> dict[str, Any]:
+def _parse_tz_path(tz_path: Path, use_ai: bool, *, filename: str = "") -> dict[str, Any]:
+    processor = get_processor()
+    start = time.perf_counter()
+    tz_items = processor.parse_tz_file(tz_path)
+    prefs = KpPreferences()
+    results = processor.search_tz_items(
+        tz_items,
+        use_ai=use_ai,
+        preferences=prefs,
+        include_web=True,
+    )
+    summary = processor._build_summary(results, time.perf_counter() - start)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = OUTPUT_DIR / f"KP_{timestamp}.xlsx"
+    processor.excel.generate(results, summary, output_path)
+
+    session_id = _kp_chat_service().create_session(
+        tz_items,
+        results,
+        summary,
+        output_path,
+        use_ai=use_ai,
+        tz_filename=filename or tz_path.name,
+        parsed_only=False,
+        auto_searched=True,
+    )
+    session = _kp_chat_service().store.get(session_id)
+    welcome = session.chat_history[-1].text if session and session.chat_history else ""
+    payload = {
+        "session_id": session_id,
+        "stage": "exported",
+        "task_mode": "task1",
+        "search_completed": True,
+        "welcome_reply": welcome,
+        "summary": _summary_to_dict(summary, output_path.name),
+        "items": [_match_result_to_dict(r) for r in results],
+        "ai_used": use_ai and processor.ai.enabled,
+        "web_used": any(r.source == MatchSource.WEB for r in results),
+    }
+    _attach_download_info(payload, output_path)
+    return payload
+
+
+def _process_tz_path(
+    tz_path: Path,
+    use_ai: bool,
+    *,
+    parse_only: bool = True,
+    filename: str = "",
+) -> dict[str, Any]:
+    if parse_only:
+        return _parse_tz_path(tz_path, use_ai, filename=filename)
+
     processor = get_processor()
     output_path, summary, results, tz_items = processor.process_tz_file(
         tz_path,
@@ -195,14 +274,21 @@ def _process_tz_path(tz_path: Path, use_ai: bool) -> dict[str, Any]:
         summary,
         output_path,
         use_ai=use_ai,
+        tz_filename=filename or tz_path.name,
+        parsed_only=False,
     )
-    return {
+    payload = {
         "session_id": session_id,
+        "stage": "searched",
+        "task_mode": "task1_task2",
+        "search_completed": True,
         "summary": _summary_to_dict(summary, output_path.name),
         "items": [_match_result_to_dict(r) for r in results],
         "ai_used": use_ai and processor.ai.enabled,
         "web_used": USE_AI_INTERNET_SEARCH and use_ai and processor.ai.enabled,
     }
+    _attach_download_info(payload, output_path)
+    return payload
 
 
 def _kp_chat_response(chat_result: dict[str, Any], session_id: str) -> dict[str, Any]:
@@ -210,17 +296,23 @@ def _kp_chat_response(chat_result: dict[str, Any], session_id: str) -> dict[str,
     summary = chat_result["summary"]
     results = chat_result["results"]
     output_path = chat_result["output_path"]
-    return {
+    filename = output_path.name if output_path.name != "pending.xlsx" else "pending.xlsx"
+    payload = {
         "session_id": session_id,
         "reply": chat_result["reply"],
         "preferences": chat_result["preferences"],
         "markup_percent": chat_result["markup_percent"],
         "actions": chat_result["actions"],
-        "summary": _summary_to_dict(summary, output_path.name),
+        "stage": chat_result.get("stage", "intake"),
+        "task_mode": chat_result.get("task_mode", "task1"),
+        "search_completed": chat_result.get("search_completed", False),
+        "summary": _summary_to_dict(summary, filename),
         "items": [_match_result_to_dict(r) for r in results],
         "ai_used": processor.ai.enabled,
         "web_used": processor.ai.enabled,
     }
+    _attach_download_info(payload, output_path)
+    return payload
 
 
 @app.get("/api/status")
@@ -266,11 +358,11 @@ def api_set_markup(body: MarkupUpdate) -> dict[str, float]:
 
 
 @app.post("/api/process/demo")
-def api_process_demo(use_ai: bool = True) -> dict[str, Any]:
+def api_process_demo(use_ai: bool = True, parse_only: bool = True) -> dict[str, Any]:
     if not DEMO_TZ_PATH.exists():
         raise HTTPException(status_code=404, detail="Демо-файл data/sample_tz.docx не найден")
     try:
-        return _process_tz_path(DEMO_TZ_PATH, use_ai=use_ai)
+        return _process_tz_path(DEMO_TZ_PATH, use_ai=use_ai, parse_only=parse_only)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -280,11 +372,6 @@ def api_process_demo(use_ai: bool = True) -> dict[str, Any]:
 
 @app.post("/api/kp/chat")
 def api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
-    if not get_processor().ai.enabled:
-        raise HTTPException(
-            status_code=503,
-            detail="Чат корректировки требует настроенный PROXYAPI_API_KEY",
-        )
     try:
         chat_result = _kp_chat_service().chat(body.session_id, body.message)
         return _kp_chat_response(chat_result, body.session_id)
@@ -299,6 +386,7 @@ def api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
 async def api_process_upload(
     file: UploadFile = File(...),
     use_ai: bool = Form(default=True),
+    parse_only: bool = Form(default=True),
 ) -> dict[str, Any]:
     try:
         content = await file.read()
@@ -310,7 +398,12 @@ async def api_process_upload(
         with tempfile.TemporaryDirectory() as tmpdir:
             tz_path = Path(tmpdir) / filename
             tz_path.write_bytes(content)
-            return _process_tz_path(tz_path, use_ai=use_ai)
+            return _process_tz_path(
+                tz_path,
+                use_ai=use_ai,
+                parse_only=parse_only,
+                filename=filename,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

@@ -126,6 +126,7 @@ class MatchResult:
     kit_components: list[KitComponentLine] = field(default_factory=list)
     price_list_check: Optional[PriceQuote] = None
     is_kit: bool = False
+    internet_priced: bool = False
 
 
 @dataclass

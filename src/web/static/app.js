@@ -31,10 +31,44 @@ const escapeHtml = (value) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 
-const statusBadge = (status) => {
+const statusBadge = (status, notes = "") => {
+  if (notes && notes.includes("Ожидает поиска")) {
+    return `<span class="badge badge--pending">Ожидает</span>`;
+  }
   const labels = { exact: "Точно", similar: "Похоже", not_found: "Не найдено" };
   return `<span class="badge badge--${status}">${labels[status] || status}</span>`;
 };
+
+const taskModeLabel = (mode) => {
+  if (mode === "task1_task2") return "Задача 1+2";
+  if (mode === "task1") return "Задача 1";
+  return "не выбрана";
+};
+
+const hasKpDownload = (data) => {
+  const s = data?.summary;
+  if (!s?.download_url) return false;
+  return Boolean(data?.has_download) || (s.filename || "").startsWith("KP_");
+};
+
+const stageLabel = (stage, searchCompleted) => {
+  const map = {
+    intake: "ожидание ТЗ",
+    parsed: "ТЗ разобрано",
+    searched: "поиск выполнен",
+    exported: "Excel готов",
+  };
+  if (!searchCompleted && stage === "parsed") return "поиск не запускался";
+  return map[stage] || stage;
+};
+
+function updateAssistantMode(data) {
+  const taskEl = $("#taskModeLabel");
+  const stageEl = $("#stageLabel");
+  if (!taskEl || !stageEl) return;
+  taskEl.textContent = taskModeLabel(data?.task_mode);
+  stageEl.textContent = stageLabel(data?.stage, data?.search_completed);
+}
 
 function showToast(msg, isError = false) {
   const el = $("#toast");
@@ -207,8 +241,90 @@ const SOURCE_LABELS = {
   none: "—",
 };
 
+const LOCAL_MIN_MATCH_PERCENT = 95;
+const WEB_MIN_MATCH_PERCENT = 100;
+
+function isMarketplaceUrl(url) {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  return (
+    lower.includes("ozon.ru") ||
+    lower.includes("wildberries.ru") ||
+    lower.includes("market.yandex.ru")
+  );
+}
+
+function isSearchListingUrl(url) {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  return (
+    lower.includes("/search?") ||
+    lower.includes("/search/") ||
+    lower.includes("search?text=") ||
+    lower.includes("catalog/0/search") ||
+    lower.includes("?q=")
+  );
+}
+
+function isProductPageUrl(url) {
+  if (!url || isSearchListingUrl(url)) return false;
+  const lower = url.toLowerCase();
+  if (lower.includes("ozon.ru/product/")) return true;
+  if (lower.includes("market.yandex.ru/product/")) return true;
+  if (/wildberries\.ru\/catalog\/\d+\/detail\.aspx/i.test(lower)) return true;
+  if (isMarketplaceUrl(url)) return false;
+  return lower.startsWith("http://") || lower.startsWith("https://");
+}
+
+function webQuoteRank(q) {
+  const url = q.url || "";
+  const score = q.match_score || 0;
+  const hasPrice = q.price != null || q.cost != null;
+  const marketplace = isMarketplaceUrl(url);
+  const productPage = isProductPageUrl(url);
+  const searchPage = isSearchListingUrl(url);
+  let tier = 9;
+  if (!searchPage && hasPrice && score >= WEB_MIN_MATCH_PERCENT) {
+    if (!marketplace) tier = 0;
+    else if (productPage) tier = 1;
+    else tier = 2;
+  }
+  return [tier, productPage ? 0 : 1, -score, hasPrice ? 0 : 1];
+}
+
+function quoteMeetsMatchThreshold(q) {
+  if (!q || q.match_score == null) return q?.source !== "web";
+  if (q.source === "web") return q.match_score >= WEB_MIN_MATCH_PERCENT;
+  return q.match_score >= LOCAL_MIN_MATCH_PERCENT;
+}
+
+function collectWebEntries(item) {
+  const seen = new Set();
+  const rows = [];
+  for (const q of [...(item.comparison || []), ...(item.competitors || [])]) {
+    if (q.source !== "web") continue;
+    if (!quoteMeetsMatchThreshold(q)) continue;
+    if (isSearchListingUrl(q.url)) continue;
+    const key = q.url || `${q.label}|${q.matched_name}|${q.price}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(q);
+  }
+  rows.sort((a, b) => {
+    const ka = webQuoteRank(a);
+    const kb = webQuoteRank(b);
+    for (let i = 0; i < ka.length; i += 1) {
+      if (ka[i] !== kb[i]) return ka[i] - kb[i];
+    }
+    return 0;
+  });
+  return rows;
+}
+
 function hasItemDetails(item) {
   return (
+    item.internet_priced ||
+    collectWebEntries(item).length > 0 ||
     item.status === "similar" ||
     item.status === "not_found" ||
     (item.comparison && item.comparison.length) ||
@@ -221,12 +337,19 @@ function hasItemDetails(item) {
 }
 
 function renderPrimaryMatchBlock(item) {
+  const webEntries = collectWebEntries(item);
   const lines = [
+    item.internet_priced
+      ? `<strong>Источник:</strong> Интернет · цена КП −5% от найденной`
+      : null,
     item.matched_name
       ? `<strong>Выбрано:</strong> ${escapeHtml(item.matched_name)} (${Math.round(item.match_score || 0)}%)`
       : null,
-    item.source
+    !item.internet_priced && item.source
       ? `<strong>Источник:</strong> ${escapeHtml(SOURCE_LABELS[item.source] || item.source)}`
+      : null,
+    item.internet_url
+      ? `<strong>Ссылка:</strong> <a href="${escapeHtml(item.internet_url)}" target="_blank" rel="noopener">${escapeHtml(item.internet_url)}</a>`
       : null,
     item.source_detail
       ? `<strong>Детали:</strong> ${escapeHtml(item.source_detail)}`
@@ -246,25 +369,84 @@ function renderPrimaryMatchBlock(item) {
   return `<div class="compare-block__primary">${lines.join("<br>")}</div>`;
 }
 
+function renderWebComparisonRows(webEntries, item) {
+  if (!webEntries.length) return "";
+  const rows = webEntries
+    .map((q) => {
+      const webPrice = q.price ?? q.cost;
+      const isSelected =
+        item.internet_priced &&
+        item.unit_base_price != null &&
+        webPrice != null &&
+        Math.abs(webPrice - item.unit_base_price) < 0.01;
+      const kpPrice = isSelected
+        ? item.unit_price
+        : webPrice != null && item.internet_priced
+          ? Math.round(webPrice * 0.95 * 100) / 100
+          : webPrice;
+      return `
+      <tr class="compare-row--competitor${isSelected ? " compare-row--selected" : ""}">
+        <td>${escapeHtml(q.label || "Интернет")}</td>
+        <td>${escapeHtml(q.matched_name || "—")}</td>
+        <td>${fmtMoney(webPrice)}</td>
+        <td>${fmtMoney(kpPrice)}</td>
+        <td>—</td>
+        <td>—</td>
+        <td>${q.match_score ? `${Math.round(q.match_score)}%` : "—"}</td>
+        <td>${
+          q.url
+            ? `<a href="${escapeHtml(q.url)}" target="_blank" rel="noopener">${escapeHtml(q.url)}</a>`
+            : escapeHtml(q.notes || "—")
+        }</td>
+      </tr>`;
+    })
+    .join("");
+  return `
+      <h4 class="compare-block__subtitle">Интернет</h4>
+      <table class="compare-table compare-table--web">
+        <thead>
+          <tr>
+            <th>Источник</th>
+            <th>Найдено</th>
+            <th>Цена в интернете</th>
+            <th>Цена КП</th>
+            <th>Поставщик</th>
+            <th>Дата покупки</th>
+            <th>Совпадение</th>
+            <th>Ссылка / примечание</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+}
+
 function renderComparisonTable(item) {
-  const comparison = item.comparison || [];
+  const comparison = (item.comparison || []).filter(
+    (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
+  );
+  const webEntries = collectWebEntries(item);
   const primaryBlock = renderPrimaryMatchBlock(item);
-  if (!comparison.length && !(item.kit_components || []).length && !primaryBlock) {
+  if (
+    !comparison.length &&
+    !webEntries.length &&
+    !(item.kit_components || []).length &&
+    !primaryBlock
+  ) {
     return "";
   }
 
   const comparisonRows = comparison
     .map(
       (q) => `
-      <tr class="${q.source === "web" ? "compare-row--competitor" : ""}">
+      <tr>
         <td>${escapeHtml(q.label)}</td>
         <td>${escapeHtml(q.matched_name || "—")}</td>
-        <td>${fmtMoney(q.cost ?? (q.source === "web" ? null : q.price))}</td>
+        <td>${fmtMoney(q.cost ?? q.price)}</td>
         <td>${fmtMoney(q.price)}</td>
         <td>${escapeHtml(q.supplier || "—")}</td>
         <td>${escapeHtml(q.purchase_date || "—")}</td>
         <td>${q.match_score ? `${Math.round(q.match_score)}%` : "—"}</td>
-        <td>${q.url ? `<a href="${escapeHtml(q.url)}" target="_blank" rel="noopener">${escapeHtml(q.label)}</a>` : escapeHtml(q.notes || "")}</td>
+        <td>${escapeHtml(q.notes || "—")}</td>
       </tr>`,
     )
     .join("");
@@ -311,6 +493,7 @@ function renderComparisonTable(item) {
     <div class="compare-block">
       ${primaryBlock}
       ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
+      ${renderWebComparisonRows(webEntries, item)}
       ${
         comparisonRows
           ? `
@@ -365,7 +548,7 @@ function renderKpChatMessages() {
   if (!kpChatMessages.length) {
     box.innerHTML = `
       <div class="chat-welcome">
-        <p>Сформируйте КП — здесь можно попросить нейросеть скорректировать результат. Excel обновится автоматически.</p>
+        <p>Я КП-Ассистент. Загрузите ТЗ или напишите запрос. Поиск в каталогах и прайсах начну только по вашей команде.</p>
       </div>`;
     return;
   }
@@ -386,11 +569,22 @@ function renderKpChatMessages() {
             <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
           </div>`;
       }
-      const actions = msg.actions?.reprocessed_items?.length
-        ? `<div class="kp-chat-actions">Пересчитаны позиции: ${msg.actions.reprocessed_items.join(", ")}</div>`
-        : msg.actions?.reprocess_all
-          ? `<div class="kp-chat-actions">Пересчитаны все позиции</div>`
-          : "";
+      let actions = "";
+      if (msg.actions?.run_local_search) {
+        actions += `<div class="kp-chat-actions">Выполнен поиск по внутренним источникам</div>`;
+      }
+      if (msg.actions?.run_web_search) {
+        actions += `<div class="kp-chat-actions">Добавлен анализ конкурентов</div>`;
+      }
+      if (msg.actions?.generate_excel) {
+        actions += `<div class="kp-chat-actions">Excel обновлён</div>`;
+      }
+      if (msg.download_url) {
+        actions += `<div class="kp-chat-actions"><a class="btn btn--secondary btn--small" href="${msg.download_url}" download>Скачать Excel</a></div>`;
+      }
+      if (msg.actions?.reprocessed_items?.length) {
+        actions += `<div class="kp-chat-actions">Позиции: ${msg.actions.reprocessed_items.join(", ")}</div>`;
+      }
       return `
         <div class="chat-msg chat-msg--assistant">
           <div class="chat-msg__bubble">${escapeHtml(msg.text)}${actions}</div>
@@ -405,7 +599,7 @@ function renderKpChatMessages() {
       `<div class="chat-msg chat-msg--assistant">
         <div class="chat-msg__bubble">
           <span class="chat-msg__typing"><span></span><span></span><span></span></span>
-          Корректирую КП...
+          Обрабатываю запрос...
         </div>
       </div>`,
     );
@@ -419,11 +613,11 @@ function renderKpChatMessages() {
 function updateKpChatFormState() {
   const input = $("#kpChatInput");
   const sendBtn = $("#btnKpChatSend");
-  const enabled = Boolean(kpSessionId) && !kpChatLoading;
+  const enabled = !kpChatLoading;
   if (input) input.disabled = !enabled;
   if (sendBtn) sendBtn.disabled = !enabled;
   $("#kpChatHints")?.querySelectorAll(".kp-chat-hint").forEach((btn) => {
-    btn.disabled = !enabled;
+    btn.disabled = !enabled || !kpSessionId;
   });
 }
 
@@ -437,10 +631,10 @@ function resetKpChat(sessionId) {
 
 async function sendKpChatMessage(text) {
   const message = text.trim();
-  if (!message || kpChatLoading || !kpSessionId) return;
+  if (!message || kpChatLoading) return;
 
-  if (!cachedStatus?.ai_enabled) {
-    showToast("Для чата нужен настроенный PROXYAPI_API_KEY", true);
+  if (!kpSessionId) {
+    showToast("Сначала загрузите ТЗ в чат", true);
     return;
   }
 
@@ -465,7 +659,13 @@ async function sendKpChatMessage(text) {
       setMarkupInput(data.markup_percent);
     }
     renderProcessResult(data);
-    showToast("КП обновлено");
+    if (data.actions?.generate_excel) {
+      showToast("Excel сформирован");
+    } else if (data.actions?.run_local_search) {
+      showToast("Поиск выполнен");
+    } else {
+      showToast("Ответ получен");
+    }
   } catch (e) {
     kpChatMessages.push({ role: "error", text: e.message, ts: Date.now() });
     showToast(e.message, true);
@@ -479,6 +679,8 @@ async function sendKpChatMessage(text) {
 function initKpChat() {
   const form = $("#kpChatForm");
   if (!form) return;
+
+  updateKpChatFormState();
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -504,10 +706,20 @@ function initKpChat() {
 }
 
 function renderProcessResult(data) {
+  updateAssistantMode(data);
   const s = data.summary;
-  $("#summaryEmpty").classList.add("hidden");
-  $("#summaryBlock").classList.remove("hidden");
-  $("#summaryBlock").innerHTML = `
+  const parsedOnly = !data.search_completed;
+
+  if (parsedOnly) {
+    $("#summaryEmpty").classList.remove("hidden");
+    $("#summaryBlock").classList.add("hidden");
+    $("#summaryEmpty").textContent = `ТЗ разобрано: ${s.total_items} позиций. Запустите поиск через чат.`;
+  } else {
+    $("#summaryEmpty").classList.add("hidden");
+    $("#summaryBlock").classList.remove("hidden");
+  }
+
+  if (!parsedOnly) $("#summaryBlock").innerHTML = `
     <div class="summary-metrics">
       <div class="metric"><div class="metric__label">Позиций</div><div class="metric__value">${s.total_items}</div></div>
       <div class="metric metric--success"><div class="metric__label">Точных</div><div class="metric__value">${s.exact_count}</div></div>
@@ -517,7 +729,7 @@ function renderProcessResult(data) {
       <div class="metric"><div class="metric__label">Цена без наценки</div><div class="metric__value">${fmtMoney(s.total_base_price)}</div></div>
       <div class="metric"><div class="metric__label">Цена КП</div><div class="metric__value">${fmtMoney(s.total_price)}</div></div>
     </div>
-    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · AI-подбор: ${data.ai_used ? "да" : "нет"} · Интернет: ${data.web_used ? "да" : "нет"}</p>
+    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}</p>
   `;
 
   $("#resultsCard").classList.remove("hidden");
@@ -534,11 +746,23 @@ function renderProcessResult(data) {
       <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
         <td>${item.number}</td>
         <td>${escapeHtml(item.name)}${hasDetails ? ' <span class="tz-row__hint">▼</span>' : ""}</td>
-        <td>${escapeHtml(item.matched_name || "—")}<br><small class="muted">${Math.round(item.match_score)}%</small></td>
-        <td>${statusBadge(item.status)}</td>
+        <td>${escapeHtml(item.matched_name || "—")}${
+          item.source && item.source !== "none"
+            ? `<br><small class="muted">${escapeHtml(SOURCE_LABELS[item.source] || item.source)}</small>`
+            : ""
+        }${
+          item.internet_priced
+            ? '<br><small class="muted">интернет −5%</small>'
+            : `<br><small class="muted">${Math.round(item.match_score)}%</small>`
+        }${
+          item.internet_url
+            ? `<br><a class="muted" href="${escapeHtml(item.internet_url)}" target="_blank" rel="noopener">ссылка</a>`
+            : ""
+        }</td>
+        <td>${statusBadge(item.status, item.notes)}</td>
         <td>${fmtQty(item.quantity, item.unit)}</td>
-        <td>${fmtMoney(unitPrice)}</td>
-        <td>${fmtMoney(item.unit_price)}</td>
+        <td>${fmtMoney(unitPrice)}${item.internet_priced ? '<br><small class="muted">интернет</small>' : ""}</td>
+        <td>${fmtMoney(item.unit_price)}${item.internet_priced ? '<br><small class="muted">−5%</small>' : ""}</td>
         <td>${fmtMoney(lineTotalKp)}</td>
       </tr>
       ${
@@ -559,14 +783,37 @@ function renderProcessResult(data) {
     });
   });
 
+  tbody.querySelectorAll(".tz-row--expandable").forEach((row) => {
+    const item = data.items.find((entry) => String(entry.number) === row.cells[0]?.textContent);
+    if (!item || (!item.internet_priced && !collectWebEntries(item).length)) return;
+    const detail = document.getElementById(row.dataset.detail);
+    if (!detail) return;
+    detail.classList.remove("hidden");
+    row.classList.add("tz-row--open");
+  });
+
   const btn = $("#downloadBtn");
-  btn.href = `${s.download_url}?t=${Date.now()}`;
-  btn.download = s.filename;
+  if (btn) {
+    if (hasKpDownload(data)) {
+      const url = `${s.download_url}?t=${Date.now()}`;
+      btn.href = url;
+      btn.download = s.filename;
+      btn.classList.remove("hidden");
+      btn.removeAttribute("aria-disabled");
+    } else {
+      btn.href = "#";
+      btn.classList.add("hidden");
+      btn.setAttribute("aria-disabled", "true");
+    }
+  }
 
   if (data.session_id) {
     if (data.session_id !== kpSessionId) {
       kpSessionId = data.session_id;
       kpChatMessages = [];
+      if (data.welcome_reply) {
+        kpChatMessages.push({ role: "assistant", text: data.welcome_reply, ts: Date.now() });
+      }
     }
     updateKpChatFormState();
     renderKpChatMessages();
@@ -583,15 +830,16 @@ async function processUpload() {
     return;
   }
 
-  showOverlay("Ищу позиции в каталоге и прайсах...");
+  showOverlay("Читаю ТЗ и ищу в каталогах...");
   const form = new FormData();
   form.append("file", file);
   form.append("use_ai", $("#useAiUpload").checked);
+  form.append("parse_only", "true");
 
   try {
     const data = await api("/api/process/upload", { method: "POST", body: form });
     renderProcessResult(data);
-    showToast("КП сформировано");
+    showToast(data.search_completed ? "ТЗ обработано, цены подобраны" : "ТЗ загружено в чат");
     fileInput.value = "";
     $("#fileName").textContent = "";
     $("#btnProcess").disabled = true;

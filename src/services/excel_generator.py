@@ -17,8 +17,9 @@ from src.config import (
     DELIVERY_TERMS,
     PAYMENT_TERMS,
 )
-from src.services.kp_preferences import KpPreferences, competitor_link_urls
+from src.services.kp_preferences import KpPreferences, competitor_link_urls, filter_comparison_quotes
 from src.services.markup_settings import get_markup_percent
+from src.services.pricing_rules import pricing_adjustment_label, uses_web_discount_pricing
 from src.services.models import KitComponentLine, MatchResult, MatchStatus, ProposalSummary
 
 STATUS_LABELS = {
@@ -80,7 +81,12 @@ class ExcelGenerator:
     ) -> Path:
         wb = Workbook()
 
-        self._build_kp_sheet(wb.active, results, request_number, preferences)
+        self._build_kp_sheet(wb.active, results, request_number)
+        self._build_kp_specs_links_sheet(
+            wb.create_sheet("Характеристики и ссылки"),
+            results,
+            preferences,
+        )
         self._build_detail_sheet(
             wb.create_sheet("Детализация"), results, summary, preferences
         )
@@ -97,12 +103,10 @@ class ExcelGenerator:
         ws,
         results: list[MatchResult],
         request_number: str,
-        preferences: KpPreferences | None = None,
     ) -> None:
         ws.title = "КП"
         today = datetime.now().strftime("%d.%m.%Y")
-        markup = get_markup_percent()
-        last_col = 10
+        last_col = 6
 
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
         ws["A1"] = "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ"
@@ -124,14 +128,10 @@ class ExcelGenerator:
         headers = [
             "№",
             "Наименование товара",
-            "Характеристики (из ТЗ)",
             "Ед. изм.",
             "Количество",
-            f"Цена (+{markup}%)",
+            "Цена КП",
             "Стоимость",
-            "Ссылка 1",
-            "Ссылка 2",
-            "Ссылка 3",
         ]
         header_row = 6
         for col, header in enumerate(headers, start=1):
@@ -158,7 +158,6 @@ class ExcelGenerator:
             values = [
                 result.tz_item.number,
                 name,
-                _specs_preview(result.tz_item.specifications),
                 result.tz_item.unit,
                 qty,
                 unit_price if unit_price else "—",
@@ -168,24 +167,12 @@ class ExcelGenerator:
                 cell = ws.cell(row=row, column=col, value=value)
                 cell.border = _thin_border()
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
-                if col in (6, 7) and isinstance(value, (int, float)):
+                if col in (5, 6) and isinstance(value, (int, float)):
                     cell.number_format = '#,##0.00'
 
-            links = competitor_link_urls(
-                result.comparison,
-                result.tz_item.name,
-                preferences,
-                limit=3,
-            )
-            for offset, url in enumerate(links):
-                _write_hyperlink(ws, row, 8 + offset, url)
-            for col in range(8 + len(links), 11):
-                cell = ws.cell(row=row, column=col, value="—")
-                cell.border = _thin_border()
-
         total_row = header_row + len(results) + 1
-        ws.cell(row=total_row, column=6, value="Всего:").font = Font(bold=True)
-        total_cell = ws.cell(row=total_row, column=7, value=_money(total_price))
+        ws.cell(row=total_row, column=5, value="Всего:").font = Font(bold=True)
+        total_cell = ws.cell(row=total_row, column=6, value=_money(total_price))
         total_cell.font = Font(bold=True)
         total_cell.number_format = '#,##0.00'
 
@@ -203,7 +190,71 @@ class ExcelGenerator:
         ws[f"A{terms_row + 1}"] = f"Срок поставки: {DELIVERY_DAYS}"
         ws[f"A{terms_row + 2}"] = f"Доставка: {DELIVERY_TERMS}"
 
-        widths = [6, 36, 42, 10, 12, 16, 16, 28, 28, 28]
+        widths = [6, 42, 10, 12, 16, 16]
+        for col_idx, width in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    def _build_kp_specs_links_sheet(
+        self,
+        ws,
+        results: list[MatchResult],
+        preferences: KpPreferences | None = None,
+    ) -> None:
+        ws.title = "Характеристики и ссылки"
+        last_col = 6
+
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+        ws["A1"] = "ХАРАКТЕРИСТИКИ И ССЫЛКИ К КП"
+        ws["A1"].font = Font(bold=True, size=12)
+        ws["A1"].alignment = Alignment(horizontal="center")
+
+        headers = [
+            "№",
+            "Наименование товара",
+            "Характеристики (из ТЗ)",
+            "Ссылка 1",
+            "Ссылка 2",
+            "Ссылка 3",
+        ]
+        header_row = 3
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=header_row, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.fill = PatternFill("solid", fgColor="D9E1F2")
+            cell.border = _thin_border()
+
+        for idx, result in enumerate(results, start=1):
+            row = header_row + idx
+            name = result.tz_item.name
+            if result.status == MatchStatus.SIMILAR:
+                name = f"{name} *"
+            elif result.status == MatchStatus.NOT_FOUND:
+                name = f"{name} (не подобрано)"
+
+            values = [
+                result.tz_item.number,
+                name,
+                _specs_preview(result.tz_item.specifications, limit=2000),
+            ]
+            for col, value in enumerate(values, start=1):
+                cell = ws.cell(row=row, column=col, value=value)
+                cell.border = _thin_border()
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+            links = competitor_link_urls(
+                result.comparison,
+                result.tz_item.name,
+                preferences,
+                limit=3,
+            )
+            for offset, url in enumerate(links):
+                _write_hyperlink(ws, row, 4 + offset, url)
+            for col in range(4 + len(links), 7):
+                cell = ws.cell(row=row, column=col, value="—")
+                cell.border = _thin_border()
+
+        widths = [6, 36, 48, 28, 28, 28]
         for col_idx, width in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(col_idx)].width = width
 
@@ -337,6 +388,12 @@ class ExcelGenerator:
                 limit=1,
             )
             competitor_url = links[0] if links else None
+            if uses_web_discount_pricing(result):
+                notes = (
+                    f"{notes} | {pricing_adjustment_label(result)}"
+                    if notes
+                    else pricing_adjustment_label(result)
+                )
 
         values = [
             number,
@@ -545,7 +602,7 @@ class ExcelGenerator:
 
         row = 2
         for result in results:
-            quotes = list(result.comparison)
+            quotes = filter_comparison_quotes(list(result.comparison), KpPreferences())
             if not quotes and not result.kit_components:
                 continue
 

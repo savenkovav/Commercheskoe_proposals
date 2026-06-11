@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import logging
 
-from rapidfuzz import fuzz, process
+from rapidfuzz import process
 
-from src.config import EXACT_MATCH_THRESHOLD, SIMILAR_MATCH_THRESHOLD, USE_AI_INTERNET_SEARCH
+from src.config import (
+    EXACT_MATCH_THRESHOLD,
+    LOCAL_MATCH_THRESHOLD,
+    SIMILAR_MATCH_THRESHOLD,
+    USE_AI_INTERNET_SEARCH,
+    WEB_PRICE_DISCOUNT_PERCENT,
+    WEB_SEARCH_ENABLED,
+    WEB_SEARCH_EXACT_THRESHOLD,
+)
 from src.services.ai_agent import AIAgent
 from src.services.catalog_structure import CatalogStructure
 from src.services.data_loader import normalize_name
@@ -15,7 +23,20 @@ from src.services.competitor_urls import (
     competitor_urls_for_item,
     resolve_competitor_url,
 )
+from src.services.fuzzy_scoring import name_match_score
 from src.services.kit_spec_parser import parse_kit_components_from_specs
+from src.services.tz_search import is_relevant_match, primary_search_text, relevance_score
+from src.services.web_quote_priority import (
+    is_acceptable_web_pricing_quote,
+    is_marketplace_url,
+    is_product_page_url,
+    is_search_listing_url,
+    pick_best_web_priced_quote,
+    pick_internet_url,
+    sort_web_quotes,
+    web_quote_rank_key,
+)
+from src.services.web_search_service import WebSearchService
 from src.services.matcher import FuzzyHit, ItemMatcher
 from src.services.models import (
     CatalogItem,
@@ -47,6 +68,7 @@ class TZMatchService:
         self.catalog = catalog
         self.goods_report = goods_report
         self.catalog_structure = catalog_structure
+        self.web_search = WebSearchService()
         self._goods_names = [normalize_name(item.name) for item in goods_report]
 
     def match_item(
@@ -59,14 +81,19 @@ class TZMatchService:
             search_kit_component_links=SEARCH_KIT_COMPONENT_LINKS,
         )
         candidates = self.matcher.find_candidates(tz_item)
-        catalog_hit = self._pick_hit(candidates["catalog"], tz_item.name)
+        catalog_hit = self._pick_hit(candidates["catalog"], tz_item)
+        direct_catalog = self._find_direct_catalog_hit(tz_item)
+        if direct_catalog and (
+            catalog_hit is None or direct_catalog.score > catalog_hit.score
+        ):
+            catalog_hit = direct_catalog
         if catalog_hit and self.matcher.is_distinctive_mismatch(
             tz_item.name, catalog_hit.name
         ):
             catalog_hit = None
-        price_hit = self._pick_hit(candidates["price"], tz_item.name)
-        registry_hit = self._pick_hit(candidates["registry"], tz_item.name)
-        goods_hit = self._match_goods_report(tz_item.name)
+        price_hit = self._pick_hit(candidates["price"], tz_item)
+        registry_hit = self._pick_hit(candidates["registry"], tz_item)
+        goods_hit = self._match_goods_report(tz_item)
 
         comparison: list[PriceQuote] = []
         kit_components: list[KitComponentLine] = []
@@ -74,6 +101,12 @@ class TZMatchService:
         purchase_date: str | None = None
         is_kit = False
         tz_kit_names = parse_kit_components_from_specs(tz_item.specifications)
+        if (
+            catalog_hit
+            and is_relevant_match(tz_item, catalog_hit.name, score=catalog_hit.score)
+            and relevance_score(tz_item, catalog_hit.name) >= LOCAL_MATCH_THRESHOLD
+        ):
+            tz_kit_names = []
 
         if tz_kit_names:
             kit_components = self._build_kit_from_tz_components(tz_kit_names)
@@ -113,8 +146,17 @@ class TZMatchService:
             ):
                 comparison.append(extra_price)
 
+        local_miss = not self._has_confident_local_match(
+            tz_item,
+            catalog_hit,
+            price_hit,
+            goods_hit,
+        )
         web_quote, competitors = self._fetch_internet_comparison(
-            tz_item, prefs, use_ai=use_ai
+            tz_item,
+            prefs,
+            use_ai=use_ai,
+            local_miss=local_miss,
         )
         comparison.extend(competitors)
 
@@ -127,6 +169,7 @@ class TZMatchService:
             kit_components,
             use_ai=use_ai,
             candidates=candidates,
+            local_miss=local_miss,
         )
 
         if primary.supplier is None and supplier:
@@ -156,6 +199,8 @@ class TZMatchService:
                     primary.unit_cost = agg_cost
                 if agg_price is not None:
                     primary.unit_base_price = agg_price
+                if tz_kit_names and (agg_cost is not None or agg_price is not None):
+                    self._apply_kit_composition_metadata(primary)
 
         if tz_kit_names and primary.is_kit:
             priced = sum(
@@ -171,25 +216,225 @@ class TZMatchService:
         primary.comparison = filter_web_quotes(primary.comparison, prefs)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
         self._finalize_result_pricing(primary, use_ai=use_ai, prefs=prefs)
+        self._ensure_internet_comparison(primary)
+        self._normalize_result_metadata(primary)
+        if local_miss:
+            self._ensure_mandatory_internet_pricing(primary, prefs, use_ai=use_ai)
+        primary.comparison = filter_web_quotes(primary.comparison, prefs)
+        primary.comparison = sort_web_quotes(primary.comparison)
+        primary.competitors = [q for q in primary.comparison if q.source == "web"]
+        self._ensure_internet_comparison(primary)
+        self._promote_internet_status(primary)
+        primary.competitors = [q for q in primary.comparison if q.source == "web"]
         return primary
+
+    def _apply_kit_composition_metadata(self, result: MatchResult) -> None:
+        if not result.kit_components:
+            return
+        in_catalog = sum(1 for line in result.kit_components if line.found_in_catalog)
+        total = len(result.kit_components)
+        result.status = MatchStatus.SIMILAR
+        result.source = MatchSource.CATALOG
+        result.internet_priced = False
+        if not result.matched_name:
+            result.matched_name = result.tz_item.name
+        result.match_score = max(
+            result.match_score,
+            round(in_catalog / total * 100, 1) if total else 0,
+        )
+        result.source_detail = (
+            f"Комплект по составу ТЗ ({in_catalog}/{total} поз. в каталоге)"
+        )
+        note = f"Себестоимость по составу комплекта: {total} поз."
+        result.notes = note if not result.notes else f"{result.notes} | {note}"
+
+    def _normalize_result_metadata(self, result: MatchResult) -> None:
+        has_price = result.unit_base_price is not None or result.unit_cost is not None
+        if not has_price:
+            return
+
+        if result.status != MatchStatus.NOT_FOUND and result.source != MatchSource.NONE:
+            if result.internet_priced and result.source != MatchSource.WEB:
+                result.source = MatchSource.WEB
+            return
+
+        if (
+            result.is_kit
+            and result.kit_components
+            and any(
+                line.unit_cost is not None or line.unit_price is not None
+                for line in result.kit_components
+            )
+        ):
+            self._apply_kit_composition_metadata(result)
+            return
+
+        best_local = self._best_local_priced_quote(result.comparison, result.tz_item)
+        if best_local:
+            self._apply_priced_quote(result, best_local)
+            return
+
+        best_web = self._best_web_priced_quote(result.comparison)
+        if best_web:
+            self._apply_priced_quote(result, best_web)
+            return
+
+        if result.internet_priced or any(
+            q.source == "web" and (q.price or q.cost) for q in result.comparison
+        ):
+            result.source = MatchSource.WEB
+            result.status = (
+                MatchStatus.EXACT
+                if result.match_score >= EXACT_MATCH_THRESHOLD
+                else MatchStatus.SIMILAR
+            )
+            if not result.matched_name:
+                result.matched_name = result.tz_item.name
+            if not result.source_detail:
+                result.source_detail = "Интернет"
+            return
+
+        result.status = MatchStatus.SIMILAR
+        if result.source == MatchSource.NONE:
+            result.source = MatchSource.CATALOG
+        if not result.matched_name:
+            result.matched_name = result.tz_item.name
+        if not result.source_detail:
+            result.source_detail = "Подбор по сравнению"
+
+    @staticmethod
+    def _is_product_web_url(url: str | None) -> bool:
+        if not url:
+            return False
+        lower = url.lower()
+        return "search" not in lower and "catalog/0/search" not in lower
+
+    def _ensure_internet_comparison(self, result: MatchResult) -> None:
+        web_quotes = [q for q in result.comparison if q.source == "web"]
+        if result.internet_priced and result.unit_base_price is not None:
+            priced = [
+                q
+                for q in web_quotes
+                if q.price is not None or q.cost is not None
+            ]
+            if not priced:
+                result.comparison.insert(
+                    0,
+                    PriceQuote(
+                        source="web",
+                        label=result.source_detail or "Интернет",
+                        matched_name=result.matched_name or result.tz_item.name,
+                        price=result.unit_base_price,
+                        cost=result.unit_base_price,
+                        match_score=result.match_score,
+                        url=self._pick_internet_url(web_quotes),
+                        notes=(
+                            f"Подобрано из интернета | Цена КП: "
+                            f"−{WEB_PRICE_DISCOUNT_PERCENT}%"
+                        ),
+                    ),
+                )
+                return
+
+            best = pick_best_web_priced_quote(priced) or priced[0]
+            if not best.url:
+                best.url = self._pick_internet_url(web_quotes)
+            if best.price is None and best.cost is None:
+                best.price = result.unit_base_price
+                best.cost = result.unit_base_price
+
+        if not web_quotes and result.internet_priced:
+            result.comparison.insert(
+                0,
+                PriceQuote(
+                    source="web",
+                    label=result.source_detail or "Интернет",
+                    matched_name=result.matched_name or result.tz_item.name,
+                    price=result.unit_base_price,
+                    cost=result.unit_base_price,
+                    match_score=result.match_score,
+                    notes=result.notes or "Подобрано из интернета",
+                ),
+            )
+
+    @staticmethod
+    def _pick_internet_url(web_quotes: list[PriceQuote]) -> str | None:
+        return pick_internet_url(web_quotes)
+
+    def _has_confident_local_match(
+        self,
+        tz_item: TZItem,
+        catalog_hit: FuzzyHit | None,
+        price_hit: FuzzyHit | None,
+        goods_hit: GoodsReportItem | None,
+    ) -> bool:
+        for hit in (catalog_hit, price_hit):
+            if not hit or hit.score < LOCAL_MATCH_THRESHOLD:
+                continue
+            if not is_relevant_match(tz_item, hit.name, score=hit.score):
+                continue
+            if self.matcher.is_distinctive_mismatch(tz_item.name, hit.name):
+                continue
+            return True
+        if goods_hit and (goods_hit.cost is not None or goods_hit.price is not None):
+            if is_relevant_match(tz_item, goods_hit.name):
+                return True
+        return False
 
     def _fetch_internet_comparison(
         self,
         tz_item: TZItem,
         preferences: KpPreferences,
         use_ai: bool = True,
+        local_miss: bool = True,
     ) -> tuple[PriceQuote | None, list[PriceQuote]]:
         if "web" in preferences.disabled_sources:
             return None, []
 
-        if USE_AI_INTERNET_SEARCH and use_ai and self.ai.enabled:
-            quotes = self._fetch_internet_comparison_ai(tz_item)
-            if quotes:
-                quotes = filter_web_quotes(quotes, preferences)
-                web_quote = quotes[0] if quotes else None
-                return web_quote, quotes
+        quotes: list[PriceQuote] = []
+        seen_urls: set[str] = set()
 
-        return self._fetch_internet_comparison_fast(tz_item, preferences)
+        def _append_quotes(new_quotes: list[PriceQuote]) -> None:
+            for quote in new_quotes:
+                if quote.url and quote.url in seen_urls:
+                    continue
+                if quote.url:
+                    seen_urls.add(quote.url)
+                quotes.append(quote)
+
+        if local_miss and WEB_SEARCH_ENABLED:
+            search_text = primary_search_text(tz_item)
+            exact_quotes = self.web_search.search_offers(search_text)
+            _append_quotes(exact_quotes)
+            partial = filter_web_quotes(quotes, preferences)
+            if not pick_best_web_priced_quote(partial):
+                _append_quotes(
+                    self.web_search.search_marketplace_offers(
+                        search_text,
+                        limit=1,
+                    )
+                )
+
+        if USE_AI_INTERNET_SEARCH and use_ai and self.ai.enabled:
+            _append_quotes(self._fetch_internet_comparison_ai(tz_item))
+
+        quotes = filter_web_quotes(quotes, preferences)
+        quotes = sort_web_quotes(quotes)
+        web_quote = self._pick_best_web_quote(quotes)
+        return web_quote, quotes
+
+    def _pick_best_web_quote(self, quotes: list[PriceQuote]) -> PriceQuote | None:
+        best_priced = self._best_web_priced_quote(quotes)
+        if best_priced:
+            return best_priced
+        if not quotes:
+            return None
+        eligible = [
+            quote
+            for quote in quotes
+            if float(quote.match_score or 0) >= WEB_SEARCH_EXACT_THRESHOLD
+        ]
+        return eligible[0] if eligible else None
 
     def _fetch_internet_comparison_fast(
         self,
@@ -223,6 +468,9 @@ class TZMatchService:
 
         quotes: list[PriceQuote] = []
         for offer in self.ai.search_competitors(tz_item, limit=3):
+            match_score = float(offer.get("match_score", 0) or 0)
+            if match_score < WEB_SEARCH_EXACT_THRESHOLD:
+                continue
             platform = str(offer.get("platform") or "Интернет")
             matched_name = str(offer.get("name") or tz_item.name)
             quotes.append(
@@ -231,7 +479,7 @@ class TZMatchService:
                     label=f"Интернет: {platform}",
                     matched_name=matched_name,
                     price=float(offer["price"]) if offer.get("price") is not None else None,
-                    match_score=float(offer.get("match_score", 50) or 50),
+                    match_score=match_score,
                     url=resolve_competitor_url(
                         platform,
                         matched_name,
@@ -243,7 +491,11 @@ class TZMatchService:
 
         if not quotes:
             web_result = self.ai.estimate_web_price(tz_item)
-            if web_result.get("unit_cost") is not None:
+            match_score = float(web_result.get("match_score", 0) or 0)
+            if (
+                web_result.get("unit_cost") is not None
+                and match_score >= WEB_SEARCH_EXACT_THRESHOLD
+            ):
                 quotes.append(
                     PriceQuote(
                         source="web",
@@ -251,7 +503,7 @@ class TZMatchService:
                         matched_name=str(web_result.get("matched_name") or ""),
                         cost=float(web_result["unit_cost"]),
                         price=float(web_result["unit_cost"]),
-                        match_score=float(web_result.get("match_score", 0) or 0),
+                        match_score=match_score,
                         notes=str(web_result.get("notes") or ""),
                     )
                 )
@@ -267,7 +519,7 @@ class TZMatchService:
         seen_suppliers: set[str] = set()
         ranked = sorted(hits, key=lambda hit: hit.score, reverse=True)
         for hit in ranked[:5]:
-            if hit.score < SIMILAR_MATCH_THRESHOLD:
+            if hit.score < LOCAL_MATCH_THRESHOLD:
                 continue
             item: PriceListItem = hit.payload
             supplier_key = (item.supplier or "").lower()
@@ -282,12 +534,12 @@ class TZMatchService:
     def _match_catalog_component(self, name: str) -> FuzzyHit | None:
         mini = TZItem(number=0, name=name, unit="шт", quantity=1)
         candidates = self.matcher.find_candidates(mini)
-        catalog_hit = self._pick_hit(candidates["catalog"], name)
+        catalog_hit = self._pick_hit(candidates["catalog"], mini)
         if not catalog_hit:
             return None
         if self.matcher.is_distinctive_mismatch(name, catalog_hit.name):
             return None
-        if catalog_hit.score < SIMILAR_MATCH_THRESHOLD:
+        if catalog_hit.score < LOCAL_MATCH_THRESHOLD:
             return None
         if not isinstance(catalog_hit.payload, CatalogItem):
             return None
@@ -298,10 +550,13 @@ class TZMatchService:
         catalog_hit: FuzzyHit,
         tz_name: str,
     ) -> GoodsReportItem | None:
-        goods_hit = self._match_goods_report(catalog_hit.name)
+        catalog_item = TZItem(number=0, name=catalog_hit.name, unit="шт", quantity=1)
+        goods_hit = self._match_goods_report(catalog_item)
         if goods_hit:
             return goods_hit
-        return self._match_goods_report(tz_name)
+        return self._match_goods_report(
+            TZItem(number=0, name=tz_name, unit="шт", quantity=1)
+        )
 
     def _build_kit_from_tz_components(self, names: list[str]) -> list[KitComponentLine]:
         lines: list[KitComponentLine] = []
@@ -331,7 +586,7 @@ class TZMatchService:
             else:
                 mini = TZItem(number=0, name=name, unit="шт", quantity=1)
                 candidates = self.matcher.find_candidates(mini)
-                price_hit = self._pick_hit(candidates["price"], name)
+                price_hit = self._pick_hit(candidates["price"], mini)
                 if price_hit and isinstance(price_hit.payload, PriceListItem):
                     unit_price = price_hit.payload.price
                     price_list_price = price_hit.payload.price
@@ -360,7 +615,14 @@ class TZMatchService:
         enriched: list[KitComponentLine] = []
         for line in components:
             goods = (
-                self._match_goods_report(line.catalog_matched_name or line.name)
+                self._match_goods_report(
+                    TZItem(
+                        number=0,
+                        name=line.catalog_matched_name or line.name,
+                        unit="шт",
+                        quantity=1,
+                    )
+                )
                 if line.found_in_catalog
                 else None
             )
@@ -419,6 +681,8 @@ class TZMatchService:
         kit_components: list[KitComponentLine],
         use_ai: bool,
         candidates: dict,
+        *,
+        local_miss: bool = False,
     ) -> MatchResult:
         local = self.matcher.match_local(tz_item)
 
@@ -427,14 +691,15 @@ class TZMatchService:
         ):
             return self._merge_kit_into_result(local, kit_components, goods_hit)
 
-        if local and local.match_score >= SIMILAR_MATCH_THRESHOLD and (
+        if local and local.match_score >= LOCAL_MATCH_THRESHOLD and (
             local.unit_base_price is not None or local.unit_cost is not None
         ):
             return self._merge_kit_into_result(local, kit_components, goods_hit)
 
         if (
             catalog_hit
-            and catalog_hit.score >= SIMILAR_MATCH_THRESHOLD
+            and catalog_hit.score >= LOCAL_MATCH_THRESHOLD
+            and is_relevant_match(tz_item, catalog_hit.name, score=catalog_hit.score)
             and not self.matcher.is_distinctive_mismatch(tz_item.name, catalog_hit.name)
         ):
             item = catalog_hit.payload
@@ -464,13 +729,22 @@ class TZMatchService:
                     purchase_date=goods_hit.purchase_date if goods_hit else None,
                 )
 
-        if goods_hit and goods_hit.cost is not None:
+        if (
+            goods_hit
+            and goods_hit.cost is not None
+            and is_relevant_match(tz_item, goods_hit.name)
+        ):
+            goods_score = relevance_score(tz_item, goods_hit.name)
             return MatchResult(
                 tz_item=tz_item,
-                status=MatchStatus.SIMILAR,
+                status=(
+                    MatchStatus.EXACT
+                    if goods_score >= EXACT_MATCH_THRESHOLD
+                    else MatchStatus.SIMILAR
+                ),
                 source=MatchSource.CATALOG,
                 matched_name=goods_hit.name,
-                match_score=85.0,
+                match_score=goods_score,
                 unit_cost=goods_hit.cost,
                 unit_base_price=goods_hit.price or goods_hit.cost,
                 notes="Сопоставление с товарным отчётом",
@@ -479,7 +753,11 @@ class TZMatchService:
                 purchase_date=goods_hit.purchase_date,
             )
 
-        if price_hit and price_hit.score >= SIMILAR_MATCH_THRESHOLD:
+        if (
+            price_hit
+            and price_hit.score >= LOCAL_MATCH_THRESHOLD
+            and is_relevant_match(tz_item, price_hit.name, score=price_hit.score)
+        ):
             item = price_hit.payload
             if isinstance(item, PriceListItem):
                 status = (
@@ -501,13 +779,32 @@ class TZMatchService:
                 )
 
         if not use_ai:
-            if local:
+            if local and local.match_score >= LOCAL_MATCH_THRESHOLD and (
+                local.unit_base_price is not None or local.unit_cost is not None
+            ):
+                return self._merge_kit_into_result(local, kit_components, goods_hit)
+            if web_quote and (web_quote.cost is not None or web_quote.price is not None):
+                return self._result_from_web_quote(tz_item, web_quote)
+            return MatchResult(
+                tz_item=tz_item,
+                status=MatchStatus.SIMILAR,
+                source=MatchSource.NONE,
+                notes="Подбор цены из интернета",
+            )
+
+        if local_miss and WEB_SEARCH_ENABLED:
+            if web_quote and (web_quote.cost is not None or web_quote.price is not None):
+                return self._result_from_web_quote(tz_item, web_quote)
+            if local and local.match_score >= LOCAL_MATCH_THRESHOLD and (
+                local.unit_base_price is not None or local.unit_cost is not None
+            ):
                 return self._merge_kit_into_result(local, kit_components, goods_hit)
             return MatchResult(
                 tz_item=tz_item,
-                status=MatchStatus.NOT_FOUND,
+                status=MatchStatus.SIMILAR,
                 source=MatchSource.NONE,
-                notes="Позиция не найдена в каталогах и прайсах",
+                matched_name=tz_item.name,
+                notes="Поиск цены в интернете",
             )
 
         ai_candidates = self.matcher.candidates_for_ai(tz_item)
@@ -526,6 +823,7 @@ class TZMatchService:
         notes = ai_result.get("notes", "")
         alternatives = ai_result.get("alternatives") or []
 
+        internet_priced = source == MatchSource.WEB
         if (
             status == MatchStatus.NOT_FOUND
             and source == MatchSource.NONE
@@ -539,6 +837,7 @@ class TZMatchService:
             matched_name = web_quote.matched_name or tz_item.name
             match_score = web_quote.match_score
             notes = web_quote.notes
+            internet_priced = True
 
         if local and local.match_score > match_score and (
             local.unit_base_price is not None or local.unit_cost is not None
@@ -550,6 +849,10 @@ class TZMatchService:
                 unit_base_price = local.unit_base_price
             if unit_cost is None:
                 unit_cost = local.unit_cost
+            if local.unit_base_price is not None or local.unit_cost is not None:
+                internet_priced = False
+                if source in (MatchSource.NONE, MatchSource.WEB) and local.source != MatchSource.WEB:
+                    source = local.source
 
         return MatchResult(
             tz_item=tz_item,
@@ -564,6 +867,32 @@ class TZMatchService:
             alternatives=alternatives or (local.alternatives if local else []),
             supplier=goods_hit.supplier if goods_hit else None,
             purchase_date=goods_hit.purchase_date if goods_hit else None,
+            internet_priced=internet_priced and source == MatchSource.WEB,
+        )
+
+    @staticmethod
+    def _result_from_web_quote(tz_item: TZItem, web_quote: PriceQuote) -> MatchResult:
+        base_price = web_quote.cost if web_quote.cost is not None else web_quote.price
+        match_score = float(web_quote.match_score or WEB_SEARCH_EXACT_THRESHOLD)
+        status = (
+            MatchStatus.EXACT
+            if match_score >= EXACT_MATCH_THRESHOLD
+            else MatchStatus.SIMILAR
+        )
+        return MatchResult(
+            tz_item=tz_item,
+            status=status,
+            source=MatchSource.WEB,
+            matched_name=web_quote.matched_name or tz_item.name,
+            match_score=match_score,
+            unit_cost=base_price,
+            unit_base_price=base_price,
+            notes=(
+                f"{web_quote.notes} | Цена КП: −{WEB_PRICE_DISCOUNT_PERCENT}% "
+                f"от найденной в интернете"
+            ).strip(" |"),
+            source_detail=web_quote.label,
+            internet_priced=True,
         )
 
     def _finalize_result_pricing(
@@ -579,10 +908,10 @@ class TZMatchService:
             and result.unit_cost is None
         )
         if not needs_price and not web_without_price:
+            self._normalize_result_metadata(result)
             return
 
-        tz_query = result.tz_item.name
-        best_local = self._best_local_priced_quote(result.comparison, tz_query)
+        best_local = self._best_local_priced_quote(result.comparison, result.tz_item)
         if best_local:
             self._apply_priced_quote(result, best_local)
             return
@@ -592,7 +921,44 @@ class TZMatchService:
             self._apply_priced_quote(result, best_web)
             return
 
-        if use_ai and self.ai.enabled and needs_price:
+        if (
+            WEB_SEARCH_ENABLED
+            and needs_price
+            and not self._web_search_attempted(result.comparison)
+            and not any(q.source == "web" and (q.price or q.cost) for q in result.comparison)
+        ):
+            extra_quotes: list[PriceQuote] = []
+            search_text = primary_search_text(result.tz_item)
+            extra_quotes.extend(self.web_search.search_offers(search_text))
+            if prefs:
+                partial = filter_web_quotes(extra_quotes, prefs)
+            else:
+                partial = extra_quotes
+            if not pick_best_web_priced_quote(partial):
+                extra_quotes.extend(
+                    self.web_search.search_marketplace_offers(
+                        search_text,
+                        limit=1,
+                    )
+                )
+            if prefs:
+                extra_quotes = filter_web_quotes(extra_quotes, prefs)
+            if extra_quotes:
+                self._extend_comparison(result, extra_quotes)
+                result.competitors = [
+                    q for q in result.comparison if q.source == "web"
+                ]
+                best_web = self._best_web_priced_quote(extra_quotes)
+                if best_web:
+                    self._apply_priced_quote(result, best_web)
+                    return
+
+        if (
+            USE_AI_INTERNET_SEARCH
+            and use_ai
+            and self.ai.enabled
+            and needs_price
+        ):
             ai_quotes = self._fetch_internet_comparison_ai(result.tz_item)
             if prefs:
                 ai_quotes = filter_web_quotes(ai_quotes, prefs)
@@ -620,6 +986,8 @@ class TZMatchService:
                 f"{result.notes} | Цена не определена — проверьте сравнение"
             ).strip(" |")
 
+        self._normalize_result_metadata(result)
+
     def _apply_priced_quote(self, result: MatchResult, best: PriceQuote) -> None:
         base_price = best.cost if best.cost is not None else best.price
         if base_price is None:
@@ -632,6 +1000,7 @@ class TZMatchService:
             "web": MatchSource.WEB,
         }
         result.source = source_map.get(best.source, result.source)
+        result.internet_priced = best.source == "web"
         result.matched_name = best.matched_name or result.matched_name
         result.unit_cost = best.cost if best.cost is not None else base_price
         result.unit_base_price = base_price
@@ -644,14 +1013,253 @@ class TZMatchService:
             result.supplier = best.supplier
         if best.purchase_date and not result.purchase_date:
             result.purchase_date = best.purchase_date
-        note = f"Подбор по сравнению: {best.label}"
+        if best.source == "web":
+            note = (
+                f"Подбор по сравнению: {best.label} | "
+                f"Цена КП: −{WEB_PRICE_DISCOUNT_PERCENT}% от найденной в интернете"
+            )
+        else:
+            note = f"Подбор по сравнению: {best.label}"
         result.notes = note if not result.notes else f"{result.notes} | {note}"
-        result.source_detail = best.label
+        if best.source == "web" and best.url:
+            result.source_detail = f"{best.label} | {best.url}"
+        else:
+            result.source_detail = best.label
+
+    def _ensure_mandatory_internet_pricing(
+        self,
+        result: MatchResult,
+        prefs: KpPreferences,
+        *,
+        use_ai: bool,
+    ) -> None:
+        if "web" in prefs.disabled_sources or not WEB_SEARCH_ENABLED:
+            self._promote_internet_status(result)
+            return
+        if self._has_confident_local_pricing(result):
+            return
+
+        needs_price = result.unit_base_price is None and result.unit_cost is None
+        if needs_price:
+            candidates: list[PriceQuote] = []
+            has_priced_web = any(
+                q.source == "web"
+                and is_acceptable_web_pricing_quote(q)
+                for q in result.comparison
+            )
+            search_text = primary_search_text(result.tz_item)
+            if not has_priced_web and not self._web_search_attempted(result.comparison):
+                candidates.extend(self.web_search.search_offers(search_text))
+                partial = filter_web_quotes(candidates, prefs)
+                if not pick_best_web_priced_quote(partial):
+                    candidates.extend(
+                        self.web_search.search_marketplace_offers(
+                            search_text,
+                            limit=1,
+                        )
+                    )
+            if (
+                use_ai
+                and self.ai.enabled
+                and not has_priced_web
+                and USE_AI_INTERNET_SEARCH
+            ):
+                candidates.extend(self._fetch_internet_comparison_ai(result.tz_item))
+
+            if (
+                use_ai
+                and self.ai.enabled
+                and not any(q.price or q.cost for q in candidates)
+                and not has_priced_web
+            ):
+                ai_quote = self._quote_from_ai_estimate(result.tz_item)
+                if ai_quote:
+                    candidates.append(ai_quote)
+
+            filtered = filter_web_quotes(candidates, prefs)
+            self._extend_comparison(result, filtered)
+            result.comparison = sort_web_quotes(result.comparison)
+
+            best = self._best_web_priced_quote(filtered)
+            if best is None:
+                best = self._best_web_priced_quote_with_url(filtered)
+            if best:
+                self._apply_priced_quote(result, best)
+
+        self._sort_comparison_web_quotes(result)
+        self._promote_internet_status(result)
+
+    @staticmethod
+    def _web_search_attempted(comparison: list[PriceQuote]) -> bool:
+        return any(quote.source == "web" for quote in comparison)
+
+    @staticmethod
+    def _sort_comparison_web_quotes(result: MatchResult) -> None:
+        result.comparison = sort_web_quotes(result.comparison)
+
+    def _append_marketplace_product_cards(
+        self,
+        result: MatchResult,
+        prefs: KpPreferences,
+    ) -> None:
+        del prefs
+        self._sort_comparison_web_quotes(result)
+
+    @staticmethod
+    def _extend_comparison(result: MatchResult, quotes: list[PriceQuote]) -> None:
+        seen = {
+            (q.source, q.url or "", q.matched_name or "", q.price, q.cost)
+            for q in result.comparison
+        }
+        for quote in quotes:
+            key = (
+                quote.source,
+                quote.url or "",
+                quote.matched_name or "",
+                quote.price,
+                quote.cost,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.comparison.append(quote)
+
+    @staticmethod
+    def _has_confident_local_pricing(result: MatchResult) -> bool:
+        if result.unit_base_price is None and result.unit_cost is None:
+            return False
+        if result.internet_priced or result.source == MatchSource.WEB:
+            return False
+        if result.is_kit and result.kit_components and (
+            result.unit_base_price is not None or result.unit_cost is not None
+        ):
+            return True
+        if result.source in (MatchSource.CATALOG, MatchSource.PRICE_LIST):
+            return result.match_score >= LOCAL_MATCH_THRESHOLD
+        return (
+            result.source not in (MatchSource.NONE, MatchSource.WEB)
+            and result.match_score >= LOCAL_MATCH_THRESHOLD
+        )
+
+    def _quote_from_ai_estimate(self, tz_item: TZItem) -> PriceQuote | None:
+        if not self.ai.enabled:
+            return None
+        web_result = self.ai.estimate_web_price(tz_item)
+        unit_cost = web_result.get("unit_cost")
+        if unit_cost is None:
+            return None
+        urls = competitor_urls_for_item([], tz_item.name, limit=1)
+        url = urls[0] if urls else None
+        if url and is_search_listing_url(url):
+            url = None
+        matched_name = str(web_result.get("matched_name") or tz_item.name)
+        return PriceQuote(
+            source="web",
+            label="Интернет (оценка рынка)",
+            matched_name=matched_name,
+            price=float(unit_cost),
+            cost=float(unit_cost),
+            match_score=100.0,
+            url=url,
+            notes=(
+                f"{web_result.get('notes') or 'AI-оценка'} | "
+                f"Источник: {web_result.get('price_source') or 'открытые данные'}"
+            ),
+        )
+
+    @staticmethod
+    def _promote_internet_status(result: MatchResult) -> None:
+        has_web_price = result.internet_priced and result.unit_base_price is not None
+        web_with_url = [
+            q
+            for q in result.comparison
+            if q.source == "web"
+            and q.url
+            and is_acceptable_web_pricing_quote(q)
+        ]
+
+        if has_web_price or web_with_url:
+            if result.unit_base_price is None and web_with_url:
+                best = pick_best_web_priced_quote(web_with_url)
+                if best is None:
+                    best = web_with_url[0]
+                self_price = best.cost if best.cost is not None else best.price
+                if self_price is not None:
+                    result.unit_cost = self_price
+                    result.unit_base_price = self_price
+                    result.internet_priced = True
+                    result.matched_name = best.matched_name or result.tz_item.name
+                    result.match_score = max(
+                        result.match_score,
+                        float(best.match_score or WEB_SEARCH_EXACT_THRESHOLD),
+                    )
+
+            result.status = (
+                MatchStatus.EXACT
+                if result.match_score >= EXACT_MATCH_THRESHOLD
+                else MatchStatus.SIMILAR
+            )
+            result.source = MatchSource.WEB
+            if not result.matched_name:
+                result.matched_name = result.tz_item.name
+            if not result.source_detail:
+                url = TZMatchService._pick_internet_url(
+                    [q for q in result.comparison if q.source == "web"]
+                )
+                result.source_detail = (
+                    f"Интернет | {url}" if url else "Интернет"
+                )
+            if result.internet_priced and "−" not in (result.notes or ""):
+                result.notes = (
+                    f"{result.notes} | Цена КП: −{WEB_PRICE_DISCOUNT_PERCENT}% "
+                    f"от найденной в интернете"
+                ).strip(" |")
+            return
+
+        if result.status == MatchStatus.NOT_FOUND or result.source == MatchSource.NONE:
+            links = [
+                q
+                for q in result.comparison
+                if q.source == "web"
+                and q.url
+                and not is_search_listing_url(q.url)
+            ]
+            if links:
+                result.status = MatchStatus.SIMILAR
+                result.source = MatchSource.WEB
+                result.matched_name = result.tz_item.name
+                result.notes = (
+                    f"{result.notes} | Цена не извлечена — проверьте ссылки"
+                ).strip(" |")
+                url = TZMatchService._pick_internet_url(links)
+                result.source_detail = (
+                    f"Интернет | {url}" if url else "Интернет"
+                )
+
+    @staticmethod
+    def _best_web_priced_quote_with_url(
+        quotes: list[PriceQuote],
+    ) -> PriceQuote | None:
+        eligible = [
+            quote
+            for quote in quotes
+            if quote.source == "web"
+            and quote.url
+            and is_acceptable_web_pricing_quote(quote)
+        ]
+        if not eligible:
+            return None
+        eligible.sort(key=web_quote_rank_key)
+        return eligible[0]
+
+    @staticmethod
+    def _best_web_priced_quote(quotes: list[PriceQuote]) -> PriceQuote | None:
+        return pick_best_web_priced_quote(quotes)
 
     @staticmethod
     def _best_local_priced_quote(
         quotes: list[PriceQuote],
-        tz_query: str = "",
+        tz_item: TZItem,
     ) -> PriceQuote | None:
         priority = ("price_list", "catalog", "registry")
         best: PriceQuote | None = None
@@ -664,10 +1272,17 @@ class TZMatchService:
                 if base is None:
                     continue
                 score = float(quote.match_score or 0)
-                if score < SIMILAR_MATCH_THRESHOLD:
+                if score < LOCAL_MATCH_THRESHOLD:
                     continue
-                if tz_query and quote.matched_name and ItemMatcher.is_distinctive_mismatch(
-                    tz_query, quote.matched_name
+                if not is_relevant_match(
+                    tz_item,
+                    quote.matched_name or "",
+                    score=score,
+                ):
+                    continue
+                if ItemMatcher.is_distinctive_mismatch(
+                    tz_item.name,
+                    quote.matched_name or "",
                 ):
                     continue
                 if score > best_score:
@@ -676,22 +1291,6 @@ class TZMatchService:
             if best is not None:
                 return best
         return None
-
-    @staticmethod
-    def _best_web_priced_quote(quotes: list[PriceQuote]) -> PriceQuote | None:
-        best: PriceQuote | None = None
-        best_score = -1.0
-        for quote in quotes:
-            if quote.source != "web":
-                continue
-            base = quote.cost if quote.cost is not None else quote.price
-            if base is None:
-                continue
-            score = float(quote.match_score or 0)
-            if score > best_score:
-                best_score = score
-                best = quote
-        return best
 
     @staticmethod
     def _aggregate_kit_components(
@@ -738,27 +1337,60 @@ class TZMatchService:
             return f"Реестр: {matched_name}"
         return local.source_detail if local else ""
 
-    def _pick_hit(self, hits: list[FuzzyHit], query: str) -> FuzzyHit | None:
+    def _pick_hit(self, hits: list[FuzzyHit], tz_item: TZItem) -> FuzzyHit | None:
         if not hits:
             return None
-        return self.matcher.pick_best_hit(query, hits)
+        return self.matcher.pick_best_hit(tz_item, hits)
 
-    def _match_goods_report(self, name: str) -> GoodsReportItem | None:
+    def _find_direct_catalog_hit(self, tz_item: TZItem) -> FuzzyHit | None:
+        query = normalize_name(tz_item.name)
+        best: FuzzyHit | None = None
+        best_score = -1.0
+        for item in self.catalog:
+            name_norm = normalize_name(item.name)
+            score = 100.0 if name_norm == query else name_match_score(query, name_norm)
+            if score < LOCAL_MATCH_THRESHOLD:
+                continue
+            if not is_relevant_match(tz_item, item.name, score=score):
+                continue
+            if self.matcher.is_distinctive_mismatch(tz_item.name, item.name):
+                continue
+            if score > best_score:
+                best_score = score
+                best = FuzzyHit(
+                    name=item.name,
+                    score=score,
+                    payload=item,
+                    source=MatchSource.CATALOG,
+                    detail=item.source_file,
+                )
+        return best
+
+    def _match_goods_report(self, tz_item: TZItem) -> GoodsReportItem | None:
         if not self.goods_report:
             return None
-        query = normalize_name(name)
+        query = normalize_name(tz_item.name)
         results = process.extract(
             query,
             self._goods_names,
-            scorer=fuzz.token_set_ratio,
-            limit=1,
+            scorer=name_match_score,
+            limit=3,
         )
-        if not results:
-            return None
-        _, score, idx = results[0]
-        if score < SIMILAR_MATCH_THRESHOLD:
-            return None
-        return self.goods_report[idx]
+        best: GoodsReportItem | None = None
+        best_score = -1.0
+        for _, score, idx in results:
+            item = self.goods_report[idx]
+            item_score = relevance_score(tz_item, item.name)
+            if item_score < LOCAL_MATCH_THRESHOLD:
+                continue
+            if not is_relevant_match(tz_item, item.name, score=item_score):
+                continue
+            if self.matcher.is_distinctive_mismatch(tz_item.name, item.name):
+                continue
+            if item_score > best_score:
+                best_score = item_score
+                best = item
+        return best
 
     def _price_by_supplier(
         self,
@@ -782,7 +1414,7 @@ class TZMatchService:
         results = process.extract(
             query,
             names,
-            scorer=fuzz.token_set_ratio,
+            scorer=name_match_score,
             limit=1,
         )
         if not results:

@@ -27,6 +27,10 @@ class KpSession:
     preferences: KpPreferences = field(default_factory=KpPreferences)
     chat_history: list[ChatTurn] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
+    task_mode: str = "task1"
+    stage: str = "intake"
+    search_completed: bool = False
+    tz_filename: str = ""
 
 
 class KpSessionStore:

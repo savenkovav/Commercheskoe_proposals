@@ -18,15 +18,7 @@ if ! docker compose version >/dev/null 2>&1; then
   apt-get install -y -qq docker-compose-plugin || true
 fi
 
-mkdir -p "$(dirname "$APP_DIR")"
-if [[ ! -d "$APP_DIR/.git" ]]; then
-  git clone "$REPO_URL" "$APP_DIR"
-else
-  cd "$APP_DIR"
-  git fetch origin
-  git reset --hard origin/main
-fi
-
+mkdir -p "$APP_DIR"
 cd "$APP_DIR"
 mkdir -p output data
 

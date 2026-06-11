@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI-демо: обработка sample_tz.docx без Telegram и без AI (только локальный поиск)."""
+"""CLI-демо: обработка sample_tz.docx без AI (только локальный поиск)."""
 
 from __future__ import annotations
 
@@ -35,7 +35,10 @@ def main() -> None:
     )
 
     print(f"\n{'='*60}")
-    print(processor.format_summary_text(summary).replace("*", ""))
+    print(f"Всего позиций: {summary.total_items}")
+    print(f"Точных: {summary.exact_count} | Похожих: {summary.similar_count} | Не найдено: {summary.not_found_count}")
+    print(f"Себестоимость: {summary.total_cost:,.2f} ₽ | Цена КП: {summary.total_price:,.2f} ₽")
+    print(f"Время: {summary.processing_seconds:.1f} сек")
     print(f"{'='*60}")
     print(f"\nФайл сохранён: {output_path}\n")
 

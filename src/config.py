@@ -6,18 +6,6 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip()
-TELEGRAM_CONNECT_TIMEOUT = float(os.getenv("TELEGRAM_CONNECT_TIMEOUT", "30"))
-TELEGRAM_READ_TIMEOUT = float(os.getenv("TELEGRAM_READ_TIMEOUT", "60"))
-TELEGRAM_VPN_APP = os.getenv("TELEGRAM_VPN_APP", "/Applications/ВПН.app")
-TELEGRAM_VPN_WAIT_SECONDS = int(os.getenv("TELEGRAM_VPN_WAIT_SECONDS", "120"))
-TELEGRAM_PROXY_AUTO = os.getenv("TELEGRAM_PROXY_AUTO", "true").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 WEB_BEHIND_PROXY = os.getenv("WEB_BEHIND_PROXY", "false").lower() in {
@@ -73,20 +61,8 @@ SOURCES_REGISTRY_PATH = PROJECT_ROOT / os.getenv(
 
 EXACT_MATCH_THRESHOLD = int(os.getenv("EXACT_MATCH_THRESHOLD", "90"))
 SIMILAR_MATCH_THRESHOLD = int(os.getenv("SIMILAR_MATCH_THRESHOLD", "70"))
-
-_allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
-ALLOWED_USER_IDS = {
-    int(uid.strip())
-    for uid in _allowed.split(",")
-    if uid.strip().isdigit()
-}
-
-_admins = os.getenv("ADMIN_USER_IDS", "").strip()
-ADMIN_USER_IDS = {
-    int(uid.strip())
-    for uid in _admins.split(",")
-    if uid.strip().isdigit()
-}
+# Минимум совпадения в каталоге/прайсе для принятия локального совпадения
+LOCAL_MATCH_THRESHOLD = int(os.getenv("LOCAL_MATCH_THRESHOLD", "95"))
 
 OUTPUT_DIR = PROJECT_ROOT / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -112,6 +88,24 @@ USE_AI_INTERNET_SEARCH = os.getenv("USE_AI_INTERNET_SEARCH", "false").lower() in
     "yes",
     "on",
 }
+
+WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+WEB_SEARCH_EXACT_THRESHOLD = int(os.getenv("WEB_SEARCH_EXACT_THRESHOLD", "100"))
+WEB_SEARCH_MAX_RESULTS = max(1, int(os.getenv("WEB_SEARCH_MAX_RESULTS", "3")))
+WEB_PRICE_DISCOUNT_PERCENT = float(os.getenv("WEB_PRICE_DISCOUNT_PERCENT", "5"))
+WEB_SEARCH_FETCH_PAGES = os.getenv("WEB_SEARCH_FETCH_PAGES", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+WEB_SEARCH_MAX_PAGE_FETCHES = max(0, int(os.getenv("WEB_SEARCH_MAX_PAGE_FETCHES", "2")))
+WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
 
 KP_PARALLEL_WORKERS = max(1, int(os.getenv("KP_PARALLEL_WORKERS", "4")))
 

@@ -94,7 +94,7 @@ class PIIAnonymizer:
             re.compile(r"\b(?:БИК|BIK)[\s:]*\d{9}\b", re.IGNORECASE),
         ),
         (
-            "TELEGRAM",
+            "USERNAME",
             re.compile(r"@[A-Za-z0-9_]{4,32}\b"),
         ),
         (
