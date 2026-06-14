@@ -537,28 +537,28 @@ class WebSearchService:
             wait_timeout = deadline.remaining() if deadline else None
             try:
                 completed = as_completed(futures, timeout=wait_timeout)
-            except FuturesTimeoutError:
-                return quotes
-            for future in completed:
-                if deadline and deadline.expired():
-                    break
-                try:
-                    batch_quotes = future.result(timeout=0.1)
-                except Exception:
-                    logger.warning(
-                        "Parallel DuckDuckGo competitor batch failed for %r",
-                        query,
-                        exc_info=True,
-                    )
-                    continue
-                for quote in batch_quotes:
-                    if quote.url and quote.url in seen_urls:
+                for future in completed:
+                    if deadline and deadline.expired():
+                        break
+                    try:
+                        batch_quotes = future.result(timeout=0.1)
+                    except Exception:
+                        logger.warning(
+                            "Parallel DuckDuckGo competitor batch failed for %r",
+                            query,
+                            exc_info=True,
+                        )
                         continue
-                    if quote.url:
-                        seen_urls.add(quote.url)
-                    quotes.append(quote)
-                    if len(quotes) >= limit:
-                        return quotes[:limit]
+                    for quote in batch_quotes:
+                        if quote.url and quote.url in seen_urls:
+                            continue
+                        if quote.url:
+                            seen_urls.add(quote.url)
+                        quotes.append(quote)
+                        if len(quotes) >= limit:
+                            return quotes[:limit]
+            except FuturesTimeoutError:
+                pass
         return quotes
 
     def _search_competitor_site_native(
@@ -679,28 +679,28 @@ class WebSearchService:
             wait_timeout = deadline.remaining() if deadline else None
             try:
                 completed = as_completed(futures, timeout=wait_timeout)
-            except FuturesTimeoutError:
-                return quotes
-            for future in completed:
-                if deadline and deadline.expired():
-                    break
-                try:
-                    site_quotes = future.result(timeout=0.1)
-                except Exception:
-                    logger.warning(
-                        "Parallel native competitor search failed for %r",
-                        query,
-                        exc_info=True,
-                    )
-                    continue
-                for quote in site_quotes:
-                    if quote.url and quote.url in seen_urls:
+                for future in completed:
+                    if deadline and deadline.expired():
+                        break
+                    try:
+                        site_quotes = future.result(timeout=0.1)
+                    except Exception:
+                        logger.warning(
+                            "Parallel native competitor search failed for %r",
+                            query,
+                            exc_info=True,
+                        )
                         continue
-                    if quote.url:
-                        seen_urls.add(quote.url)
-                    quotes.append(quote)
-                    if has_priced_competitor_quote(quotes) and len(quotes) >= limit:
-                        return quotes[:limit]
+                    for quote in site_quotes:
+                        if quote.url and quote.url in seen_urls:
+                            continue
+                        if quote.url:
+                            seen_urls.add(quote.url)
+                        quotes.append(quote)
+                        if has_priced_competitor_quote(quotes) and len(quotes) >= limit:
+                            return quotes[:limit]
+            except FuturesTimeoutError:
+                pass
         return quotes
 
     def _quote_from_competitor_hit(
