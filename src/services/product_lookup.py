@@ -1,16 +1,29 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from src.config import EXACT_MATCH_THRESHOLD, SIMILAR_MATCH_THRESHOLD
+from src.config import (
+    COMPETITOR_SEARCH_ENABLED,
+    EXACT_MATCH_THRESHOLD,
+    SIMILAR_MATCH_THRESHOLD,
+    WEB_PRICE_DISCOUNT_PERCENT,
+    WEB_SEARCH_ENABLED,
+)
 from src.services.markup_settings import get_markup_percent
 from src.services.data_loader import normalize_name
-from src.services.models import CatalogItem, MatchSource, MatchStatus, PriceListItem, RegistryItem, TZItem
+from src.services.models import CatalogItem, MatchSource, MatchStatus, PriceListItem, PriceQuote, RegistryItem, TZItem
 from src.services.ai_agent import AIAgent
 from src.services.matcher import FuzzyHit, ItemMatcher
+from src.services.web_quote_priority import meets_web_display_threshold
+from src.services.web_search_service import WebSearchService
+
+logger = logging.getLogger(__name__)
+
+LOOKUP_MATCH_LIMIT = 20
 
 
 class LookupField(str, Enum):
@@ -117,6 +130,42 @@ LOOKUP_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 
+BULK_KP_SEARCH = re.compile(
+    r"(?:"
+    r"найди\s+(?:в\s+)?(?:каталог|прайс|склад|все)|"
+    r"обработай\s+(?:тз|все|позици)|"
+    r"пересчитай\s+все|"
+    r"только\s+поиск|"
+    r"начни\s+поиск|"
+    r"запусти\s+поиск|"
+    r"задача\s*1|"
+    r"задача\s*1\+2|"
+    r"1\+2|"
+    r"сформируй\s+(?:excel|кп)"
+    r")",
+    re.IGNORECASE,
+)
+
+SINGLE_ITEM_PRICE_QUERY = re.compile(
+    r"\b(?:"
+    r"сколько\s+стоит|"
+    r"какая\s+(?:цена|стоимость)|"
+    r"стоимость|"
+    r"себестоимость|"
+    r"цена\b"
+    r")",
+    re.IGNORECASE,
+)
+
+TZ_ITEM_NUMBER = re.compile(r"(?:позици\w*|№|#)\s*(\d+)", re.IGNORECASE)
+
+PRICE_LOOKUP_FIELDS = [
+    LookupField.COST,
+    LookupField.PRICE,
+    LookupField.PRICE_KP,
+    LookupField.PRICE_SUPPLIER,
+]
+
 
 @dataclass
 class ProductQuery:
@@ -140,13 +189,20 @@ class ProductLookupResult:
     catalog: dict[str, object] = field(default_factory=dict)
     price_list: dict[str, object] = field(default_factory=dict)
     registry: dict[str, object] = field(default_factory=dict)
+    competitors: dict[str, object] = field(default_factory=dict)
     ai_insight: dict[str, object] = field(default_factory=dict)
 
 
 class ProductLookupService:
-    def __init__(self, matcher: ItemMatcher, ai_agent: AIAgent | None = None) -> None:
+    def __init__(
+        self,
+        matcher: ItemMatcher,
+        ai_agent: AIAgent | None = None,
+        web_search: WebSearchService | None = None,
+    ) -> None:
         self.matcher = matcher
         self.ai = ai_agent
+        self.web_search = web_search or WebSearchService()
 
     def lookup(self, product_name: str, requested_fields: list[LookupField] | None = None) -> ProductLookupResult:
         fields = requested_fields or DEFAULT_FIELDS
@@ -157,7 +213,6 @@ class ProductLookupService:
         registry_hit = self._best_hit(candidates["registry"], product_name)
         price_hit = self._best_hit(candidates["price"], product_name)
 
-        best_hit = self._select_primary_hit(catalog_hit, price_hit)
         catalog_block = self._build_catalog_block(
             catalog_hit, candidates["catalog"], product_name, self.matcher
         )
@@ -167,23 +222,64 @@ class ProductLookupService:
         registry_block = self._build_registry_block(
             registry_hit, candidates["registry"], product_name, self.matcher
         )
+        competitors_block = (
+            self._build_competitors_block(product_name)
+            if self._should_search_competitors(fields)
+            else {"found": False, "items": []}
+        )
+
+        best_hit = self._select_primary_hit(catalog_hit, price_hit)
+        any_found = self._any_source_found(
+            catalog_block, price_block, registry_block, competitors_block
+        )
+
         ai_insight = self._maybe_build_ai_insight(
-            tz_item, catalog_block, price_block, registry_block
+            tz_item,
+            catalog_block,
+            price_block,
+            registry_block,
+            competitors_block,
         )
 
         if not best_hit or best_hit.score < SIMILAR_MATCH_THRESHOLD:
+            if not any_found:
+                return ProductLookupResult(
+                    query_name=product_name,
+                    matched_name="",
+                    match_score=0,
+                    status=MatchStatus.NOT_FOUND,
+                    values={},
+                    sources=[],
+                    alternatives=self._collect_alternatives(candidates),
+                    not_found=True,
+                    catalog=catalog_block,
+                    price_list=price_block,
+                    registry=registry_block,
+                    competitors=competitors_block,
+                    ai_insight=ai_insight,
+                )
+
+            primary_name = self._resolve_display_name(
+                best_hit,
+                catalog_block,
+                price_block,
+                competitors_block,
+            )
             return ProductLookupResult(
                 query_name=product_name,
-                matched_name="",
-                match_score=0,
-                status=MatchStatus.NOT_FOUND,
-                values={},
-                sources=[],
+                matched_name=primary_name,
+                match_score=float(best_hit.score if best_hit else 0),
+                status=MatchStatus.SIMILAR,
+                values=self._build_values(fields, catalog_hit, registry_hit, price_hit),
+                sources=self._build_sources(
+                    catalog_hit, registry_hit, price_hit, competitors_block
+                ),
                 alternatives=self._collect_alternatives(candidates),
-                not_found=True,
+                not_found=False,
                 catalog=catalog_block,
                 price_list=price_block,
                 registry=registry_block,
+                competitors=competitors_block,
                 ai_insight=ai_insight,
             )
 
@@ -198,7 +294,9 @@ class ProductLookupService:
         )
 
         values = self._build_values(fields, catalog_hit, registry_hit, price_hit)
-        sources = self._build_sources(catalog_hit, registry_hit, price_hit)
+        sources = self._build_sources(
+            catalog_hit, registry_hit, price_hit, competitors_block
+        )
 
         return ProductLookupResult(
             query_name=product_name,
@@ -211,6 +309,7 @@ class ProductLookupService:
             catalog=catalog_block,
             price_list=price_block,
             registry=registry_block,
+            competitors=competitors_block,
             ai_insight=ai_insight,
         )
 
@@ -219,12 +318,106 @@ class ProductLookupService:
         catalog_block: dict[str, object],
         price_block: dict[str, object],
         registry_block: dict[str, object],
+        competitors_block: dict[str, object] | None = None,
     ) -> bool:
+        competitors_block = competitors_block or {"found": False}
         return (
             not catalog_block.get("found")
             and not price_block.get("found")
             and not registry_block.get("found")
+            and not competitors_block.get("found")
         )
+
+    @staticmethod
+    def _any_source_found(
+        catalog_block: dict[str, object],
+        price_block: dict[str, object],
+        registry_block: dict[str, object],
+        competitors_block: dict[str, object],
+    ) -> bool:
+        return not ProductLookupService._all_sources_missing(
+            catalog_block,
+            price_block,
+            registry_block,
+            competitors_block,
+        )
+
+    @staticmethod
+    def _should_search_competitors(fields: list[LookupField]) -> bool:
+        if not WEB_SEARCH_ENABLED or not COMPETITOR_SEARCH_ENABLED:
+            return False
+        price_fields = {
+            LookupField.COST,
+            LookupField.PRICE,
+            LookupField.PRICE_KP,
+            LookupField.PRICE_SUPPLIER,
+        }
+        return bool(price_fields.intersection(fields))
+
+    def _build_competitors_block(self, query: str) -> dict[str, object]:
+        quotes: list[PriceQuote] = []
+        try:
+            quotes.extend(self.web_search.search_competitor_offers(query))
+            if not any(q.price is not None or q.cost is not None for q in quotes):
+                quotes.extend(self.web_search.search_web_price_fallback(query))
+        except Exception:
+            logger.warning("Competitor lookup failed for %r", query, exc_info=True)
+            return {"found": False, "items": []}
+
+        items: list[dict[str, object]] = []
+        seen_urls: set[str] = set()
+        for quote in quotes:
+            if not meets_web_display_threshold(quote.url, float(quote.match_score or 0)):
+                continue
+            if quote.url and quote.url in seen_urls:
+                continue
+            if quote.url:
+                seen_urls.add(quote.url)
+
+            base_price = quote.price if quote.price is not None else quote.cost
+            price_kp = (
+                round(base_price * (1 - WEB_PRICE_DISCOUNT_PERCENT / 100), 2)
+                if base_price is not None
+                else None
+            )
+            items.append(
+                {
+                    "label": quote.label or "Конкурент",
+                    "name": quote.matched_name or query,
+                    "match_score": round(float(quote.match_score or 0), 1),
+                    "price": self._format_money(base_price),
+                    "price_kp": self._format_money(price_kp),
+                    "url": quote.url,
+                    "notes": quote.notes or "",
+                    "has_price": base_price is not None,
+                    "_sort_price": base_price if base_price is not None else float("inf"),
+                }
+            )
+
+        items.sort(key=lambda item: (0 if item.get("has_price") else 1, item["_sort_price"]))
+        for item in items:
+            item.pop("_sort_price", None)
+        return {"found": bool(items), "items": items}
+
+    @staticmethod
+    def _resolve_display_name(
+        best_hit: FuzzyHit | None,
+        catalog_block: dict[str, object],
+        price_block: dict[str, object],
+        competitors_block: dict[str, object],
+    ) -> str:
+        if best_hit and best_hit.score >= SIMILAR_MATCH_THRESHOLD:
+            return best_hit.name
+        for block in (catalog_block, price_block, competitors_block):
+            name = block.get("name")
+            if isinstance(name, str) and name.strip():
+                return name
+            items = block.get("items")
+            if isinstance(items, list) and items:
+                first = items[0]
+                if isinstance(first, dict) and first.get("name"):
+                    return str(first["name"])
+        return ""
 
     def _maybe_build_ai_insight(
         self,
@@ -232,8 +425,11 @@ class ProductLookupService:
         catalog_block: dict[str, object],
         price_block: dict[str, object],
         registry_block: dict[str, object],
+        competitors_block: dict[str, object],
     ) -> dict[str, object]:
-        if not self._all_sources_missing(catalog_block, price_block, registry_block):
+        if not self._all_sources_missing(
+            catalog_block, price_block, registry_block, competitors_block
+        ):
             return {"found": False, "requested": False}
         return self._build_ai_insight(tz_item)
 
@@ -650,7 +846,7 @@ class ProductLookupService:
         query: str,
         matcher: ItemMatcher,
     ) -> dict[str, object]:
-        ranked = matcher.rank_hits(query, candidates)
+        ranked = matcher.rank_hits(query, candidates, limit=LOOKUP_MATCH_LIMIT)
         if not ranked:
             return {"found": False, "items": []}
 
@@ -693,7 +889,7 @@ class ProductLookupService:
         query: str,
         matcher: ItemMatcher,
     ) -> dict[str, object]:
-        ranked = matcher.rank_hits(query, candidates)
+        ranked = matcher.rank_hits(query, candidates, limit=LOOKUP_MATCH_LIMIT)
         if not ranked:
             return {"found": False, "items": []}
 
@@ -740,7 +936,7 @@ class ProductLookupService:
         query: str,
         matcher: ItemMatcher,
     ) -> dict[str, object]:
-        ranked = matcher.rank_hits(query, candidates)
+        ranked = matcher.rank_hits(query, candidates, limit=LOOKUP_MATCH_LIMIT)
         if not ranked:
             return {
                 "found": False,
@@ -831,6 +1027,7 @@ class ProductLookupService:
         catalog_hit: FuzzyHit | None,
         registry_hit: FuzzyHit | None,
         price_hit: FuzzyHit | None,
+        competitors_block: dict[str, object] | None = None,
     ) -> list[str]:
         sources: list[str] = []
         if catalog_hit and catalog_hit.score >= SIMILAR_MATCH_THRESHOLD:
@@ -840,6 +1037,15 @@ class ProductLookupService:
         if price_hit and price_hit.score >= SIMILAR_MATCH_THRESHOLD:
             item: PriceListItem = price_hit.payload
             sources.append(f"Прайс ({item.supplier}): {price_hit.name}")
+        if competitors_block and competitors_block.get("found"):
+            items = competitors_block.get("items")
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    label = str(item.get("label") or "Конкурент")
+                    name = str(item.get("name") or "")
+                    sources.append(f"{label}: {name}")
         return sources
 
     @staticmethod
@@ -947,6 +1153,119 @@ def is_lookup_message(text: str) -> bool:
     return bool(LOOKUP_TRIGGER.search(stripped))
 
 
+def is_bulk_kp_search_message(text: str) -> bool:
+    return bool(BULK_KP_SEARCH.search(text.strip()))
+
+
+def _ensure_price_lookup_fields(fields: list[LookupField]) -> list[LookupField]:
+    unique = list(fields)
+    for field in PRICE_LOOKUP_FIELDS:
+        if field not in unique:
+            unique.append(field)
+    return unique
+
+
+def _find_tz_item_in_message(message: str, tz_items: list[TZItem]) -> TZItem | None:
+    msg_norm = normalize_name(message)
+    if not msg_norm:
+        return None
+
+    best_item: TZItem | None = None
+    best_score = 0
+
+    for item in tz_items:
+        name_norm = normalize_name(item.name)
+        if len(name_norm) < 4:
+            continue
+
+        if name_norm in msg_norm or msg_norm in name_norm:
+            score = len(name_norm)
+            if score > best_score:
+                best_item = item
+                best_score = score
+            continue
+
+        tokens = [token for token in name_norm.split() if len(token) >= 4]
+        if len(tokens) < 2:
+            continue
+        matched = sum(1 for token in tokens if token in msg_norm)
+        threshold = max(2, int(len(tokens) * 0.6))
+        if matched >= threshold:
+            score = matched * 100 + len(name_norm)
+            if score > best_score:
+                best_item = item
+                best_score = score
+
+    return best_item
+
+
+def resolve_kp_price_lookup(message: str, tz_items: list[TZItem]) -> ProductQuery | None:
+    text = message.strip()
+    if not text or is_bulk_kp_search_message(text):
+        return None
+
+    has_price_intent = bool(SINGLE_ITEM_PRICE_QUERY.search(text)) or is_lookup_message(text)
+    if not has_price_intent:
+        return None
+
+    number_match = TZ_ITEM_NUMBER.search(text)
+    if number_match and tz_items:
+        try:
+            item_number = int(number_match.group(1))
+        except ValueError:
+            item_number = 0
+        tz_item = next((item for item in tz_items if item.number == item_number), None)
+        if tz_item:
+            parsed = parse_lookup_query(
+                text if text.lower().startswith("/find") else f"/find {text}"
+            )
+            fields = (
+                _ensure_price_lookup_fields(parsed.requested_fields)
+                if parsed
+                else list(PRICE_LOOKUP_FIELDS)
+            )
+            return ProductQuery(product_name=tz_item.name, requested_fields=fields)
+
+    parsed = parse_lookup_query(
+        text if text.lower().startswith("/find") else f"/find {text}"
+    )
+    if parsed and len(parsed.product_name) >= 2:
+        return ProductQuery(
+            product_name=parsed.product_name,
+            requested_fields=_ensure_price_lookup_fields(parsed.requested_fields),
+        )
+
+    if tz_items:
+        tz_item = _find_tz_item_in_message(text, tz_items)
+        if tz_item:
+            return ProductQuery(
+                product_name=tz_item.name,
+                requested_fields=list(PRICE_LOOKUP_FIELDS),
+            )
+
+    return None
+
+
+def kp_lookup_reply(result: ProductLookupResult) -> str:
+    if result.not_found and not ProductLookupService._any_source_found(
+        result.catalog,
+        result.price_list,
+        result.registry,
+        result.competitors,
+    ):
+        return (
+            f"По запросу «{result.query_name}» ничего не найдено "
+            "в каталоге, прайсах, реестре и на сайтах конкурентов."
+        )
+
+    name = result.matched_name or result.query_name
+    score_part = f" ({result.match_score:.0f}%)" if result.match_score else ""
+    return (
+        f"Сводка по «{name}»{score_part}: каталог, прайсы, реестр "
+        "и сайты конкурентов — см. таблицу ниже."
+    )
+
+
 def format_lookup_response(result: ProductLookupResult) -> str:
     if result.not_found:
         lines = [
@@ -1000,6 +1319,34 @@ def _format_source_blocks(result: ProductLookupResult) -> list[str]:
     lines.extend(_format_catalog_source_lines(result.catalog))
     lines.extend(_format_price_source_lines(result.price_list))
     lines.extend(_format_registry_source_lines(result.registry))
+    lines.extend(_format_competitors_source_lines(result.competitors))
+    return lines
+
+
+def _format_competitors_source_lines(competitors: dict[str, object]) -> list[str]:
+    if not competitors.get("found"):
+        return ["• Сайты конкурентов: не найдено"]
+
+    items = competitors.get("items")
+    if not isinstance(items, list) or not items:
+        return ["• Сайты конкурентов: не найдено"]
+
+    lines = ["• Сайты конкурентов:"]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"  ◦ {item.get('label', 'Конкурент')}: {item.get('name')} "
+            f"({item.get('match_score')}%)"
+        )
+        if item.get("price"):
+            lines.append(f"    — цена: {item['price']}")
+        elif item.get("has_price") is False:
+            lines.append("    — цена не указана")
+        if item.get("price_kp"):
+            lines.append(f"    — цена КП (−{WEB_PRICE_DISCOUNT_PERCENT}%): {item['price_kp']}")
+        if item.get("url"):
+            lines.append(f"    — {item['url']}")
     return lines
 
 

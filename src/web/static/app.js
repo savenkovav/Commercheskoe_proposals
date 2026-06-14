@@ -379,6 +379,55 @@ function hasItemDetails(item) {
   );
 }
 
+const SOURCE_DETAIL_URL_RE = /https?:\/\/[^\s|]+/;
+
+function parseSourceDetailText(text) {
+  if (!text) return { label: "", url: null };
+  const match = text.match(SOURCE_DETAIL_URL_RE);
+  if (!match) return { label: text.trim(), url: null };
+  const url = match[0].replace(/[|,;]+$/, "");
+  const label = text
+    .slice(0, match.index)
+    .replace(/\s*[|–—-]\s*$/, "")
+    .trim();
+  return { label: label || text.trim(), url };
+}
+
+function resolveItemSourceUrl(item) {
+  const parsed = parseSourceDetailText(item.source_detail || "");
+  if (parsed.url) return parsed.url;
+  if (item.internet_url) return item.internet_url;
+
+  const webEntries = collectWebEntries(item);
+  if (item.internet_priced && item.unit_base_price != null) {
+    const selected = webEntries.find((q) => {
+      const price = q.price ?? q.cost;
+      return (
+        q.url &&
+        price != null &&
+        Math.abs(price - item.unit_base_price) < 0.01
+      );
+    });
+    if (selected?.url) return selected.url;
+  }
+
+  for (const q of webEntries) {
+    if (q.url && !isSearchListingUrl(q.url)) return q.url;
+  }
+  return null;
+}
+
+function renderSourceDetailLine(item) {
+  if (!item.source_detail) return null;
+  const parsed = parseSourceDetailText(item.source_detail);
+  const label = parsed.label || item.source_detail;
+  const url = parsed.url || resolveItemSourceUrl(item);
+  if (url) {
+    return `<strong>Детали:</strong> <a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+  }
+  return `<strong>Детали:</strong> ${escapeHtml(label)}`;
+}
+
 function renderPrimaryMatchBlock(item) {
   const webEntries = collectWebEntries(item);
   const lines = [
@@ -391,12 +440,10 @@ function renderPrimaryMatchBlock(item) {
     !item.internet_priced && item.source
       ? `<strong>Источник:</strong> ${escapeHtml(SOURCE_LABELS[item.source] || item.source)}`
       : null,
-    item.internet_url
+    !item.source_detail && item.internet_url
       ? `<strong>Ссылка:</strong> <a href="${escapeHtml(item.internet_url)}" target="_blank" rel="noopener">${escapeHtml(item.internet_url)}</a>`
       : null,
-    item.source_detail
-      ? `<strong>Детали:</strong> ${escapeHtml(item.source_detail)}`
-      : null,
+    renderSourceDetailLine(item),
     item.unit_base_price != null
       ? `<strong>Цена баз.:</strong> ${fmtMoney(item.unit_base_price)}`
       : null,
@@ -628,9 +675,11 @@ function renderKpChatMessages() {
       if (msg.actions?.reprocessed_items?.length) {
         actions += `<div class="kp-chat-actions">Позиции: ${msg.actions.reprocessed_items.join(", ")}</div>`;
       }
+      const lookupHtml = msg.lookup ? renderLookupResultHtml(msg.lookup) : "";
       return `
         <div class="chat-msg chat-msg--assistant">
           <div class="chat-msg__bubble">${escapeHtml(msg.text)}${actions}</div>
+          ${lookupHtml ? `<div class="chat-msg__bubble chat-result">${lookupHtml}</div>` : ""}
           <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
         </div>`;
     })
@@ -696,6 +745,7 @@ async function sendKpChatMessage(text) {
       role: "assistant",
       text: data.reply,
       actions: data.actions,
+      lookup: data.lookup || null,
       ts: Date.now(),
     });
     if (data.markup_percent != null) {
@@ -704,6 +754,8 @@ async function sendKpChatMessage(text) {
     renderProcessResult(data);
     if (data.actions?.generate_excel) {
       showToast("Excel сформирован");
+    } else if (data.lookup) {
+      showToast("Сводка по позиции готова");
     } else if (data.actions?.run_local_search) {
       showToast("Поиск выполнен");
     } else {
@@ -1348,6 +1400,27 @@ function renderAiInsightBlock(ai) {
     </div>`;
 }
 
+function renderCompetitorsBlock(competitors) {
+  return renderMatchVariants(
+    "Сайты конкурентов",
+    competitors || {},
+    (item) => [
+      item.label ? `Источник: ${escapeHtml(item.label)}` : null,
+      item.price
+        ? `Цена: ${item.price}`
+        : item.has_price === false
+          ? "Цена не указана на сайте"
+          : null,
+      item.price_kp ? `Цена КП (−5%): ${item.price_kp}` : null,
+      item.url
+        ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.url)}</a>`
+        : null,
+      item.notes ? escapeHtml(item.notes) : null,
+    ],
+    "На сайтах конкурентов не найдено",
+  );
+}
+
 function renderLookupResultHtml(data) {
   const photoHtml = renderRegistryPhotos(data.registry);
 
@@ -1393,6 +1466,7 @@ function renderLookupResultHtml(data) {
   );
 
   const aiBlock = renderAiInsightBlock(data.ai_insight);
+  const competitorsBlock = renderCompetitorsBlock(data.competitors);
 
   if (data.not_found) {
     return `
@@ -1402,6 +1476,7 @@ function renderLookupResultHtml(data) {
           ${catalogBlock}
           ${priceBlock}
           ${registryBlock}
+          ${competitorsBlock}
           ${aiBlock}
           ${
             data.alternatives.length
@@ -1426,6 +1501,7 @@ function renderLookupResultHtml(data) {
         ${catalogBlock}
         ${priceBlock}
         ${registryBlock}
+        ${competitorsBlock}
         ${aiBlock}
         ${
           data.alternatives.length

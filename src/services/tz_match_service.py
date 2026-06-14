@@ -330,7 +330,10 @@ class TZMatchService:
                         price=result.unit_base_price,
                         cost=result.unit_base_price,
                         match_score=result.match_score,
-                        url=self._pick_internet_url(web_quotes),
+                        url=self._pick_internet_url(
+                            web_quotes,
+                            unit_base_price=result.unit_base_price,
+                        ),
                         notes=(
                             f"Подобрано из интернета | Цена КП: "
                             f"−{WEB_PRICE_DISCOUNT_PERCENT}%"
@@ -341,7 +344,10 @@ class TZMatchService:
 
             best = pick_best_web_priced_quote(priced) or priced[0]
             if not best.url:
-                best.url = self._pick_internet_url(web_quotes)
+                best.url = self._pick_internet_url(
+                    web_quotes,
+                    unit_base_price=result.unit_base_price,
+                )
             if best.price is None and best.cost is None:
                 best.price = result.unit_base_price
                 best.cost = result.unit_base_price
@@ -361,8 +367,12 @@ class TZMatchService:
             )
 
     @staticmethod
-    def _pick_internet_url(web_quotes: list[PriceQuote]) -> str | None:
-        return pick_internet_url(web_quotes)
+    def _pick_internet_url(
+        web_quotes: list[PriceQuote],
+        *,
+        unit_base_price: float | None = None,
+    ) -> str | None:
+        return pick_internet_url(web_quotes, unit_base_price=unit_base_price)
 
     def _has_confident_local_match(
         self,
@@ -480,6 +490,10 @@ class TZMatchService:
                 web_result.get("unit_cost") is not None
                 and match_score >= WEB_SEARCH_EXACT_THRESHOLD
             ):
+                url = None
+                urls = competitor_urls_for_item([], tz_item.name, limit=1)
+                if urls and not is_search_listing_url(urls[0]):
+                    url = urls[0]
                 quotes.append(
                     PriceQuote(
                         source="web",
@@ -488,6 +502,7 @@ class TZMatchService:
                         cost=float(web_result["unit_cost"]),
                         price=float(web_result["unit_cost"]),
                         match_score=match_score,
+                        url=url,
                         notes=str(web_result.get("notes") or ""),
                     )
                 )
@@ -875,7 +890,11 @@ class TZMatchService:
                 f"{web_quote.notes} | Цена КП: −{WEB_PRICE_DISCOUNT_PERCENT}% "
                 f"от найденной в интернете"
             ).strip(" |"),
-            source_detail=web_quote.label,
+            source_detail=(
+                f"{web_quote.label} | {web_quote.url}"
+                if web_quote.url
+                else web_quote.label
+            ),
             internet_priced=True,
         )
 
@@ -1018,8 +1037,27 @@ class TZMatchService:
         else:
             note = f"Подбор по сравнению: {best.label}"
         result.notes = note if not result.notes else f"{result.notes} | {note}"
-        if best.source == "web" and best.url:
-            result.source_detail = f"{best.label} | {best.url}"
+        if best.source == "web":
+            url = best.url or TZMatchService._pick_internet_url(
+                result.comparison,
+                unit_base_price=base_price,
+            )
+            if not url and base_price is not None:
+                for quote in result.comparison:
+                    if quote.source != "web" or not quote.url:
+                        continue
+                    quote_price = (
+                        quote.cost if quote.cost is not None else quote.price
+                    )
+                    if (
+                        quote_price is not None
+                        and abs(quote_price - base_price) < 0.01
+                    ):
+                        url = quote.url
+                        break
+            result.source_detail = (
+                f"{best.label} | {url}" if url else best.label
+            )
         else:
             result.source_detail = best.label
 
@@ -1199,7 +1237,8 @@ class TZMatchService:
                 result.matched_name = result.tz_item.name
             if not result.source_detail:
                 url = TZMatchService._pick_internet_url(
-                    [q for q in result.comparison if q.source == "web"]
+                    [q for q in result.comparison if q.source == "web"],
+                    unit_base_price=result.unit_base_price,
                 )
                 result.source_detail = (
                     f"Интернет | {url}" if url else "Интернет"

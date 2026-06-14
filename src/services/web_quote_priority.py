@@ -177,7 +177,11 @@ def pick_marketplace_priced_quote(quotes: list[PriceQuote]) -> PriceQuote | None
     return min(eligible, key=web_quote_rank_key)
 
 
-def pick_internet_url(quotes: list[PriceQuote]) -> str | None:
+def pick_internet_url(
+    quotes: list[PriceQuote],
+    *,
+    unit_base_price: float | None = None,
+) -> str | None:
     eligible = [
         quote
         for quote in quotes
@@ -191,7 +195,17 @@ def pick_internet_url(quotes: list[PriceQuote]) -> str | None:
             return quote.url
     for quote in eligible:
         return quote.url
+    if unit_base_price is not None:
+        for quote in quotes:
+            if quote.source != "web" or not quote.url:
+                continue
+            base = quote.cost if quote.cost is not None else quote.price
+            if base is not None and abs(base - unit_base_price) < 0.01:
+                return quote.url
     for quote in quotes:
         if quote.source == "web" and is_competitor_display_quote(quote) and quote.url:
+            return quote.url
+    for quote in quotes:
+        if quote.source == "web" and quote.url and not is_search_listing_url(quote.url):
             return quote.url
     return None

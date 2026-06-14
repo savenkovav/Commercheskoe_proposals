@@ -32,6 +32,7 @@ from src.services.tz_parser import resolve_tz_upload_filename
 from src.services.price_list_manager import get_price_list_manager
 from src.services.product_lookup import (
     LookupField,
+    ProductLookupResult,
     ProductLookupService,
     get_field_labels,
     parse_lookup_query,
@@ -101,7 +102,14 @@ def _kit_component_to_dict(line: KitComponentLine) -> dict[str, Any]:
 
 def _internet_url_from_result(result: MatchResult) -> str | None:
     web_quotes = [q for q in result.comparison if q.source == "web"]
-    return pick_internet_url(web_quotes)
+    url = pick_internet_url(web_quotes, unit_base_price=result.unit_base_price)
+    if url:
+        return url
+    detail = result.source_detail or ""
+    match = re.search(r"https?://[^\s|]+", detail)
+    if match:
+        return match.group(0).rstrip("|")
+    return None
 
 
 def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
@@ -291,6 +299,35 @@ def _process_tz_path(
     return payload
 
 
+def _lookup_result_to_dict(result: ProductLookupResult) -> dict[str, Any]:
+    values = {
+        get_field_labels()[field]: value
+        for field, value in result.values.items()
+    }
+    status_label = {
+        MatchStatus.EXACT: "exact",
+        MatchStatus.SIMILAR: "similar",
+        MatchStatus.NOT_FOUND: "not_found",
+    }.get(result.status, "not_found")
+
+    return {
+        "query_name": result.query_name,
+        "matched_name": result.matched_name,
+        "match_score": round(result.match_score, 1),
+        "status": status_label,
+        "not_found": result.not_found,
+        "values": values,
+        "sources": result.sources,
+        "alternatives": result.alternatives[:8],
+        "available_fields": list(get_field_labels().values()),
+        "catalog": result.catalog,
+        "price_list": result.price_list,
+        "registry": _serialize_registry_block(result.registry),
+        "competitors": result.competitors,
+        "ai_insight": result.ai_insight,
+    }
+
+
 def _kp_chat_response(chat_result: dict[str, Any], session_id: str) -> dict[str, Any]:
     processor = get_processor()
     summary = chat_result["summary"]
@@ -312,6 +349,9 @@ def _kp_chat_response(chat_result: dict[str, Any], session_id: str) -> dict[str,
         "web_used": processor.ai.enabled,
     }
     _attach_download_info(payload, output_path)
+    lookup = chat_result.get("lookup")
+    if isinstance(lookup, ProductLookupResult):
+        payload["lookup"] = _lookup_result_to_dict(lookup)
     return payload
 
 
@@ -431,35 +471,13 @@ def api_lookup(body: LookupRequest) -> dict[str, Any]:
         )
 
     processor = get_processor()
-    lookup = ProductLookupService(processor.matcher, processor.ai)
+    lookup = ProductLookupService(
+        processor.matcher,
+        processor.ai,
+        processor.tz_matcher.web_search,
+    )
     result = lookup.lookup(parsed.product_name, parsed.requested_fields)
-
-    values = {
-        get_field_labels()[field]: value
-        for field, value in result.values.items()
-    }
-
-    status_label = {
-        MatchStatus.EXACT: "exact",
-        MatchStatus.SIMILAR: "similar",
-        MatchStatus.NOT_FOUND: "not_found",
-    }.get(result.status, "not_found")
-
-    return {
-        "query_name": result.query_name,
-        "matched_name": result.matched_name,
-        "match_score": round(result.match_score, 1),
-        "status": status_label,
-        "not_found": result.not_found,
-        "values": values,
-        "sources": result.sources,
-        "alternatives": result.alternatives[:8],
-        "available_fields": list(get_field_labels().values()),
-        "catalog": result.catalog,
-        "price_list": result.price_list,
-        "registry": _serialize_registry_block(result.registry),
-        "ai_insight": result.ai_insight,
-    }
+    return _lookup_result_to_dict(result)
 
 
 def _serialize_registry_block(registry: dict[str, object]) -> dict[str, object]:

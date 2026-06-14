@@ -11,6 +11,11 @@ from src.services.kp_preferences import KpPreferences, filter_comparison_quotes
 from src.services.kp_session import ChatTurn, KpSession, get_kp_session_store
 from src.services.markup_settings import get_markup_percent, set_markup_percent
 from src.services.models import MatchResult, MatchSource, ProposalSummary
+from src.services.product_lookup import (
+    ProductLookupService,
+    kp_lookup_reply,
+    resolve_kp_price_lookup,
+)
 from src.services.proposal_processor import ProposalProcessor
 
 logger = logging.getLogger(__name__)
@@ -34,6 +39,11 @@ class KpChatService:
     def __init__(self, processor: ProposalProcessor) -> None:
         self.processor = processor
         self.store = get_kp_session_store()
+        self.lookup = ProductLookupService(
+            processor.matcher,
+            processor.ai,
+            processor.tz_matcher.web_search,
+        )
 
     def create_session(
         self,
@@ -90,6 +100,14 @@ class KpChatService:
 
         session.chat_history.append(ChatTurn(role="user", text=text))
 
+        lookup_query = resolve_kp_price_lookup(text, session.tz_items)
+        lookup_result = None
+        if lookup_query:
+            lookup_result = self.lookup.lookup(
+                lookup_query.product_name,
+                lookup_query.requested_fields,
+            )
+
         items_summary = self._items_summary(session.results, session.tz_items)
         if self.processor.ai.enabled:
             patch = self.processor.ai.interpret_assistant_message(
@@ -113,6 +131,14 @@ class KpChatService:
             )
 
         reply = str(patch.get("reply") or "Понял.")
+        if lookup_result is not None:
+            reply = kp_lookup_reply(lookup_result)
+            patch["run_local_search"] = False
+            patch["run_web_search"] = False
+            patch["generate_excel"] = False
+            patch["reprocess_items"] = []
+            patch["reprocess_all"] = False
+
         if patch.get("task_mode") in ("task1", "task1_task2"):
             session.task_mode = patch["task_mode"]
 
@@ -177,7 +203,7 @@ class KpChatService:
 
         session.chat_history.append(ChatTurn(role="assistant", text=reply))
 
-        return {
+        response: dict = {
             "reply": reply,
             "preferences": session.preferences.to_dict(),
             "markup_percent": get_markup_percent(),
@@ -195,6 +221,9 @@ class KpChatService:
                 "generate_excel": excel_generated,
             },
         }
+        if lookup_result is not None:
+            response["lookup"] = lookup_result
+        return response
 
     def _run_search(
         self,
