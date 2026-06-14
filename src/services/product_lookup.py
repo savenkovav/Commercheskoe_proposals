@@ -349,7 +349,6 @@ class ProductLookupService:
             competitors_block,
         )
 
-    @staticmethod
     def _should_search_competitors(
         self,
         fields: list[LookupField],
