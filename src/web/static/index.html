@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <title>КП-Ассистент</title>
-  <link rel="stylesheet" href="/app.css?v=20260611a">
+  <link rel="stylesheet" href="/app.css?v=20260614a">
 </head>
 <body>
   <div class="layout">
@@ -29,41 +29,6 @@
 
     <main>
       <section class="panel panel--active" id="panel-kp" data-panel="kp">
-        <div class="card" id="kpChatCard">
-          <div class="chat-header">
-            <h2>Диалог с КП-Ассистентом</h2>
-            <p class="muted">Загрузите ТЗ или опишите позиции. Поиск в каталогах и прайсах — только по вашей команде.</p>
-            <div class="assistant-mode" id="assistantMode">
-              <span class="assistant-mode__label">Задача:</span>
-              <span class="assistant-mode__value" id="taskModeLabel">не выбрана</span>
-              <span class="assistant-mode__sep">·</span>
-              <span class="assistant-mode__value" id="stageLabel">ожидание ТЗ</span>
-            </div>
-          </div>
-          <div class="kp-chat-hints" id="kpChatHints">
-            <button type="button" class="kp-chat-hint" data-hint="Задача 1: только поиск в каталогах и прайсах">Только поиск</button>
-            <button type="button" class="kp-chat-hint" data-hint="Задача 1+2: найди в каталогах и подбери конкурентные цены">Поиск + конкуренты</button>
-            <button type="button" class="kp-chat-hint" data-hint="Рассчитай с наценкой 30% и сформируй Excel">Наценка 30%</button>
-            <button type="button" class="kp-chat-hint" data-hint="Сформируй Excel КП">Сформировать Excel</button>
-            <button type="button" class="kp-chat-hint" data-hint="Запомни как правило: для гипсовых моделей бери составляющие из прайса ПИШ">Запомни правило</button>
-          </div>
-          <div class="chat-messages kp-chat-messages" id="kpChatMessages" aria-live="polite">
-            <div class="chat-welcome">
-              <p>Я КП-Ассистент. Загрузите ТЗ или напишите запрос. Поиск начну только когда вы попросите.</p>
-            </div>
-          </div>
-          <form class="chat-compose" id="kpChatForm">
-            <textarea
-              id="kpChatInput"
-              class="input chat-compose__input"
-              rows="2"
-              placeholder="Например: найди в каталогах · уточни характеристики · наценка 25%..."
-              autocomplete="off"
-            ></textarea>
-            <button class="btn btn--primary chat-compose__send" type="submit" id="btnKpChatSend">Отправить</button>
-          </form>
-        </div>
-
         <div class="grid-2">
           <div class="card">
             <h2>Загрузить ТЗ</h2>
@@ -103,6 +68,41 @@
             </div>
             <div class="summary hidden" id="summaryBlock"></div>
           </div>
+        </div>
+
+        <div class="card" id="kpChatCard">
+          <div class="chat-header">
+            <h2>Диалог с КП-Ассистентом</h2>
+            <p class="muted">Загрузите ТЗ или опишите позиции. Поиск в каталогах и прайсах — только по вашей команде.</p>
+            <div class="assistant-mode" id="assistantMode">
+              <span class="assistant-mode__label">Задача:</span>
+              <span class="assistant-mode__value" id="taskModeLabel">не выбрана</span>
+              <span class="assistant-mode__sep">·</span>
+              <span class="assistant-mode__value" id="stageLabel">ожидание ТЗ</span>
+            </div>
+          </div>
+          <div class="kp-chat-hints" id="kpChatHints">
+            <button type="button" class="kp-chat-hint" data-hint="Задача 1: только поиск в каталогах и прайсах">Только поиск</button>
+            <button type="button" class="kp-chat-hint" data-hint="Задача 1+2: найди в каталогах и подбери конкурентные цены">Поиск + конкуренты</button>
+            <button type="button" class="kp-chat-hint" data-hint="Рассчитай с наценкой 30% и сформируй Excel">Наценка 30%</button>
+            <button type="button" class="kp-chat-hint" data-hint="Сформируй Excel КП">Сформировать Excel</button>
+            <button type="button" class="kp-chat-hint" data-hint="Запомни как правило: для гипсовых моделей бери составляющие из прайса ПИШ">Запомни правило</button>
+          </div>
+          <div class="chat-messages kp-chat-messages" id="kpChatMessages" aria-live="polite">
+            <div class="chat-welcome">
+              <p>Я КП-Ассистент. Загрузите ТЗ или напишите запрос. Поиск начну только когда вы попросите.</p>
+            </div>
+          </div>
+          <form class="chat-compose" id="kpChatForm">
+            <textarea
+              id="kpChatInput"
+              class="input chat-compose__input"
+              rows="2"
+              placeholder="Например: найди в каталогах · уточни характеристики · наценка 25%..."
+              autocomplete="off"
+            ></textarea>
+            <button class="btn btn--primary chat-compose__send" type="submit" id="btnKpChatSend">Отправить</button>
+          </form>
         </div>
 
         <div class="card hidden" id="resultsCard">
@@ -225,6 +225,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260611g"></script>
+  <script src="/app.js?v=20260614a"></script>
 </body>
 </html>
