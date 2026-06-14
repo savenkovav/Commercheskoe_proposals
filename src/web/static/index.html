@@ -70,10 +70,34 @@
           </div>
         </div>
 
+        <div class="card hidden" id="resultsCard">
+          <div class="card__head">
+            <h2>Детализация позиций</h2>
+            <a class="btn btn--primary" id="downloadBtn" href="#" download>Скачать Excel</a>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="resultsTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Позиция ТЗ</th>
+                  <th>Найдено</th>
+                  <th>Статус</th>
+                  <th>Количество</th>
+                  <th>Цена</th>
+                  <th>Цена КП</th>
+                  <th>Сумма</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="card" id="kpChatCard">
           <div class="chat-header">
             <h2>Диалог с КП-Ассистентом</h2>
-            <p class="muted">Напишите название товара — результат сразу. Для расчёта КП по ТЗ загрузите файл ниже.</p>
+            <p class="muted">Напишите название товара — результат сразу. Для расчёта КП по ТЗ загрузите файл выше.</p>
             <div class="assistant-mode" id="assistantMode">
               <span class="assistant-mode__label">Задача:</span>
               <span class="assistant-mode__value" id="taskModeLabel">не выбрана</span>
@@ -104,30 +128,6 @@
             ></textarea>
             <button class="btn btn--primary chat-compose__send" type="submit" id="btnKpChatSend">Отправить</button>
           </form>
-        </div>
-
-        <div class="card hidden" id="resultsCard">
-          <div class="card__head">
-            <h2>Детализация позиций</h2>
-            <a class="btn btn--primary" id="downloadBtn" href="#" download>Скачать Excel</a>
-          </div>
-          <div class="table-wrap">
-            <table class="data-table" id="resultsTable">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Позиция ТЗ</th>
-                  <th>Найдено</th>
-                  <th>Статус</th>
-                  <th>Количество</th>
-                  <th>Цена</th>
-                  <th>Цена КП</th>
-                  <th>Сумма</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
         </div>
 
       </section>
@@ -226,6 +226,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260615b"></script>
+  <script src="/app.js?v=20260615c"></script>
 </body>
 </html>

@@ -923,15 +923,6 @@ function renderProcessResult(data) {
     });
   });
 
-  tbody.querySelectorAll(".tz-row--expandable").forEach((row) => {
-    const item = data.items.find((entry) => String(entry.number) === row.cells[0]?.textContent);
-    if (!item || (!item.internet_priced && !collectWebEntries(item).length)) return;
-    const detail = document.getElementById(row.dataset.detail);
-    if (!detail) return;
-    detail.classList.remove("hidden");
-    row.classList.add("tz-row--open");
-  });
-
   const btn = $("#downloadBtn");
   if (btn) {
     if (hasKpDownload(data)) {
