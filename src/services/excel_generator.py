@@ -16,10 +16,16 @@ from src.config import (
     DELIVERY_DAYS,
     DELIVERY_TERMS,
     PAYMENT_TERMS,
+    WEB_PRICE_DISCOUNT_PERCENT,
 )
 from src.services.kp_preferences import KpPreferences, competitor_link_urls, filter_comparison_quotes
 from src.services.markup_settings import get_markup_percent
-from src.services.pricing_rules import pricing_adjustment_label, uses_web_discount_pricing
+from src.services.pricing_rules import (
+    effective_markup_percent,
+    format_markup_percent,
+    pricing_adjustment_label,
+    uses_web_discount_pricing,
+)
 from src.services.models import KitComponentLine, MatchResult, MatchStatus, ProposalSummary
 from src.services.web_quote_priority import parse_source_detail, resolve_price_source_url
 
@@ -75,6 +81,30 @@ def _specs_preview(text: str, limit: int = 500) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 1] + "…"
+
+
+def _margin_tender_unit(result: MatchResult) -> float:
+    if result.unit_price is not None:
+        return _money(result.unit_price)
+    base = (
+        result.unit_base_price
+        if result.unit_base_price is not None
+        else result.unit_cost
+    )
+    if base is None:
+        return 0.0
+    markup_pct = effective_markup_percent(result)
+    if markup_pct is None:
+        return 0.0
+    return _money(base * (1 + markup_pct / 100))
+
+
+def _margin_supplier_unit(result: MatchResult) -> float:
+    if result.unit_cost is not None:
+        return _money(result.unit_cost)
+    if result.unit_base_price is not None:
+        return _money(result.unit_base_price)
+    return 0.0
 
 
 class ExcelGenerator:
@@ -288,7 +318,7 @@ class ExcelGenerator:
             "Кол-во",
             "Себест. ед.",
             "Цена баз.",
-            f"Наценка {get_markup_percent()}%",
+            f"Наценка",
             "Цена ед.",
             "Сумма",
             "Поставщик",
@@ -340,6 +370,7 @@ class ExcelGenerator:
         preferences: KpPreferences | None = None,
     ) -> int:
         markup_amount = None
+        markup_pct = effective_markup_percent(result) if component is None else None
         if result.unit_base_price is not None and result.unit_price is not None:
             markup_amount = _money(result.unit_price - result.unit_base_price)
 
@@ -418,7 +449,7 @@ class ExcelGenerator:
             quantity,
             unit_cost,
             unit_base_price,
-            markup_amount if component is None else None,
+            format_markup_percent(markup_pct) if markup_pct is not None else markup_amount,
             unit_price,
             total_price,
             supplier,
@@ -701,7 +732,13 @@ class ExcelGenerator:
             ("", ""),
             ("Итого себестоимость", _money(summary.total_cost)),
             ("Итого цена без наценки", _money(summary.total_base_price)),
-            (f"Наценка {get_markup_percent()}%", ""),
+            (
+                "Наценка",
+                (
+                    f"{format_markup_percent(get_markup_percent())} каталог/прайс; "
+                    f"{format_markup_percent(-WEB_PRICE_DISCOUNT_PERCENT)} интернет"
+                ),
+            ),
             ("Итого цена КП", _money(summary.total_price)),
             ("", ""),
             ("Время обработки, сек", round(summary.processing_seconds, 2)),
@@ -731,12 +768,14 @@ class ExcelGenerator:
         results: list[MatchResult],
         preferences: KpPreferences | None = None,
     ) -> None:
+        del preferences
         headers = [
             "№",
             "Наим. Заказчика",
             "Ед. изм.",
             "Кол-во в тенд",
             "Цена в тенд",
+            "Наценка %",
             "Стоимость тенд",
             "Наим. Пост.",
             "Кол-во \nпост",
@@ -759,8 +798,9 @@ class ExcelGenerator:
         first_data_row = 2
         for idx, result in enumerate(results, start=first_data_row):
             qty = result.tz_item.quantity
-            unit_price = _money(result.unit_price) if result.unit_price is not None else 0
-            unit_cost = _money(result.unit_cost) if result.unit_cost is not None else 0
+            unit_price = _margin_tender_unit(result)
+            unit_cost = _margin_supplier_unit(result)
+            markup_pct = effective_markup_percent(result)
             supplier_name = (result.matched_name or "").strip() or "—"
             supplier_shop = (result.supplier or "").strip() or "—"
 
@@ -780,30 +820,38 @@ class ExcelGenerator:
             price_cell.number_format = "#,##0.00"
             price_cell.border = _thin_border()
 
-            cost_cell = ws.cell(row=idx, column=9, value=unit_cost)
+            markup_cell = ws.cell(
+                row=idx,
+                column=6,
+                value=format_markup_percent(markup_pct),
+            )
+            markup_cell.border = _thin_border()
+            markup_cell.alignment = Alignment(horizontal="center", vertical="top")
+
+            cost_cell = ws.cell(row=idx, column=10, value=unit_cost)
             cost_cell.number_format = "#,##0.00"
             cost_cell.border = _thin_border()
 
-            ws.cell(row=idx, column=7, value=supplier_name).border = _thin_border()
-            ws.cell(row=idx, column=13, value=supplier_shop).border = _thin_border()
+            ws.cell(row=idx, column=8, value=supplier_name).border = _thin_border()
+            ws.cell(row=idx, column=14, value=supplier_shop).border = _thin_border()
 
-            ws.cell(row=idx, column=6, value=f"=D{idx}*E{idx}").number_format = "#,##0.00"
-            ws.cell(row=idx, column=6).border = _thin_border()
-            ws.cell(row=idx, column=8, value=f"=D{idx}").border = _thin_border()
-            ws.cell(row=idx, column=10, value=f"=H{idx}*I{idx}").number_format = '#,##0.00 "₽"'
-            ws.cell(row=idx, column=10).border = _thin_border()
-            ws.cell(row=idx, column=11, value=f"=IF(F{idx}=0,0,(F{idx}-J{idx})/F{idx})").number_format = "0%"
+            ws.cell(row=idx, column=7, value=f"=D{idx}*E{idx}").number_format = "#,##0.00"
+            ws.cell(row=idx, column=7).border = _thin_border()
+            ws.cell(row=idx, column=9, value=f"=D{idx}").border = _thin_border()
+            ws.cell(row=idx, column=11, value=f"=I{idx}*J{idx}").number_format = '#,##0.00 "₽"'
             ws.cell(row=idx, column=11).border = _thin_border()
-            ws.cell(row=idx, column=12, value=f"=(F{idx}-J{idx})").number_format = "#,##0.00"
+            ws.cell(row=idx, column=12, value=f"=IF(G{idx}=0,0,(G{idx}-K{idx})/G{idx})").number_format = "0%"
             ws.cell(row=idx, column=12).border = _thin_border()
+            ws.cell(row=idx, column=13, value=f"=(G{idx}-K{idx})").number_format = "#,##0.00"
+            ws.cell(row=idx, column=13).border = _thin_border()
 
             if link_url:
-                _write_hyperlink(ws, idx, 14, link_url)
+                _write_hyperlink(ws, idx, 15, link_url)
             else:
-                cell = ws.cell(row=idx, column=14, value="—")
+                cell = ws.cell(row=idx, column=15, value="—")
                 cell.border = _thin_border()
 
-            for col in (2, 3, 4, 7, 13):
+            for col in (2, 3, 4, 8, 14):
                 ws.cell(row=idx, column=col).alignment = Alignment(
                     wrap_text=True,
                     vertical="top",
@@ -835,56 +883,67 @@ class ExcelGenerator:
             cell.border = _thin_border()
 
         if last_data_row >= first_data_row:
-            sum_range_f = f"F{first_data_row}:F{last_data_row}"
-            sum_range_j = f"J{first_data_row}:J{last_data_row}"
+            sum_range_g = f"G{first_data_row}:G{last_data_row}"
+            sum_range_k = f"K{first_data_row}:K{last_data_row}"
         else:
-            sum_range_f = "F2:F2"
-            sum_range_j = "J2:J2"
+            sum_range_g = "G2:G2"
+            sum_range_k = "K2:K2"
 
         _label(summary_row, "цена контракта")
-        ws.cell(row=summary_row, column=9, value="затраты").font = Font(bold=True)
-        _money_formula(summary_row, 6, f"=SUM({sum_range_f})")
-        _money_formula(summary_row, 10, f"=SUM({sum_range_j})")
+        ws.cell(row=summary_row, column=10, value="затраты").font = Font(bold=True)
+        _money_formula(summary_row, 7, f"=SUM({sum_range_g})")
+        _money_formula(summary_row, 11, f"=SUM({sum_range_k})")
 
         _label(expense_included_row, "учитывается в расходах")
         _money_formula(
             expense_included_row,
-            10,
-            f"=J{summary_row}-J{expense_excluded_row}",
+            11,
+            f"=K{summary_row}-K{expense_excluded_row}",
         )
 
         _label(expense_excluded_row, "не учитывается в расходах")
-        excluded_cell = ws.cell(row=expense_excluded_row, column=10, value=0)
+        excluded_cell = ws.cell(row=expense_excluded_row, column=11, value=0)
         excluded_cell.font = Font(bold=True)
         excluded_cell.border = _thin_border()
 
         _label(tax_row, "Налог")
         _money_formula(
             tax_row,
-            10,
-            f"=F{summary_row}/1.05*0.05+(F{summary_row}-J{expense_included_row})*5%",
+            11,
+            f"=G{summary_row}/1.05*0.05+(G{summary_row}-K{expense_included_row})*5%",
         )
 
         _label(total_cost_row, "Затраты общие")
         _money_formula(
             total_cost_row,
-            10,
-            f"=SUM(J{expense_included_row}:J{tax_row})",
+            11,
+            f"=SUM(K{expense_included_row}:K{tax_row})",
         )
 
         _label(margin_row, "Маржа")
-        _money_formula(margin_row, 10, f"=F{summary_row}-J{total_cost_row}")
+        _money_formula(margin_row, 11, f"=G{summary_row}-K{total_cost_row}")
 
         _label(roi_row, "Процент доходности")
         roi_cell = ws.cell(
             row=roi_row,
-            column=10,
-            value=f"=IF(J{total_cost_row}=0,0,J{margin_row}/J{total_cost_row}*100)",
+            column=11,
+            value=f"=IF(K{total_cost_row}=0,0,K{margin_row}/K{total_cost_row}*100)",
         )
         roi_cell.number_format = "0"
         roi_cell.font = Font(bold=True)
         roi_cell.border = _thin_border()
 
-        widths = [6, 34, 10, 12, 14, 14, 28, 10, 12, 14, 10, 14, 18, 32]
+        note_row = roi_row + 2
+        ws.cell(
+            row=note_row,
+            column=2,
+            value=(
+                f"Наценка: {format_markup_percent(get_markup_percent())} для каталога/прайсов; "
+                f"{format_markup_percent(-WEB_PRICE_DISCOUNT_PERCENT)} для цен из интернета"
+            ),
+        )
+        ws.cell(row=note_row, column=2).alignment = Alignment(wrap_text=True, vertical="top")
+
+        widths = [6, 34, 10, 12, 14, 10, 14, 28, 10, 12, 14, 10, 14, 18, 32]
         for col_idx, width in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(col_idx)].width = width

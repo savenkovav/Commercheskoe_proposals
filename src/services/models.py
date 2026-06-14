@@ -127,6 +127,7 @@ class MatchResult:
     price_list_check: Optional[PriceQuote] = None
     is_kit: bool = False
     internet_priced: bool = False
+    applied_markup_pct: Optional[float] = None
 
 
 @dataclass

@@ -27,6 +27,7 @@ from src.config import (
 from src.services.kp_chat_service import KpChatService, WELCOME_MESSAGE
 from src.services.kp_preferences import KpPreferences
 from src.services.markup_settings import get_markup_percent, set_markup_percent
+from src.services.pricing_rules import effective_markup_percent, format_markup_percent
 from src.services.meilisearch_service import meilisearch_health
 from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
 from src.services.web_quote_priority import resolve_price_source_url
@@ -191,6 +192,8 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
         "purchase_date": result.purchase_date,
         "is_kit": result.is_kit,
         "internet_priced": result.internet_priced,
+        "applied_markup_pct": effective_markup_percent(result),
+        "applied_markup_label": format_markup_percent(effective_markup_percent(result)),
         "internet_url": _internet_url_from_result(result),
         "comparison": [_price_quote_to_dict(q) for q in result.comparison],
         "competitors": [_price_quote_to_dict(q) for q in result.competitors],
