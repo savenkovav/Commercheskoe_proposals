@@ -93,6 +93,11 @@ class ExcelGenerator:
         self._build_kit_sheet(wb.create_sheet("Состав комплектов"), results)
         self._build_comparison_sheet(wb.create_sheet("Сравнение"), results)
         self._build_summary_sheet(wb.create_sheet("Сводка"), results, summary)
+        self._build_margin_sheet(
+            wb.create_sheet("Маржинальность"),
+            results,
+            preferences,
+        )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         wb.save(output_path)
@@ -698,3 +703,168 @@ class ExcelGenerator:
                 ws.cell(row=idx, column=1, value=f"{result.tz_item.number}. {result.tz_item.name}")
         else:
             ws["A16"] = "— все позиции подобраны"
+
+    def _build_margin_sheet(
+        self,
+        ws,
+        results: list[MatchResult],
+        preferences: KpPreferences | None = None,
+    ) -> None:
+        headers = [
+            "№",
+            "Наим. Заказчика",
+            "Ед. изм.",
+            "Кол-во в тенд",
+            "Цена в тенд",
+            "Стоимость тенд",
+            "Наим. Пост.",
+            "Кол-во \nпост",
+            "Цена пост",
+            "Стоимость пост",
+            "Маржа",
+            "Прибыль/убыток",
+            "Поставщик (Магазин)",
+            "Ссылка",
+        ]
+        header_row = 1
+
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=header_row, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="D9E1F2")
+            cell.border = _thin_border()
+            cell.alignment = Alignment(horizontal="center", wrap_text=True, vertical="center")
+
+        first_data_row = 2
+        for idx, result in enumerate(results, start=first_data_row):
+            qty = result.tz_item.quantity
+            unit_price = _money(result.unit_price) if result.unit_price is not None else 0
+            unit_cost = _money(result.unit_cost) if result.unit_cost is not None else 0
+            supplier_name = (result.matched_name or "").strip() or "—"
+            supplier_shop = (result.supplier or "").strip() or "—"
+
+            links = competitor_link_urls(
+                result.comparison,
+                result.tz_item.name,
+                preferences,
+                limit=1,
+            )
+            link_url = links[0] if links else None
+
+            ws.cell(row=idx, column=1, value=result.tz_item.number).border = _thin_border()
+            ws.cell(row=idx, column=2, value=result.tz_item.name).border = _thin_border()
+            ws.cell(row=idx, column=3, value=result.tz_item.unit).border = _thin_border()
+            ws.cell(row=idx, column=4, value=qty).border = _thin_border()
+
+            price_cell = ws.cell(row=idx, column=5, value=unit_price)
+            price_cell.number_format = "#,##0.00"
+            price_cell.border = _thin_border()
+
+            cost_cell = ws.cell(row=idx, column=9, value=unit_cost)
+            cost_cell.number_format = "#,##0.00"
+            cost_cell.border = _thin_border()
+
+            ws.cell(row=idx, column=7, value=supplier_name).border = _thin_border()
+            ws.cell(row=idx, column=13, value=supplier_shop).border = _thin_border()
+
+            ws.cell(row=idx, column=6, value=f"=D{idx}*E{idx}").number_format = "#,##0.00"
+            ws.cell(row=idx, column=6).border = _thin_border()
+            ws.cell(row=idx, column=8, value=f"=D{idx}").border = _thin_border()
+            ws.cell(row=idx, column=10, value=f"=H{idx}*I{idx}").number_format = '#,##0.00 "₽"'
+            ws.cell(row=idx, column=10).border = _thin_border()
+            ws.cell(row=idx, column=11, value=f"=IF(F{idx}=0,0,(F{idx}-J{idx})/F{idx})").number_format = "0%"
+            ws.cell(row=idx, column=11).border = _thin_border()
+            ws.cell(row=idx, column=12, value=f"=(F{idx}-J{idx})").number_format = "#,##0.00"
+            ws.cell(row=idx, column=12).border = _thin_border()
+
+            if link_url:
+                _write_hyperlink(ws, idx, 14, link_url)
+            else:
+                cell = ws.cell(row=idx, column=14, value="—")
+                cell.border = _thin_border()
+
+            for col in (2, 3, 4, 7, 13):
+                ws.cell(row=idx, column=col).alignment = Alignment(
+                    wrap_text=True,
+                    vertical="top",
+                )
+
+        if not results:
+            ws.cell(row=2, column=2, value="— позиции не найдены")
+            last_data_row = 1
+        else:
+            last_data_row = first_data_row + len(results) - 1
+
+        summary_row = last_data_row + 1
+        expense_included_row = summary_row + 1
+        expense_excluded_row = summary_row + 2
+        tax_row = summary_row + 3
+        total_cost_row = summary_row + 4
+        margin_row = summary_row + 5
+        roi_row = summary_row + 6
+
+        def _label(row: int, text: str, *, bold: bool = True) -> None:
+            cell = ws.cell(row=row, column=2, value=text)
+            cell.font = Font(bold=bold)
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+        def _money_formula(row: int, col: int, formula: str) -> None:
+            cell = ws.cell(row=row, column=col, value=formula)
+            cell.number_format = "#,##0.00"
+            cell.font = Font(bold=True)
+            cell.border = _thin_border()
+
+        if last_data_row >= first_data_row:
+            sum_range_f = f"F{first_data_row}:F{last_data_row}"
+            sum_range_j = f"J{first_data_row}:J{last_data_row}"
+        else:
+            sum_range_f = "F2:F2"
+            sum_range_j = "J2:J2"
+
+        _label(summary_row, "цена контракта")
+        ws.cell(row=summary_row, column=9, value="затраты").font = Font(bold=True)
+        _money_formula(summary_row, 6, f"=SUM({sum_range_f})")
+        _money_formula(summary_row, 10, f"=SUM({sum_range_j})")
+
+        _label(expense_included_row, "учитывается в расходах")
+        _money_formula(
+            expense_included_row,
+            10,
+            f"=J{summary_row}-J{expense_excluded_row}",
+        )
+
+        _label(expense_excluded_row, "не учитывается в расходах")
+        excluded_cell = ws.cell(row=expense_excluded_row, column=10, value=0)
+        excluded_cell.font = Font(bold=True)
+        excluded_cell.border = _thin_border()
+
+        _label(tax_row, "Налог")
+        _money_formula(
+            tax_row,
+            10,
+            f"=F{summary_row}/1.05*0.05+(F{summary_row}-J{expense_included_row})*5%",
+        )
+
+        _label(total_cost_row, "Затраты общие")
+        _money_formula(
+            total_cost_row,
+            10,
+            f"=SUM(J{expense_included_row}:J{tax_row})",
+        )
+
+        _label(margin_row, "Маржа")
+        _money_formula(margin_row, 10, f"=F{summary_row}-J{total_cost_row}")
+
+        _label(roi_row, "Процент доходности")
+        roi_cell = ws.cell(
+            row=roi_row,
+            column=10,
+            value=f"=IF(J{total_cost_row}=0,0,J{margin_row}/J{total_cost_row}*100)",
+        )
+        roi_cell.number_format = "0"
+        roi_cell.font = Font(bold=True)
+        roi_cell.border = _thin_border()
+
+        widths = [6, 34, 10, 12, 14, 14, 28, 10, 12, 14, 10, 14, 18, 32]
+        for col_idx, width in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
