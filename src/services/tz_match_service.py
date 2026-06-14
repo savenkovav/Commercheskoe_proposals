@@ -28,6 +28,7 @@ from src.services.kit_spec_parser import parse_kit_components_from_specs
 from src.services.local_price_match import has_local_catalog_or_price_list_price
 from src.services.tz_search import is_relevant_match, primary_search_text, relevance_score
 from src.services.web_quote_priority import (
+    enrich_source_detail_with_price_url,
     has_acceptable_web_pricing_in_comparison,
     has_unpriced_competitor_display_quote,
     is_acceptable_web_pricing_quote,
@@ -37,6 +38,7 @@ from src.services.web_quote_priority import (
     pick_best_web_priced_quote,
     pick_internet_url,
     pick_marketplace_priced_quote,
+    resolve_price_source_url,
     sort_web_quotes,
     web_quote_rank_key,
 )
@@ -249,6 +251,7 @@ class TZMatchService:
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
         self._ensure_internet_comparison(primary)
         self._promote_internet_status(primary)
+        self._ensure_internet_source_detail(primary)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
         return primary
 
@@ -280,6 +283,8 @@ class TZMatchService:
         if result.status != MatchStatus.NOT_FOUND and result.source != MatchSource.NONE:
             if result.internet_priced and result.source != MatchSource.WEB:
                 result.source = MatchSource.WEB
+            if result.internet_priced or result.source == MatchSource.WEB:
+                self._ensure_internet_source_detail(result)
             return
 
         if (
@@ -316,6 +321,7 @@ class TZMatchService:
                 result.matched_name = result.tz_item.name
             if not result.source_detail:
                 result.source_detail = "Интернет"
+            self._ensure_internet_source_detail(result)
             return
 
         result.status = MatchStatus.SIMILAR
@@ -917,10 +923,11 @@ class TZMatchService:
                 f"{web_quote.notes} | Цена КП: −{WEB_PRICE_DISCOUNT_PERCENT}% "
                 f"от найденной в интернете"
             ).strip(" |"),
-            source_detail=(
-                f"{web_quote.label} | {web_quote.url}"
-                if web_quote.url
-                else web_quote.label
+            source_detail=enrich_source_detail_with_price_url(
+                web_quote.label,
+                [web_quote],
+                unit_base_price=base_price,
+                preferred=web_quote,
             ),
             internet_priced=True,
         )
@@ -1068,25 +1075,11 @@ class TZMatchService:
             note = f"Подбор по сравнению: {best.label}"
         result.notes = note if not result.notes else f"{result.notes} | {note}"
         if best.source == "web":
-            url = best.url or TZMatchService._pick_internet_url(
+            result.source_detail = enrich_source_detail_with_price_url(
+                best.label,
                 result.comparison,
                 unit_base_price=base_price,
-            )
-            if not url and base_price is not None:
-                for quote in result.comparison:
-                    if quote.source != "web" or not quote.url:
-                        continue
-                    quote_price = (
-                        quote.cost if quote.cost is not None else quote.price
-                    )
-                    if (
-                        quote_price is not None
-                        and abs(quote_price - base_price) < 0.01
-                    ):
-                        url = quote.url
-                        break
-            result.source_detail = (
-                f"{best.label} | {url}" if url else best.label
+                preferred=best,
             )
         else:
             result.source_detail = best.label
@@ -1266,14 +1259,7 @@ class TZMatchService:
             result.source = MatchSource.WEB
             if not result.matched_name:
                 result.matched_name = result.tz_item.name
-            if not result.source_detail:
-                url = TZMatchService._pick_internet_url(
-                    [q for q in result.comparison if q.source == "web"],
-                    unit_base_price=result.unit_base_price,
-                )
-                result.source_detail = (
-                    f"Интернет | {url}" if url else "Интернет"
-                )
+            TZMatchService._ensure_internet_source_detail(result)
             if result.internet_priced and "−" not in (result.notes or ""):
                 result.notes = (
                     f"{result.notes} | Цена КП: −{WEB_PRICE_DISCOUNT_PERCENT}% "
@@ -1296,10 +1282,37 @@ class TZMatchService:
                 result.notes = (
                     f"{result.notes} | Цена не извлечена — проверьте ссылки"
                 ).strip(" |")
-                url = TZMatchService._pick_internet_url(links)
-                result.source_detail = (
-                    f"Интернет | {url}" if url else "Интернет"
-                )
+                TZMatchService._ensure_internet_source_detail(result)
+
+    @staticmethod
+    def _priced_web_quote_for_result(result: MatchResult) -> PriceQuote | None:
+        best = pick_best_web_priced_quote(result.comparison)
+        if best is not None:
+            return best
+        if result.unit_base_price is None:
+            return None
+        for quote in result.comparison:
+            if quote.source != "web":
+                continue
+            base = quote.cost if quote.cost is not None else quote.price
+            if base is not None and abs(base - result.unit_base_price) < 0.01:
+                return quote
+        return None
+
+    @staticmethod
+    def _ensure_internet_source_detail(result: MatchResult) -> None:
+        if not result.internet_priced and result.source != MatchSource.WEB:
+            return
+        if result.unit_base_price is None and result.unit_cost is None:
+            return
+
+        preferred = TZMatchService._priced_web_quote_for_result(result)
+        result.source_detail = enrich_source_detail_with_price_url(
+            result.source_detail,
+            result.comparison,
+            unit_base_price=result.unit_base_price,
+            preferred=preferred,
+        )
 
     @staticmethod
     def _best_web_priced_quote_with_url(

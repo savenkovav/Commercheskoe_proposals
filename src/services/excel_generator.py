@@ -21,6 +21,7 @@ from src.services.kp_preferences import KpPreferences, competitor_link_urls, fil
 from src.services.markup_settings import get_markup_percent
 from src.services.pricing_rules import pricing_adjustment_label, uses_web_discount_pricing
 from src.services.models import KitComponentLine, MatchResult, MatchStatus, ProposalSummary
+from src.services.web_quote_priority import parse_source_detail, resolve_price_source_url
 
 STATUS_LABELS = {
     MatchStatus.EXACT: "Точное совпадение",
@@ -53,14 +54,20 @@ def _thin_border() -> Border:
     return Border(left=side, right=side, top=side, bottom=side)
 
 
-def _write_hyperlink(ws, row: int, col: int, url: str | None) -> None:
-    cell = ws.cell(row=row, column=col, value=url or "—")
+def _write_hyperlink(
+    ws,
+    row: int,
+    col: int,
+    url: str | None,
+    display: str | None = None,
+) -> None:
+    label = (display or url or "—").strip()
+    cell = ws.cell(row=row, column=col, value=label)
     cell.border = _thin_border()
     cell.alignment = Alignment(wrap_text=True, vertical="top")
     if url:
         cell.hyperlink = url
         cell.font = Font(color="0563C1", underline="single")
-        cell.value = url
 
 
 def _specs_preview(text: str, limit: int = 500) -> str:
@@ -423,6 +430,15 @@ class ExcelGenerator:
         ]
 
         link_col = len(values)
+        source_detail_col = 17
+        source_detail_text = result.source_detail if component is None else ""
+        source_detail_label, source_detail_url = parse_source_detail(source_detail_text)
+        if component is None and not source_detail_url:
+            source_detail_url = resolve_price_source_url(
+                result.comparison,
+                unit_base_price=result.unit_base_price,
+            )
+
         for col, value in enumerate(values[:-1], start=1):
             cell = ws.cell(row=row, column=col, value=value)
             cell.border = _thin_border()
@@ -431,6 +447,11 @@ class ExcelGenerator:
                 cell.number_format = '#,##0.00'
             if component is not None:
                 cell.fill = PatternFill("solid", fgColor="F3F4F6")
+
+        if component is None and source_detail_url:
+            _write_hyperlink(ws, row, source_detail_col, source_detail_url, source_detail_label or source_detail_text)
+        elif component is None:
+            ws.cell(row=row, column=source_detail_col, value=source_detail_text).border = _thin_border()
 
         if competitor_url:
             _write_hyperlink(ws, row, link_col, competitor_url)
@@ -743,13 +764,12 @@ class ExcelGenerator:
             supplier_name = (result.matched_name or "").strip() or "—"
             supplier_shop = (result.supplier or "").strip() or "—"
 
-            links = competitor_link_urls(
+            link_url = resolve_price_source_url(
                 result.comparison,
-                result.tz_item.name,
-                preferences,
-                limit=1,
+                unit_base_price=result.unit_base_price,
             )
-            link_url = links[0] if links else None
+            if not link_url:
+                _, link_url = parse_source_detail(result.source_detail or "")
 
             ws.cell(row=idx, column=1, value=result.tz_item.number).border = _thin_border()
             ws.cell(row=idx, column=2, value=result.tz_item.name).border = _thin_border()

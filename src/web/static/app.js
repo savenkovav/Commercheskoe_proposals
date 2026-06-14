@@ -398,6 +398,18 @@ function resolveItemSourceUrl(item) {
   if (parsed.url) return parsed.url;
   if (item.internet_url) return item.internet_url;
 
+  const allWebQuotes = [...(item.comparison || []), ...(item.competitors || [])].filter(
+    (q) => q.source === "web" && q.url,
+  );
+
+  if (item.internet_priced && item.unit_base_price != null) {
+    const priced = allWebQuotes.find((q) => {
+      const price = q.price ?? q.cost;
+      return price != null && Math.abs(price - item.unit_base_price) < 0.01;
+    });
+    if (priced?.url) return priced.url;
+  }
+
   const webEntries = collectWebEntries(item);
   if (item.internet_priced && item.unit_base_price != null) {
     const selected = webEntries.find((q) => {
@@ -412,6 +424,9 @@ function resolveItemSourceUrl(item) {
   }
 
   for (const q of webEntries) {
+    if (q.url && !isSearchListingUrl(q.url)) return q.url;
+  }
+  for (const q of allWebQuotes) {
     if (q.url && !isSearchListingUrl(q.url)) return q.url;
   }
   return null;

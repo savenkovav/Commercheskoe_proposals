@@ -177,6 +177,82 @@ def pick_marketplace_priced_quote(quotes: list[PriceQuote]) -> PriceQuote | None
     return min(eligible, key=web_quote_rank_key)
 
 
+SOURCE_DETAIL_URL_RE = re.compile(r"https?://[^\s|]+")
+
+
+def parse_source_detail(text: str) -> tuple[str, str | None]:
+    if not text:
+        return "", None
+    match = SOURCE_DETAIL_URL_RE.search(text)
+    if not match:
+        return text.strip(), None
+    url = match.group(0).rstrip("|,;")
+    label = text[: match.start()].strip().rstrip("|–—-").strip()
+    return label or text.strip(), url
+
+
+def format_source_detail(label: str, url: str | None) -> str:
+    text = (label or "Интернет").strip()
+    if url:
+        return f"{text} | {url}"
+    return text
+
+
+def resolve_price_source_url(
+    quotes: list[PriceQuote],
+    *,
+    unit_base_price: float | None = None,
+    preferred: PriceQuote | None = None,
+) -> str | None:
+    if preferred and preferred.url:
+        return preferred.url
+
+    url = pick_internet_url(quotes, unit_base_price=unit_base_price)
+    if url:
+        return url
+
+    if unit_base_price is not None:
+        for quote in quotes:
+            if quote.source != "web" or not quote.url:
+                continue
+            base = quote.cost if quote.cost is not None else quote.price
+            if base is not None and abs(base - unit_base_price) < 0.01:
+                if not is_search_listing_url(quote.url):
+                    return quote.url
+        for quote in quotes:
+            if quote.source != "web" or not quote.url:
+                continue
+            base = quote.cost if quote.cost is not None else quote.price
+            if base is not None and abs(base - unit_base_price) < 0.01:
+                return quote.url
+
+    for quote in quotes:
+        if quote.source == "web" and quote.url and not is_search_listing_url(quote.url):
+            return quote.url
+    return None
+
+
+def enrich_source_detail_with_price_url(
+    source_detail: str,
+    quotes: list[PriceQuote],
+    *,
+    unit_base_price: float | None = None,
+    preferred: PriceQuote | None = None,
+) -> str:
+    label, existing_url = parse_source_detail(source_detail)
+    if existing_url:
+        return source_detail
+
+    url = resolve_price_source_url(
+        quotes,
+        unit_base_price=unit_base_price,
+        preferred=preferred,
+    )
+    if preferred and preferred.label and not label:
+        label = preferred.label
+    return format_source_detail(label, url)
+
+
 def pick_internet_url(
     quotes: list[PriceQuote],
     *,

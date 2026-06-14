@@ -29,7 +29,7 @@ from src.services.kp_preferences import KpPreferences
 from src.services.markup_settings import get_markup_percent, set_markup_percent
 from src.services.meilisearch_service import meilisearch_health
 from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
-from src.services.web_quote_priority import pick_internet_url
+from src.services.web_quote_priority import resolve_price_source_url
 from src.services.tz_parser import resolve_tz_upload_filename
 from src.services.price_list_manager import get_price_list_manager
 from src.services.product_lookup import (
@@ -140,8 +140,20 @@ def _kit_component_to_dict(line: KitComponentLine) -> dict[str, Any]:
 
 
 def _internet_url_from_result(result: MatchResult) -> str | None:
-    web_quotes = [q for q in result.comparison if q.source == "web"]
-    url = pick_internet_url(web_quotes, unit_base_price=result.unit_base_price)
+    preferred = None
+    if result.unit_base_price is not None:
+        for quote in result.comparison:
+            if quote.source != "web":
+                continue
+            base = quote.cost if quote.cost is not None else quote.price
+            if base is not None and abs(base - result.unit_base_price) < 0.01:
+                preferred = quote
+                break
+    url = resolve_price_source_url(
+        result.comparison,
+        unit_base_price=result.unit_base_price,
+        preferred=preferred,
+    )
     if url:
         return url
     detail = result.source_detail or ""
