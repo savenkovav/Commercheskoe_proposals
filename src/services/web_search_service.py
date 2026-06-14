@@ -8,16 +8,35 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 import httpx
 
 from src.config import (
+    COMPETITOR_NATIVE_SEARCH_ENABLED,
+    COMPETITOR_NATIVE_SEARCH_MAX_FETCHES,
+    COMPETITOR_SEARCH_BATCH_SIZE,
+    COMPETITOR_SEARCH_ENABLED,
+    COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
+    COMPETITOR_SEARCH_MAX_RESULTS,
     WEB_SEARCH_EXACT_THRESHOLD,
     WEB_SEARCH_FETCH_PAGES,
     WEB_SEARCH_MAX_PAGE_FETCHES,
     WEB_SEARCH_MAX_RESULTS,
     WEB_SEARCH_TIMEOUT,
 )
+from src.services.competitor_sites import (
+    CompetitorSite,
+    competitor_label_for_url,
+    competitor_sites_with_search,
+    extract_competitor_product_urls,
+    is_competitor_url,
+    iter_competitor_domain_batches,
+)
 from src.services.fuzzy_scoring import name_match_score
 from src.services.data_loader import normalize_name
 from src.services.models import PriceQuote
-from src.services.web_quote_priority import is_marketplace_url, is_product_page_url
+from src.services.web_quote_priority import (
+    has_priced_competitor_quote,
+    is_marketplace_url,
+    is_product_page_url,
+    pick_best_web_priced_quote,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +324,303 @@ class WebSearchService:
             quoted=False,
         )
 
+    def search_competitor_offers(
+        self,
+        product_name: str,
+        *,
+        limit: int | None = None,
+        exact_threshold: int | None = None,
+    ) -> list[PriceQuote]:
+        if not COMPETITOR_SEARCH_ENABLED:
+            return []
+
+        query = product_name.strip()
+        if not query:
+            return []
+
+        max_results = limit or COMPETITOR_SEARCH_MAX_RESULTS
+        strict_threshold = (
+            exact_threshold if exact_threshold is not None else WEB_SEARCH_EXACT_THRESHOLD
+        )
+        quotes: list[PriceQuote] = []
+        seen_urls: set[str] = set()
+
+        def _extend(new_quotes: list[PriceQuote]) -> None:
+            for quote in new_quotes:
+                if quote.url and quote.url in seen_urls:
+                    continue
+                if quote.url:
+                    seen_urls.add(quote.url)
+                quotes.append(quote)
+
+        _extend(
+            self._search_competitor_via_ddg(
+                query,
+                threshold=strict_threshold,
+                limit=max_results,
+            )
+        )
+        if COMPETITOR_NATIVE_SEARCH_ENABLED:
+            _extend(
+                self._search_competitor_via_native(
+                    query,
+                    threshold=strict_threshold,
+                    limit=max_results,
+                    seen_urls=seen_urls,
+                )
+            )
+        if has_priced_competitor_quote(quotes):
+            return self._finalize_competitor_quotes(quotes, max_results)
+
+        if COMPETITOR_SEARCH_FALLBACK_THRESHOLD < strict_threshold:
+            _extend(
+                self._search_competitor_via_ddg(
+                    query,
+                    threshold=COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
+                    limit=max_results,
+                )
+            )
+            if COMPETITOR_NATIVE_SEARCH_ENABLED:
+                _extend(
+                    self._search_competitor_via_native(
+                        query,
+                        threshold=COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
+                        limit=max_results,
+                        seen_urls=seen_urls,
+                    )
+                )
+
+        return self._finalize_competitor_quotes(quotes, max_results)
+
+    @staticmethod
+    def _finalize_competitor_quotes(
+        quotes: list[PriceQuote],
+        limit: int,
+    ) -> list[PriceQuote]:
+        priced = [
+            quote
+            for quote in quotes
+            if quote.price is not None or quote.cost is not None
+        ]
+        unpriced = [
+            quote
+            for quote in quotes
+            if quote.price is None and quote.cost is None
+        ]
+        priced.sort(
+            key=lambda item: item.price if item.price is not None else item.cost or 0
+        )
+        unpriced.sort(key=lambda item: -(item.match_score or 0))
+        merged = priced + unpriced
+        return merged[:limit]
+
+    def _search_competitor_via_ddg(
+        self,
+        query: str,
+        *,
+        threshold: int,
+        limit: int,
+    ) -> list[PriceQuote]:
+        quotes: list[PriceQuote] = []
+        seen_urls = {quote.url for quote in quotes if quote.url}
+
+        for batch in iter_competitor_domain_batches(COMPETITOR_SEARCH_BATCH_SIZE):
+            if len(quotes) >= limit:
+                break
+            batch_quotes = self._collect_offers(
+                query,
+                threshold=threshold,
+                limit=limit,
+                quoted=True,
+                site_domains=batch,
+                stop_at_first_priced=False,
+            )
+            if not batch_quotes:
+                batch_quotes = self._collect_offers(
+                    query,
+                    threshold=threshold,
+                    limit=limit,
+                    quoted=False,
+                    site_domains=batch,
+                    stop_at_first_priced=False,
+                )
+            for quote in batch_quotes:
+                if quote.url and quote.url in seen_urls:
+                    continue
+                if quote.url:
+                    seen_urls.add(quote.url)
+                quotes.append(quote)
+                if len(quotes) >= limit:
+                    break
+        return quotes
+
+    def _search_competitor_via_native(
+        self,
+        query: str,
+        *,
+        threshold: int,
+        limit: int,
+        seen_urls: set[str],
+    ) -> list[PriceQuote]:
+        quotes: list[PriceQuote] = []
+        page_fetches = 0
+
+        for site in competitor_sites_with_search():
+            if len(quotes) >= limit or page_fetches >= COMPETITOR_NATIVE_SEARCH_MAX_FETCHES:
+                break
+
+            search_url = site.search_url.format(query=quote_plus(query))
+            page_fetches += 1
+            search_text, _search_price = self._fetch_page_price(search_url)
+            product_urls = extract_competitor_product_urls(
+                search_text,
+                site.domain,
+                limit=3,
+            )
+            if not product_urls:
+                continue
+
+            for product_url in product_urls:
+                if page_fetches >= COMPETITOR_NATIVE_SEARCH_MAX_FETCHES:
+                    break
+                if product_url in seen_urls:
+                    continue
+                page_fetches += 1
+                page_text, page_price = self._fetch_page_price(product_url)
+                quote = self._quote_from_competitor_page(
+                    query,
+                    product_url,
+                    site,
+                    threshold=threshold,
+                    title=self._extract_page_title(page_text) or query,
+                    page_text=page_text,
+                    prefetched_price=page_price,
+                )
+                if not quote:
+                    continue
+                seen_urls.add(product_url)
+                quotes.append(quote)
+                if len(quotes) >= limit:
+                    break
+
+        return quotes
+
+    def _quote_from_competitor_page(
+        self,
+        query: str,
+        url: str,
+        site: CompetitorSite,
+        *,
+        threshold: int,
+        title: str,
+        page_text: str,
+        prefetched_price: float | None,
+    ) -> PriceQuote | None:
+        if _is_blocked_url(url) or _is_search_listing_url(url):
+            return None
+        if not is_exact_title_match(query, title, threshold=threshold, snippet=page_text[:500]):
+            return None
+
+        normalized_query = normalize_name(query)
+        cleaned_title = _clean_title_for_match(title)
+        if (
+            normalized_query in normalize_name(_strip_html(title))
+            or _token_set(normalized_query) == _token_set(cleaned_title)
+        ):
+            match_score = 100.0
+        else:
+            match_score = float(name_match_score(normalized_query, cleaned_title))
+
+        if match_score < threshold:
+            return None
+
+        price = prefetched_price
+        notes = "Поиск на сайте конкурента"
+        if price is None and page_text:
+            page_prices = extract_prices_from_text(page_text[:120_000])
+            price = _pick_best_price(page_prices)
+            if price is not None:
+                notes = "Конкурент | цена со страницы товара"
+        if price is None:
+            notes = "Конкурент | совпадение названия, цена не указана"
+
+        competitor_label = site.label or competitor_label_for_url(url) or site.domain
+        return PriceQuote(
+            source="web",
+            label=f"Конкурент: {competitor_label}",
+            matched_name=_strip_html(title) or query,
+            price=price,
+            cost=price,
+            match_score=match_score,
+            url=url,
+            notes=notes,
+        )
+
+    def search_internet_cascade(
+        self,
+        product_name: str,
+        *,
+        limit: int | None = None,
+    ) -> list[PriceQuote]:
+        """Сначала сайты конкурентов, затем прочий интернет, затем маркетплейсы."""
+        query = product_name.strip()
+        if not query:
+            return []
+
+        max_results = limit or WEB_SEARCH_MAX_RESULTS
+        quotes: list[PriceQuote] = []
+        seen_urls: set[str] = set()
+
+        def _extend(new_quotes: list[PriceQuote]) -> None:
+            for quote in new_quotes:
+                if quote.url and quote.url in seen_urls:
+                    continue
+                if quote.url:
+                    seen_urls.add(quote.url)
+                quotes.append(quote)
+
+        competitor_quotes = self.search_competitor_offers(query, limit=max_results)
+        _extend(competitor_quotes)
+        if has_priced_competitor_quote(quotes):
+            return quotes
+
+        _extend(self.search_offers(query, limit=max_results))
+        if pick_best_web_priced_quote(quotes):
+            return quotes
+
+        _extend(self.search_marketplace_offers(query, limit=1))
+        return quotes
+
+    def search_web_price_fallback(
+        self,
+        product_name: str,
+        *,
+        limit: int | None = None,
+    ) -> list[PriceQuote]:
+        """Интернет и маркетплейсы, если у конкурента совпадение без цены."""
+        query = product_name.strip()
+        if not query:
+            return []
+
+        max_results = limit or WEB_SEARCH_MAX_RESULTS
+        quotes: list[PriceQuote] = []
+        seen_urls: set[str] = set()
+
+        def _extend(new_quotes: list[PriceQuote]) -> None:
+            for quote in new_quotes:
+                if quote.url and quote.url in seen_urls:
+                    continue
+                if quote.url:
+                    seen_urls.add(quote.url)
+                quotes.append(quote)
+
+        _extend(self.search_offers(query, limit=max_results))
+        if pick_best_web_priced_quote(quotes):
+            return quotes
+
+        _extend(self.search_marketplace_offers(query, limit=1))
+        return quotes
+
     def search_marketplace_offers(
         self,
         product_name: str,
@@ -405,11 +721,20 @@ class WebSearchService:
         limit: int,
         quoted: bool = True,
         require_price: bool = False,
+        site_domains: list[str] | None = None,
+        stop_at_first_priced: bool = True,
     ) -> list[PriceQuote]:
-        serp_hits = self._search_duckduckgo(query, quoted=quoted)
+        serp_hits = self._search_duckduckgo(
+            query, quoted=quoted, site_domains=site_domains
+        )
+        if not serp_hits and site_domains and quoted:
+            serp_hits = self._search_duckduckgo(
+                query, quoted=False, site_domains=site_domains
+            )
         quotes: list[PriceQuote] = []
         seen_urls: set[str] = set()
         page_fetches = 0
+        allowed_hosts = {domain.lower() for domain in site_domains} if site_domains else None
 
         for hit in serp_hits:
             if len(quotes) >= limit:
@@ -419,6 +744,13 @@ class WebSearchService:
             snippet = hit.get("snippet") or ""
             if not url or url in seen_urls or _is_blocked_url(url):
                 continue
+            if allowed_hosts:
+                host = _host_from_url(url)
+                if not any(
+                    host == domain or host.endswith(f".{domain}")
+                    for domain in allowed_hosts
+                ):
+                    continue
             if not is_exact_title_match(
                 query, title, threshold=threshold, snippet=snippet
             ):
@@ -439,9 +771,14 @@ class WebSearchService:
                 match_score = 100.0
             else:
                 match_score = name_match_score(normalized_query, cleaned_title)
-            prices = extract_prices_from_text(snippet)
-            price = _pick_best_price(prices)
-            notes = "Совпадение названия в поисковой выдаче"
+            competitor_hit = bool(allowed_hosts) or is_competitor_url(url)
+            if competitor_hit:
+                price = None
+                notes = "Конкурент | совпадение названия, цена не указана"
+            else:
+                prices = extract_prices_from_text(snippet)
+                price = _pick_best_price(prices)
+                notes = "Совпадение названия в поисковой выдаче"
             if (
                 price is None
                 and WEB_SEARCH_FETCH_PAGES
@@ -451,12 +788,22 @@ class WebSearchService:
                 page_text, page_price = self._fetch_page_price(url)
                 if page_price is not None:
                     price = page_price
-                    notes = "Совпадение названия, цена со страницы"
+                    notes = (
+                        "Конкурент | цена со страницы товара"
+                        if competitor_hit
+                        else "Совпадение названия, цена со страницы"
+                    )
                 elif page_text:
                     page_prices = extract_prices_from_text(page_text[:120_000])
                     price = _pick_best_price(page_prices)
                     if price is not None:
-                        notes = "Совпадение названия, цена со страницы"
+                        notes = (
+                            "Конкурент | цена со страницы товара"
+                            if competitor_hit
+                            else "Совпадение названия, цена со страницы"
+                        )
+                    elif competitor_hit:
+                        notes = "Конкурент | совпадение названия, цена не указана"
 
             if match_score < threshold:
                 continue
@@ -464,12 +811,24 @@ class WebSearchService:
             if require_price and price is None:
                 continue
 
-            platform = _platform_label(url)
-            if is_marketplace_url(url):
+            if is_competitor_url(url) or allowed_hosts:
+                competitor_label = competitor_label_for_url(url) or _platform_label(url)
+                label = f"Конкурент: {competitor_label}"
+                if allowed_hosts and not notes.startswith("Конкурент"):
+                    notes = (
+                        f"Конкурент | {notes}"
+                        if price is not None
+                        else "Конкурент | совпадение названия, цена не указана"
+                    )
+                elif price is None:
+                    notes = "Конкурент | совпадение названия, цена не указана"
+            elif is_marketplace_url(url):
                 if not is_product_page_url(url):
                     continue
+                platform = _platform_label(url)
                 label = f"Маркетплейс: {platform}"
             else:
+                platform = _platform_label(url)
                 label = f"Интернет: {platform}"
             quotes.append(
                 PriceQuote(
@@ -483,13 +842,35 @@ class WebSearchService:
                     notes=notes,
                 )
             )
-            if price is not None and not is_marketplace_url(url):
+            if (
+                price is not None
+                and stop_at_first_priced
+                and not is_marketplace_url(url)
+            ):
                 break
 
         return quotes
 
-    def _search_duckduckgo(self, query: str, *, quoted: bool = True) -> list[dict[str, str]]:
-        search_query = f'"{query}"' if quoted else query
+    def _search_duckduckgo(
+        self,
+        query: str,
+        *,
+        quoted: bool = True,
+        site_domains: list[str] | None = None,
+    ) -> list[dict[str, str]]:
+        if site_domains:
+            site_clause = " OR ".join(f"site:{domain}" for domain in site_domains)
+            search_query = (
+                f"({site_clause}) \"{query}\"" if quoted else f"({site_clause}) {query}"
+            )
+        else:
+            search_query = f'"{query}"' if quoted else query
+        hits = self._execute_duckduckgo_search(search_query)
+        if hits or quoted or site_domains:
+            return hits
+        return self._search_duckduckgo(query, quoted=True)
+
+    def _execute_duckduckgo_search(self, search_query: str) -> list[dict[str, str]]:
         url = "https://html.duckduckgo.com/html/"
         headers = {"User-Agent": _USER_AGENT}
         data = {"q": search_query}
@@ -501,20 +882,17 @@ class WebSearchService:
                 headers=headers,
             ) as client:
                 response = client.post(url, data=data)
-                if response.status_code == 202 and not quoted:
-                    response = client.post(url, data={"q": f'"{query}"'})
                 if response.status_code == 202:
                     return []
                 response.raise_for_status()
                 html = response.text
         except Exception:
-            logger.warning("DuckDuckGo search failed for %r", query, exc_info=True)
+            logger.warning(
+                "DuckDuckGo search failed for %r", search_query, exc_info=True
+            )
             return []
 
-        hits = self._parse_duckduckgo_html(html)
-        if hits or quoted:
-            return hits
-        return self._search_duckduckgo(query, quoted=True)
+        return self._parse_duckduckgo_html(html)
 
     @staticmethod
     def _parse_duckduckgo_html(html: str) -> list[dict[str, str]]:

@@ -107,6 +107,31 @@ WEB_SEARCH_FETCH_PAGES = os.getenv("WEB_SEARCH_FETCH_PAGES", "true").lower() in 
 WEB_SEARCH_MAX_PAGE_FETCHES = max(0, int(os.getenv("WEB_SEARCH_MAX_PAGE_FETCHES", "2")))
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
 
+COMPETITOR_SEARCH_ENABLED = os.getenv("COMPETITOR_SEARCH_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+COMPETITOR_SEARCH_BATCH_SIZE = max(1, int(os.getenv("COMPETITOR_SEARCH_BATCH_SIZE", "3")))
+COMPETITOR_SEARCH_MAX_RESULTS = max(
+    1, int(os.getenv("COMPETITOR_SEARCH_MAX_RESULTS", "5"))
+)
+COMPETITOR_SEARCH_FALLBACK_THRESHOLD = int(
+    os.getenv("COMPETITOR_SEARCH_FALLBACK_THRESHOLD", "95")
+)
+COMPETITOR_NATIVE_SEARCH_ENABLED = os.getenv(
+    "COMPETITOR_NATIVE_SEARCH_ENABLED", "true"
+).lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+COMPETITOR_NATIVE_SEARCH_MAX_FETCHES = max(
+    1, int(os.getenv("COMPETITOR_NATIVE_SEARCH_MAX_FETCHES", "8"))
+)
+
 KP_PARALLEL_WORKERS = max(1, int(os.getenv("KP_PARALLEL_WORKERS", "4")))
 
 SEARCH_KIT_COMPONENT_LINKS = os.getenv("SEARCH_KIT_COMPONENT_LINKS", "false").lower() in {

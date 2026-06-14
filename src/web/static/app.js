@@ -243,6 +243,7 @@ const SOURCE_LABELS = {
 
 const LOCAL_MIN_MATCH_PERCENT = 95;
 const WEB_MIN_MATCH_PERCENT = 100;
+const COMPETITOR_MIN_MATCH_PERCENT = 95;
 
 function isMarketplaceUrl(url) {
   if (!url) return false;
@@ -251,6 +252,39 @@ function isMarketplaceUrl(url) {
     lower.includes("ozon.ru") ||
     lower.includes("wildberries.ru") ||
     lower.includes("market.yandex.ru")
+  );
+}
+
+const COMPETITOR_DOMAINS = [
+  "xn----7sbbumkojddmeoc1a7r.xn--p1acf",
+  "n-72.ru",
+  "stronikum.ru",
+  "labkabinet.ru",
+  "vrtorg.ru",
+  "td-school.ru",
+  "epp24.ru",
+  "zarnitza.ru",
+  "rostcom.com",
+  "rene-edu.ru",
+  "prioritet1.com",
+  "orionedu.ru",
+  "xn--54-vlc3b6bza.xn--p1ai",
+  "skale.ru",
+];
+
+function hostFromUrl(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isCompetitorUrl(url) {
+  const host = hostFromUrl(url);
+  if (!host) return false;
+  return COMPETITOR_DOMAINS.some(
+    (domain) => host === domain || host.endsWith("." + domain)
   );
 }
 
@@ -283,18 +317,27 @@ function webQuoteRank(q) {
   const marketplace = isMarketplaceUrl(url);
   const productPage = isProductPageUrl(url);
   const searchPage = isSearchListingUrl(url);
+  const competitor = isCompetitorUrl(url);
+  const minScore = competitor ? COMPETITOR_MIN_MATCH_PERCENT : WEB_MIN_MATCH_PERCENT;
+  const priceValue = q.price != null ? q.price : q.cost;
+  const priceSort = priceValue != null ? Number(priceValue) : Number.POSITIVE_INFINITY;
   let tier = 9;
-  if (!searchPage && hasPrice && score >= WEB_MIN_MATCH_PERCENT) {
-    if (!marketplace) tier = 0;
-    else if (productPage) tier = 1;
-    else tier = 2;
+  if (!searchPage && score >= minScore) {
+    if (competitor && hasPrice) tier = 0;
+    else if (competitor && !hasPrice) tier = 3;
+    else if (!marketplace && hasPrice) tier = 1;
+    else if (productPage && hasPrice) tier = 2;
+    else tier = 4;
   }
-  return [tier, productPage ? 0 : 1, -score, hasPrice ? 0 : 1];
+  return [tier, priceSort, productPage ? 0 : 1, -score, hasPrice ? 0 : 1];
 }
 
 function quoteMeetsMatchThreshold(q) {
   if (!q || q.match_score == null) return q?.source !== "web";
-  if (q.source === "web") return q.match_score >= WEB_MIN_MATCH_PERCENT;
+  if (q.source === "web") {
+    const minScore = isCompetitorUrl(q.url) ? COMPETITOR_MIN_MATCH_PERCENT : WEB_MIN_MATCH_PERCENT;
+    return q.match_score >= minScore;
+  }
   return q.match_score >= LOCAL_MIN_MATCH_PERCENT;
 }
 

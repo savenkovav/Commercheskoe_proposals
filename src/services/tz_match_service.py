@@ -27,12 +27,15 @@ from src.services.fuzzy_scoring import name_match_score
 from src.services.kit_spec_parser import parse_kit_components_from_specs
 from src.services.tz_search import is_relevant_match, primary_search_text, relevance_score
 from src.services.web_quote_priority import (
+    has_acceptable_web_pricing_in_comparison,
+    has_unpriced_competitor_display_quote,
     is_acceptable_web_pricing_quote,
     is_marketplace_url,
     is_product_page_url,
     is_search_listing_url,
     pick_best_web_priced_quote,
     pick_internet_url,
+    pick_marketplace_priced_quote,
     sort_web_quotes,
     web_quote_rank_key,
 )
@@ -404,16 +407,7 @@ class TZMatchService:
 
         if local_miss and WEB_SEARCH_ENABLED:
             search_text = primary_search_text(tz_item)
-            exact_quotes = self.web_search.search_offers(search_text)
-            _append_quotes(exact_quotes)
-            partial = filter_web_quotes(quotes, preferences)
-            if not pick_best_web_priced_quote(partial):
-                _append_quotes(
-                    self.web_search.search_marketplace_offers(
-                        search_text,
-                        limit=1,
-                    )
-                )
+            _append_quotes(self.web_search.search_internet_cascade(search_text))
 
         if USE_AI_INTERNET_SEARCH and use_ai and self.ai.enabled:
             _append_quotes(self._fetch_internet_comparison_ai(tz_item))
@@ -424,17 +418,7 @@ class TZMatchService:
         return web_quote, quotes
 
     def _pick_best_web_quote(self, quotes: list[PriceQuote]) -> PriceQuote | None:
-        best_priced = self._best_web_priced_quote(quotes)
-        if best_priced:
-            return best_priced
-        if not quotes:
-            return None
-        eligible = [
-            quote
-            for quote in quotes
-            if float(quote.match_score or 0) >= WEB_SEARCH_EXACT_THRESHOLD
-        ]
-        return eligible[0] if eligible else None
+        return self._best_web_priced_quote(quotes)
 
     def _fetch_internet_comparison_fast(
         self,
@@ -918,29 +902,23 @@ class TZMatchService:
 
         best_web = self._best_web_priced_quote(result.comparison)
         if best_web:
-            self._apply_priced_quote(result, best_web)
+            self._apply_priced_quote(
+                result,
+                best_web,
+                unpriced_competitor_reference=(
+                    has_unpriced_competitor_display_quote(result.comparison)
+                    and is_marketplace_url(best_web.url)
+                ),
+            )
             return
 
         if (
             WEB_SEARCH_ENABLED
             and needs_price
-            and not self._web_search_attempted(result.comparison)
-            and not any(q.source == "web" and (q.price or q.cost) for q in result.comparison)
+            and not has_acceptable_web_pricing_in_comparison(result.comparison)
         ):
-            extra_quotes: list[PriceQuote] = []
             search_text = primary_search_text(result.tz_item)
-            extra_quotes.extend(self.web_search.search_offers(search_text))
-            if prefs:
-                partial = filter_web_quotes(extra_quotes, prefs)
-            else:
-                partial = extra_quotes
-            if not pick_best_web_priced_quote(partial):
-                extra_quotes.extend(
-                    self.web_search.search_marketplace_offers(
-                        search_text,
-                        limit=1,
-                    )
-                )
+            extra_quotes = self.web_search.search_web_price_fallback(search_text)
             if prefs:
                 extra_quotes = filter_web_quotes(extra_quotes, prefs)
             if extra_quotes:
@@ -948,9 +926,17 @@ class TZMatchService:
                 result.competitors = [
                     q for q in result.comparison if q.source == "web"
                 ]
-                best_web = self._best_web_priced_quote(extra_quotes)
+                best_web = pick_marketplace_priced_quote(extra_quotes)
+                if best_web is None:
+                    best_web = self._best_web_priced_quote(extra_quotes)
                 if best_web:
-                    self._apply_priced_quote(result, best_web)
+                    self._apply_priced_quote(
+                        result,
+                        best_web,
+                        unpriced_competitor_reference=has_unpriced_competitor_display_quote(
+                            result.comparison
+                        ),
+                    )
                     return
 
         if (
@@ -988,7 +974,13 @@ class TZMatchService:
 
         self._normalize_result_metadata(result)
 
-    def _apply_priced_quote(self, result: MatchResult, best: PriceQuote) -> None:
+    def _apply_priced_quote(
+        self,
+        result: MatchResult,
+        best: PriceQuote,
+        *,
+        unpriced_competitor_reference: bool = False,
+    ) -> None:
         base_price = best.cost if best.cost is not None else best.price
         if base_price is None:
             return
@@ -1018,6 +1010,11 @@ class TZMatchService:
                 f"Подбор по сравнению: {best.label} | "
                 f"Цена КП: −{WEB_PRICE_DISCOUNT_PERCENT}% от найденной в интернете"
             )
+            if unpriced_competitor_reference and is_marketplace_url(best.url):
+                note = (
+                    f"{note} | На сайте конкурента совпадение без цены — "
+                    f"цена КП из маркетплейса"
+                )
         else:
             note = f"Подбор по сравнению: {best.label}"
         result.notes = note if not result.notes else f"{result.notes} | {note}"
@@ -1048,16 +1045,10 @@ class TZMatchService:
                 for q in result.comparison
             )
             search_text = primary_search_text(result.tz_item)
-            if not has_priced_web and not self._web_search_attempted(result.comparison):
-                candidates.extend(self.web_search.search_offers(search_text))
-                partial = filter_web_quotes(candidates, prefs)
-                if not pick_best_web_priced_quote(partial):
-                    candidates.extend(
-                        self.web_search.search_marketplace_offers(
-                            search_text,
-                            limit=1,
-                        )
-                    )
+            if not has_priced_web:
+                candidates.extend(
+                    self.web_search.search_web_price_fallback(search_text)
+                )
             if (
                 use_ai
                 and self.ai.enabled
@@ -1080,18 +1071,22 @@ class TZMatchService:
             self._extend_comparison(result, filtered)
             result.comparison = sort_web_quotes(result.comparison)
 
-            best = self._best_web_priced_quote(filtered)
+            best = pick_marketplace_priced_quote(filtered)
+            if best is None:
+                best = self._best_web_priced_quote(filtered)
             if best is None:
                 best = self._best_web_priced_quote_with_url(filtered)
             if best:
-                self._apply_priced_quote(result, best)
+                self._apply_priced_quote(
+                    result,
+                    best,
+                    unpriced_competitor_reference=has_unpriced_competitor_display_quote(
+                        result.comparison
+                    ),
+                )
 
         self._sort_comparison_web_quotes(result)
         self._promote_internet_status(result)
-
-    @staticmethod
-    def _web_search_attempted(comparison: list[PriceQuote]) -> bool:
-        return any(quote.source == "web" for quote in comparison)
 
     @staticmethod
     def _sort_comparison_web_quotes(result: MatchResult) -> None:

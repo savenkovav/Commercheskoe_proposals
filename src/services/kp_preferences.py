@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from src.config import LOCAL_MATCH_THRESHOLD, WEB_SEARCH_EXACT_THRESHOLD
+from src.config import LOCAL_MATCH_THRESHOLD
+from src.services.competitor_sites import meets_web_display_threshold
 from src.services.web_quote_priority import is_search_listing_url
 
 
@@ -66,7 +67,9 @@ def platform_is_excluded(label: str, url: str | None, excluded: list[str]) -> bo
 def web_quote_meets_match_threshold(quote: object) -> bool:
     if getattr(quote, "source", None) != "web":
         return True
-    return float(getattr(quote, "match_score", 0) or 0) >= WEB_SEARCH_EXACT_THRESHOLD
+    score = float(getattr(quote, "match_score", 0) or 0)
+    url = getattr(quote, "url", None)
+    return meets_web_display_threshold(url, score)
 
 
 def local_quote_meets_match_threshold(quote: object) -> bool:
