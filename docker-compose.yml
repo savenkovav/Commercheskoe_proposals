@@ -6,7 +6,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8080:8080"
+      - "8090:8080"
     volumes:
       - ./data:/app/data
       - ./output:/app/output
@@ -14,4 +14,13 @@ services:
       PYTHONPATH: /app
       WEB_HOST: "0.0.0.0"
       WEB_PORT: "8080"
+      WEB_BEHIND_PROXY: "true"
+    networks:
+      - default
+      - target_network
     command: ["python", "-m", "src.web.server"]
+
+networks:
+  target_network:
+    external: true
+    name: root_target_network
