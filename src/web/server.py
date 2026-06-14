@@ -26,6 +26,7 @@ from src.config import (
 from src.services.kp_chat_service import KpChatService
 from src.services.kp_preferences import KpPreferences
 from src.services.markup_settings import get_markup_percent, set_markup_percent
+from src.services.meilisearch_service import meilisearch_health
 from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
 from src.services.web_quote_priority import pick_internet_url
 from src.services.tz_parser import resolve_tz_upload_filename
@@ -380,6 +381,7 @@ def api_status() -> dict[str, Any]:
         "demo_available": DEMO_TZ_PATH.exists(),
         "catalog": _catalog_source(processor),
         "registry": _registry_source(processor),
+        "meilisearch": meilisearch_health(),
     }
 
 

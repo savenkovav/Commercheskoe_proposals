@@ -1,4 +1,19 @@
 services:
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: comm-proposals-meilisearch
+    restart: unless-stopped
+    ports:
+      - "7700:7700"
+    environment:
+      MEILI_ENV: development
+      MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY:-masterKey}
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meilisearch_data:/meili_data
+    networks:
+      - default
+
   kp-web:
     build: .
     container_name: comm-proposals-web
@@ -15,10 +30,16 @@ services:
       WEB_HOST: "0.0.0.0"
       WEB_PORT: "8080"
       WEB_BEHIND_PROXY: "true"
+      MEILISEARCH_HOST: http://meilisearch:7700
+    depends_on:
+      - meilisearch
     networks:
       - default
       - target_network
     command: ["python", "-m", "src.web.server"]
+
+volumes:
+  meilisearch_data:
 
 networks:
   target_network:

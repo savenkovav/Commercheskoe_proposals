@@ -18,15 +18,20 @@ from src.config import (
     WEB_SEARCH_FETCH_PAGES,
     WEB_SEARCH_MAX_PAGE_FETCHES,
     WEB_SEARCH_MAX_RESULTS,
+    WEB_SEARCH_PAGE_MAX_CHARS,
+    WEB_SEARCH_RESULTS_PAGE_MAX_CHARS,
     WEB_SEARCH_TIMEOUT,
 )
 from src.services.competitor_sites import (
+    CompetitorSearchHit,
     CompetitorSite,
+    build_competitor_search_url,
     competitor_label_for_url,
     competitor_sites_with_search,
     extract_competitor_product_urls,
     is_competitor_url,
     iter_competitor_domain_batches,
+    parse_competitor_search_results,
 )
 from src.services.fuzzy_scoring import name_match_score
 from src.services.data_loader import normalize_name
@@ -469,9 +474,39 @@ class WebSearchService:
             if len(quotes) >= limit or page_fetches >= COMPETITOR_NATIVE_SEARCH_MAX_FETCHES:
                 break
 
-            search_url = site.search_url.format(query=quote_plus(query))
+            search_url = build_competitor_search_url(site, query)
+            if not search_url:
+                continue
             page_fetches += 1
-            search_text, _search_price = self._fetch_page_price(search_url)
+            search_text, _search_price = self._fetch_page_price(
+                search_url,
+                max_chars=WEB_SEARCH_RESULTS_PAGE_MAX_CHARS,
+            )
+
+            profile_hits = parse_competitor_search_results(
+                search_text,
+                site,
+                limit=3,
+            )
+            if profile_hits:
+                for hit in profile_hits:
+                    if len(quotes) >= limit:
+                        break
+                    if hit.url in seen_urls:
+                        continue
+                    quote = self._quote_from_competitor_hit(
+                        query,
+                        hit,
+                        site,
+                        threshold=threshold,
+                    )
+                    if not quote:
+                        continue
+                    seen_urls.add(hit.url)
+                    quotes.append(quote)
+                if profile_hits:
+                    continue
+
             product_urls = extract_competitor_product_urls(
                 search_text,
                 site.domain,
@@ -505,6 +540,31 @@ class WebSearchService:
 
         return quotes
 
+    def _quote_from_competitor_hit(
+        self,
+        query: str,
+        hit: CompetitorSearchHit,
+        site: CompetitorSite,
+        *,
+        threshold: int,
+    ) -> PriceQuote | None:
+        if _is_blocked_url(hit.url) or _is_search_listing_url(hit.url):
+            return None
+        return self._quote_from_competitor_page(
+            query,
+            hit.url,
+            site,
+            threshold=threshold,
+            title=hit.name or query,
+            page_text="",
+            prefetched_price=hit.price,
+            notes=(
+                "Конкурент | цена в выдаче поиска"
+                if hit.price is not None
+                else "Конкурент | совпадение в выдаче поиска, цена не указана"
+            ),
+        )
+
     def _quote_from_competitor_page(
         self,
         query: str,
@@ -515,6 +575,7 @@ class WebSearchService:
         title: str,
         page_text: str,
         prefetched_price: float | None,
+        notes: str | None = None,
     ) -> PriceQuote | None:
         if _is_blocked_url(url) or _is_search_listing_url(url):
             return None
@@ -535,14 +596,14 @@ class WebSearchService:
             return None
 
         price = prefetched_price
-        notes = "Поиск на сайте конкурента"
+        note = notes or "Поиск на сайте конкурента"
         if price is None and page_text:
             page_prices = extract_prices_from_text(page_text[:120_000])
             price = _pick_best_price(page_prices)
             if price is not None:
-                notes = "Конкурент | цена со страницы товара"
+                note = "Конкурент | цена со страницы товара"
         if price is None:
-            notes = "Конкурент | совпадение названия, цена не указана"
+            note = notes or "Конкурент | совпадение названия, цена не указана"
 
         competitor_label = site.label or competitor_label_for_url(url) or site.domain
         return PriceQuote(
@@ -553,7 +614,7 @@ class WebSearchService:
             cost=price,
             match_score=match_score,
             url=url,
-            notes=notes,
+            notes=note,
         )
 
     def search_internet_cascade(
@@ -911,8 +972,14 @@ class WebSearchService:
             )
         return hits
 
-    def _fetch_page_price(self, url: str) -> tuple[str, float | None]:
+    def _fetch_page_price(
+        self,
+        url: str,
+        *,
+        max_chars: int | None = None,
+    ) -> tuple[str, float | None]:
         headers = {"User-Agent": _USER_AGENT}
+        limit = max_chars if max_chars is not None else WEB_SEARCH_PAGE_MAX_CHARS
         try:
             with httpx.Client(
                 follow_redirects=True,
@@ -922,7 +989,7 @@ class WebSearchService:
                 response = client.get(url)
                 if response.status_code >= 400:
                     return "", None
-                text = response.text[:200_000]
+                text = response.text[:limit]
         except Exception:
             logger.debug("Page fetch failed for %s", url, exc_info=True)
             return "", None

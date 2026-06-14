@@ -27,6 +27,7 @@ from src.services.data_loader import (
 from src.services.tz_parser import parse_tz
 from src.services.excel_generator import ExcelGenerator
 from src.services.matcher import ItemMatcher
+from src.services.meilisearch_service import sync_meilisearch_index
 from src.services.models import MatchResult, MatchSource, MatchStatus, ProposalSummary
 from src.services.price_list_manager import PriceListManager, get_price_list_manager
 from src.services.tz_match_service import TZMatchService
@@ -103,6 +104,14 @@ class ProposalProcessor:
             self.goods_report,
             self.catalog_structure,
         )
+        self._sync_meilisearch()
+
+    def _sync_meilisearch(self) -> None:
+        result = sync_meilisearch_index(self.catalog, self.registry, self.price_lists)
+        if result.get("documents"):
+            logger.info("Meilisearch synced: %s documents", result["documents"])
+        elif result.get("error"):
+            logger.warning("Meilisearch sync error: %s", result["error"])
 
     @staticmethod
     def stub_results(tz_items: list) -> list[MatchResult]:

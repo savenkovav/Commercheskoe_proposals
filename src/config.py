@@ -106,6 +106,15 @@ WEB_SEARCH_FETCH_PAGES = os.getenv("WEB_SEARCH_FETCH_PAGES", "true").lower() in 
 }
 WEB_SEARCH_MAX_PAGE_FETCHES = max(0, int(os.getenv("WEB_SEARCH_MAX_PAGE_FETCHES", "2")))
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
+# Лимит символов HTML при загрузке карточки товара
+WEB_SEARCH_PAGE_MAX_CHARS = max(
+    50_000, int(os.getenv("WEB_SEARCH_PAGE_MAX_CHARS", "200000"))
+)
+# Лимит для страниц поиска (выдача часто ниже по HTML, чем шапка/меню)
+WEB_SEARCH_RESULTS_PAGE_MAX_CHARS = max(
+    WEB_SEARCH_PAGE_MAX_CHARS,
+    int(os.getenv("WEB_SEARCH_RESULTS_PAGE_MAX_CHARS", "700000")),
+)
 
 COMPETITOR_SEARCH_ENABLED = os.getenv("COMPETITOR_SEARCH_ENABLED", "true").lower() in {
     "1",
@@ -131,6 +140,23 @@ COMPETITOR_NATIVE_SEARCH_ENABLED = os.getenv(
 COMPETITOR_NATIVE_SEARCH_MAX_FETCHES = max(
     1, int(os.getenv("COMPETITOR_NATIVE_SEARCH_MAX_FETCHES", "8"))
 )
+
+MEILISEARCH_ENABLED = os.getenv("MEILISEARCH_ENABLED", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+MEILISEARCH_HOST = os.getenv("MEILISEARCH_HOST", "http://127.0.0.1:7700").rstrip("/")
+MEILISEARCH_API_KEY = os.getenv("MEILISEARCH_API_KEY", "masterKey")
+MEILISEARCH_INDEX = os.getenv("MEILISEARCH_INDEX", "products")
+MEILISEARCH_AUTO_SYNC = os.getenv("MEILISEARCH_AUTO_SYNC", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+MEILISEARCH_SEARCH_LIMIT = max(5, int(os.getenv("MEILISEARCH_SEARCH_LIMIT", "20")))
 
 KP_PARALLEL_WORKERS = max(1, int(os.getenv("KP_PARALLEL_WORKERS", "4")))
 

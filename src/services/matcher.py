@@ -8,6 +8,7 @@ from rapidfuzz import fuzz, process
 from src.config import EXACT_MATCH_THRESHOLD, LOCAL_MATCH_THRESHOLD, SIMILAR_MATCH_THRESHOLD
 from src.services.data_loader import normalize_name
 from src.services.fuzzy_scoring import name_match_score
+from src.services.meilisearch_service import meilisearch_available, search_products
 from src.services.tz_search import (
     build_search_queries,
     is_relevant_match,
@@ -118,6 +119,101 @@ class ItemMatcher:
         return hits[:limit]
 
     def _search_source(
+        self,
+        tz_item: TZItem,
+        choices: list[str],
+        payloads: list,
+        source: MatchSource,
+        limit: int = 5,
+    ) -> list[FuzzyHit]:
+        merged: dict[str, FuzzyHit] = {}
+
+        for hit in self._search_source_meili(tz_item, payloads, source, limit=limit):
+            existing = merged.get(hit.name)
+            if existing is None or hit.score > existing.score:
+                merged[hit.name] = hit
+
+        for hit in self._search_source_fuzzy(
+            tz_item,
+            choices,
+            payloads,
+            source,
+            limit=limit,
+        ):
+            existing = merged.get(hit.name)
+            if existing is None or hit.score > existing.score:
+                merged[hit.name] = hit
+
+        hits = sorted(merged.values(), key=lambda item: item.score, reverse=True)
+        return hits[:limit]
+
+    def _meili_source_key(self, source: MatchSource) -> str:
+        if source == MatchSource.CATALOG:
+            return "catalog"
+        if source == MatchSource.REGISTRY:
+            return "registry"
+        return "price_list"
+
+    def _search_source_meili(
+        self,
+        tz_item: TZItem,
+        payloads: list,
+        source: MatchSource,
+        *,
+        limit: int = 5,
+    ) -> list[FuzzyHit]:
+        if not meilisearch_available():
+            return []
+
+        merged: dict[str, FuzzyHit] = {}
+        source_key = self._meili_source_key(source)
+
+        for query in build_search_queries(tz_item):
+            for meili_hit in search_products(query, source=source_key, limit=max(limit, 8)):
+                index = meili_hit.source_index
+                if index < 0 or index >= len(payloads):
+                    continue
+                payload = payloads[index]
+                payload_name = getattr(payload, "name", str(payload))
+                if not is_relevant_match(
+                    tz_item,
+                    payload_name,
+                    score=float(meili_hit.score),
+                ):
+                    continue
+                adjusted_score = (
+                    relevance_score(tz_item, payload_name)
+                    if tz_item
+                    else float(meili_hit.score)
+                )
+                adjusted_score = self._adjust_score(
+                    normalize_name(query),
+                    normalize_name(payload_name),
+                    adjusted_score,
+                )
+                detail = meili_hit.detail or ""
+                if source == MatchSource.PRICE_LIST and isinstance(payload, PriceListItem):
+                    detail = detail or f"{payload.supplier} / {payload.sheet} / код {payload.code}"
+                elif source == MatchSource.CATALOG and isinstance(payload, CatalogItem):
+                    detail = detail or payload.source_file
+                elif source == MatchSource.REGISTRY and isinstance(payload, RegistryItem):
+                    detail = detail or f"остаток: {payload.quantity} шт."
+
+                hit = FuzzyHit(
+                    name=payload_name,
+                    score=adjusted_score,
+                    payload=payload,
+                    source=source,
+                    detail=detail,
+                )
+                existing = merged.get(hit.name)
+                if existing is None or hit.score > existing.score:
+                    merged[hit.name] = hit
+
+        hits = sorted(merged.values(), key=lambda item: item.score, reverse=True)
+        return hits[:limit]
+
+    def _search_source_fuzzy(
         self,
         tz_item: TZItem,
         choices: list[str],

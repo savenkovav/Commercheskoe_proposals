@@ -16,11 +16,28 @@ class CompetitorSite:
     search_url: str | None = None
 
 
+@dataclass(frozen=True)
+class CompetitorSearchHit:
+    url: str
+    name: str
+    price: float | None = None
+
+
+@dataclass(frozen=True)
+class CompetitorSearchProfile:
+    """Точные правила парсинга выдачи поиска на сайте конкурента."""
+
+    search_url: str | None = None
+    result_item_pattern: str | None = None
+    # Маркеры блока выдачи — для сужения HTML до результатов поиска
+    result_section_markers: tuple[str, ...] = ()
+
+
 COMPETITOR_SITES: tuple[CompetitorSite, ...] = (
     CompetitorSite(
         "xn----7sbbumkojddmeoc1a7r.xn--p1acf",
         "Punktum",
-        "https://xn----7sbbumkojddmeoc1a7r.xn--p1acf/search/?q={query}",
+        "https://xn----7sbbumkojddmeoc1a7r.xn--p1acf/search/search_do/?search_string={query}",
     ),
     CompetitorSite("n-72.ru", "Новация", "https://n-72.ru/search/?q={query}"),
     CompetitorSite(
@@ -85,6 +102,21 @@ _SITES_WITH_SEARCH: tuple[CompetitorSite, ...] = tuple(
     site for site in COMPETITOR_SITES if site.search_url
 )
 
+# Профили точного парсинга (дополняют универсальный разбор href, не заменяют его).
+_COMPETITOR_SEARCH_PROFILES: dict[str, CompetitorSearchProfile] = {
+    "xn----7sbbumkojddmeoc1a7r.xn--p1acf": CompetitorSearchProfile(
+        search_url=(
+            "https://xn----7sbbumkojddmeoc1a7r.xn--p1acf/search/search_do/"
+            "?search_string={query}"
+        ),
+        result_item_pattern=(
+            r'itemprop="name"\s+href="(?P<url>[^"]+)"[^>]*>\s*(?P<name>[^<]+?)\s*</a>'
+            r'.*?itemprop="lowPrice"\s+content="(?P<price>\d+)"'
+        ),
+        result_section_markers=("preview_product", "найдено товаров", "itemListElement"),
+    ),
+}
+
 _SKIP_PATH_MARKERS = (
     "/search",
     "/login",
@@ -111,6 +143,7 @@ _SKIP_PATH_MARKERS = (
 
 _PRODUCT_PATH_MARKERS = (
     "/catalog/",
+    "/products/",
     "/product/",
     "/tovar",
     "/goods/",
@@ -131,6 +164,99 @@ def all_competitor_domains() -> list[str]:
 
 def competitor_sites_with_search() -> tuple[CompetitorSite, ...]:
     return _SITES_WITH_SEARCH
+
+
+def competitor_search_profile(domain: str) -> CompetitorSearchProfile | None:
+    key = domain.lower().removeprefix("www.")
+    return _COMPETITOR_SEARCH_PROFILES.get(key)
+
+
+def resolve_competitor_absolute_url(domain: str, href: str) -> str:
+    """Собрать абсолютный URL; для путей с / игнорируем <base href> страницы."""
+    href = unescape_href(href)
+    if not href:
+        return ""
+    if href.startswith("//"):
+        return f"https:{href}"
+    if href.startswith("http"):
+        return href
+    root = f"https://{domain.removeprefix('www.')}"
+    if href.startswith("/"):
+        return f"{root}{href}"
+    return urljoin(f"{root}/", href)
+
+
+def focus_competitor_search_html(page_text: str, domain: str) -> str:
+    """Оставить фрагмент HTML с выдачей поиска, если он известен для домена."""
+    if not page_text:
+        return page_text
+
+    profile = competitor_search_profile(domain)
+    markers = profile.result_section_markers if profile else ()
+    if not markers:
+        return page_text
+
+    start = -1
+    for marker in markers:
+        index = page_text.find(marker)
+        if index >= 0 and (start < 0 or index < start):
+            start = index
+
+    if start < 0:
+        return page_text
+
+    window_start = max(0, start - 2_000)
+    return page_text[window_start : window_start + 250_000]
+
+
+def build_competitor_search_url(site: CompetitorSite, query: str) -> str:
+    from urllib.parse import quote_plus
+
+    profile = competitor_search_profile(site.domain)
+    template = (
+        profile.search_url
+        if profile and profile.search_url
+        else site.search_url
+    )
+    if not template:
+        return ""
+    return template.format(query=quote_plus(query))
+
+
+def parse_competitor_search_results(
+    page_text: str,
+    site: CompetitorSite,
+    *,
+    limit: int = 5,
+) -> list[CompetitorSearchHit]:
+    profile = competitor_search_profile(site.domain)
+    if not profile or not profile.result_item_pattern or not page_text:
+        return []
+
+    pattern = re.compile(profile.result_item_pattern, re.I | re.S)
+    hits: list[CompetitorSearchHit] = []
+    seen: set[str] = set()
+
+    focused = focus_competitor_search_html(page_text, site.domain)
+
+    for match in pattern.finditer(focused):
+        url = match.group("url")
+        absolute = resolve_competitor_absolute_url(site.domain, url)
+        if not absolute:
+            continue
+
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+
+        name = re.sub(r"\s+", " ", match.group("name")).strip()
+        price_raw = match.groupdict().get("price")
+        price = float(price_raw) if price_raw else None
+        hits.append(CompetitorSearchHit(url=absolute, name=name, price=price))
+        if len(hits) >= limit:
+            break
+
+    return hits
 
 
 def _normalize_host(url_or_host: str) -> str:
@@ -218,23 +344,18 @@ def extract_competitor_product_urls(
     if not page_text:
         return []
 
-    base = f"https://{domain.removeprefix('www.')}"
     seen: set[str] = set()
     urls: list[str] = []
 
-    for href in _HREF_RE.findall(page_text):
-        href = unescape_href(href)
+    focused = focus_competitor_search_html(page_text, domain)
+
+    for href in _HREF_RE.findall(focused):
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
             continue
 
-        if href.startswith("//"):
-            absolute = f"https:{href}"
-        elif href.startswith("/"):
-            absolute = urljoin(base, href)
-        elif href.startswith("http"):
-            absolute = href
-        else:
-            absolute = urljoin(base, href)
+        absolute = resolve_competitor_absolute_url(domain, href)
+        if not absolute:
+            continue
 
         parsed = urlparse(absolute)
         if not host_matches_competitor(parsed.netloc, domain):
