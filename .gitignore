@@ -1,4 +1,6 @@
 .env
+deploy/github-vps-dotenv.secret
+deploy/*.secret
 .venv/
 venv/
 __pycache__/
