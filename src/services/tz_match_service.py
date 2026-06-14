@@ -25,6 +25,7 @@ from src.services.competitor_urls import (
 )
 from src.services.fuzzy_scoring import name_match_score
 from src.services.kit_spec_parser import parse_kit_components_from_specs
+from src.services.local_price_match import has_local_catalog_or_price_list_price
 from src.services.tz_search import is_relevant_match, primary_search_text, relevance_score
 from src.services.web_quote_priority import (
     has_acceptable_web_pricing_in_comparison,
@@ -155,11 +156,18 @@ class TZMatchService:
             price_hit,
             goods_hit,
         )
+        skip_competitors = has_local_catalog_or_price_list_price(
+            tz_item,
+            catalog_hit,
+            price_hit,
+            self.matcher,
+        )
         web_quote, competitors = self._fetch_internet_comparison(
             tz_item,
             prefs,
             use_ai=use_ai,
             local_miss=local_miss,
+            skip_competitors=skip_competitors,
         )
         comparison.extend(competitors)
 
@@ -400,6 +408,7 @@ class TZMatchService:
         preferences: KpPreferences,
         use_ai: bool = True,
         local_miss: bool = True,
+        skip_competitors: bool = False,
     ) -> tuple[PriceQuote | None, list[PriceQuote]]:
         if "web" in preferences.disabled_sources:
             return None, []
@@ -417,7 +426,12 @@ class TZMatchService:
 
         if local_miss and WEB_SEARCH_ENABLED:
             search_text = primary_search_text(tz_item)
-            _append_quotes(self.web_search.search_internet_cascade(search_text))
+            _append_quotes(
+                self.web_search.search_internet_cascade(
+                    search_text,
+                    skip_competitors=skip_competitors,
+                )
+            )
 
         if USE_AI_INTERNET_SEARCH and use_ai and self.ai.enabled:
             _append_quotes(self._fetch_internet_comparison_ai(tz_item))

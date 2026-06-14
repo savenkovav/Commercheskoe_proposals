@@ -126,26 +126,22 @@ class ItemMatcher:
         source: MatchSource,
         limit: int = 5,
     ) -> list[FuzzyHit]:
-        merged: dict[str, FuzzyHit] = {}
+        meili_hits = self._search_source_meili(
+            tz_item,
+            payloads,
+            source,
+            limit=limit,
+        )
+        if meili_hits:
+            return meili_hits
 
-        for hit in self._search_source_meili(tz_item, payloads, source, limit=limit):
-            existing = merged.get(hit.name)
-            if existing is None or hit.score > existing.score:
-                merged[hit.name] = hit
-
-        for hit in self._search_source_fuzzy(
+        return self._search_source_fuzzy(
             tz_item,
             choices,
             payloads,
             source,
             limit=limit,
-        ):
-            existing = merged.get(hit.name)
-            if existing is None or hit.score > existing.score:
-                merged[hit.name] = hit
-
-        hits = sorted(merged.values(), key=lambda item: item.score, reverse=True)
-        return hits[:limit]
+        )
 
     def _meili_source_key(self, source: MatchSource) -> str:
         if source == MatchSource.CATALOG:

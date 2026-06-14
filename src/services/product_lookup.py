@@ -13,6 +13,7 @@ from src.config import (
     WEB_PRICE_DISCOUNT_PERCENT,
     WEB_SEARCH_ENABLED,
 )
+from src.services.local_price_match import has_local_catalog_or_price_list_price
 from src.services.markup_settings import get_markup_percent
 from src.services.data_loader import normalize_name
 from src.services.models import CatalogItem, MatchSource, MatchStatus, PriceListItem, PriceQuote, RegistryItem, TZItem
@@ -224,7 +225,12 @@ class ProductLookupService:
         )
         competitors_block = (
             self._build_competitors_block(product_name)
-            if self._should_search_competitors(fields)
+            if self._should_search_competitors(
+                fields,
+                tz_item,
+                catalog_hit,
+                price_hit,
+            )
             else {"found": False, "items": []}
         )
 
@@ -343,7 +349,13 @@ class ProductLookupService:
         )
 
     @staticmethod
-    def _should_search_competitors(fields: list[LookupField]) -> bool:
+    def _should_search_competitors(
+        self,
+        fields: list[LookupField],
+        tz_item: TZItem,
+        catalog_hit: FuzzyHit | None,
+        price_hit: FuzzyHit | None,
+    ) -> bool:
         if not WEB_SEARCH_ENABLED or not COMPETITOR_SEARCH_ENABLED:
             return False
         price_fields = {
@@ -352,7 +364,16 @@ class ProductLookupService:
             LookupField.PRICE_KP,
             LookupField.PRICE_SUPPLIER,
         }
-        return bool(price_fields.intersection(fields))
+        if not price_fields.intersection(fields):
+            return False
+        if has_local_catalog_or_price_list_price(
+            tz_item,
+            catalog_hit,
+            price_hit,
+            self.matcher,
+        ):
+            return False
+        return True
 
     def _build_competitors_block(self, query: str) -> dict[str, object]:
         quotes: list[PriceQuote] = []

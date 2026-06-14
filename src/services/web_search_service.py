@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
@@ -14,6 +15,7 @@ from src.config import (
     COMPETITOR_SEARCH_ENABLED,
     COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
     COMPETITOR_SEARCH_MAX_RESULTS,
+    COMPETITOR_SEARCH_PARALLEL_WORKERS,
     WEB_SEARCH_EXACT_THRESHOLD,
     WEB_SEARCH_FETCH_PAGES,
     WEB_SEARCH_MAX_PAGE_FETCHES,
@@ -358,13 +360,6 @@ class WebSearchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
-        _extend(
-            self._search_competitor_via_ddg(
-                query,
-                threshold=strict_threshold,
-                limit=max_results,
-            )
-        )
         if COMPETITOR_NATIVE_SEARCH_ENABLED:
             _extend(
                 self._search_competitor_via_native(
@@ -377,14 +372,17 @@ class WebSearchService:
         if has_priced_competitor_quote(quotes):
             return self._finalize_competitor_quotes(quotes, max_results)
 
-        if COMPETITOR_SEARCH_FALLBACK_THRESHOLD < strict_threshold:
-            _extend(
-                self._search_competitor_via_ddg(
-                    query,
-                    threshold=COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
-                    limit=max_results,
-                )
+        _extend(
+            self._search_competitor_via_ddg(
+                query,
+                threshold=strict_threshold,
+                limit=max_results,
             )
+        )
+        if has_priced_competitor_quote(quotes):
+            return self._finalize_competitor_quotes(quotes, max_results)
+
+        if COMPETITOR_SEARCH_FALLBACK_THRESHOLD < strict_threshold:
             if COMPETITOR_NATIVE_SEARCH_ENABLED:
                 _extend(
                     self._search_competitor_via_native(
@@ -394,6 +392,16 @@ class WebSearchService:
                         seen_urls=seen_urls,
                     )
                 )
+            if has_priced_competitor_quote(quotes):
+                return self._finalize_competitor_quotes(quotes, max_results)
+
+            _extend(
+                self._search_competitor_via_ddg(
+                    query,
+                    threshold=COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
+                    limit=max_results,
+                )
+            )
 
         return self._finalize_competitor_quotes(quotes, max_results)
 
@@ -426,12 +434,15 @@ class WebSearchService:
         threshold: int,
         limit: int,
     ) -> list[PriceQuote]:
-        quotes: list[PriceQuote] = []
-        seen_urls = {quote.url for quote in quotes if quote.url}
+        batches = list(iter_competitor_domain_batches(COMPETITOR_SEARCH_BATCH_SIZE))
+        if not batches:
+            return []
 
-        for batch in iter_competitor_domain_batches(COMPETITOR_SEARCH_BATCH_SIZE):
-            if len(quotes) >= limit:
-                break
+        quotes: list[PriceQuote] = []
+        seen_urls: set[str] = set()
+        workers = min(COMPETITOR_SEARCH_PARALLEL_WORKERS, len(batches))
+
+        def _search_batch(batch: list[str]) -> list[PriceQuote]:
             batch_quotes = self._collect_offers(
                 query,
                 threshold=threshold,
@@ -449,14 +460,92 @@ class WebSearchService:
                     site_domains=batch,
                     stop_at_first_priced=False,
                 )
-            for quote in batch_quotes:
-                if quote.url and quote.url in seen_urls:
+            return batch_quotes
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_search_batch, batch) for batch in batches]
+            for future in as_completed(futures):
+                try:
+                    batch_quotes = future.result()
+                except Exception:
+                    logger.warning(
+                        "Parallel DuckDuckGo competitor batch failed for %r",
+                        query,
+                        exc_info=True,
+                    )
                     continue
-                if quote.url:
-                    seen_urls.add(quote.url)
+                for quote in batch_quotes:
+                    if quote.url and quote.url in seen_urls:
+                        continue
+                    if quote.url:
+                        seen_urls.add(quote.url)
+                    quotes.append(quote)
+                    if len(quotes) >= limit:
+                        return quotes[:limit]
+        return quotes
+
+    def _search_competitor_site_native(
+        self,
+        query: str,
+        site: CompetitorSite,
+        *,
+        threshold: int,
+        max_page_fetches: int,
+    ) -> list[PriceQuote]:
+        quotes: list[PriceQuote] = []
+        page_fetches = 0
+
+        search_url = build_competitor_search_url(site, query)
+        if not search_url:
+            return quotes
+
+        page_fetches += 1
+        search_text, _search_price = self._fetch_page_price(
+            search_url,
+            max_chars=WEB_SEARCH_RESULTS_PAGE_MAX_CHARS,
+        )
+
+        profile_hits = parse_competitor_search_results(
+            search_text,
+            site,
+            limit=3,
+        )
+        if profile_hits:
+            for hit in profile_hits:
+                quote = self._quote_from_competitor_hit(
+                    query,
+                    hit,
+                    site,
+                    threshold=threshold,
+                )
+                if quote:
+                    quotes.append(quote)
+            return quotes
+
+        product_urls = extract_competitor_product_urls(
+            search_text,
+            site.domain,
+            limit=3,
+        )
+        if not product_urls:
+            return quotes
+
+        for product_url in product_urls:
+            if page_fetches >= max_page_fetches:
+                break
+            page_fetches += 1
+            page_text, page_price = self._fetch_page_price(product_url)
+            quote = self._quote_from_competitor_page(
+                query,
+                product_url,
+                site,
+                threshold=threshold,
+                title=self._extract_page_title(page_text) or query,
+                page_text=page_text,
+                prefetched_price=page_price,
+            )
+            if quote:
                 quotes.append(quote)
-                if len(quotes) >= limit:
-                    break
         return quotes
 
     def _search_competitor_via_native(
@@ -467,77 +556,43 @@ class WebSearchService:
         limit: int,
         seen_urls: set[str],
     ) -> list[PriceQuote]:
+        sites = list(competitor_sites_with_search())
+        if not sites:
+            return []
+
         quotes: list[PriceQuote] = []
-        page_fetches = 0
+        per_site_fetches = max(1, min(3, COMPETITOR_NATIVE_SEARCH_MAX_FETCHES))
+        workers = min(COMPETITOR_SEARCH_PARALLEL_WORKERS, len(sites))
 
-        for site in competitor_sites_with_search():
-            if len(quotes) >= limit or page_fetches >= COMPETITOR_NATIVE_SEARCH_MAX_FETCHES:
-                break
-
-            search_url = build_competitor_search_url(site, query)
-            if not search_url:
-                continue
-            page_fetches += 1
-            search_text, _search_price = self._fetch_page_price(
-                search_url,
-                max_chars=WEB_SEARCH_RESULTS_PAGE_MAX_CHARS,
-            )
-
-            profile_hits = parse_competitor_search_results(
-                search_text,
-                site,
-                limit=3,
-            )
-            if profile_hits:
-                for hit in profile_hits:
-                    if len(quotes) >= limit:
-                        break
-                    if hit.url in seen_urls:
-                        continue
-                    quote = self._quote_from_competitor_hit(
-                        query,
-                        hit,
-                        site,
-                        threshold=threshold,
-                    )
-                    if not quote:
-                        continue
-                    seen_urls.add(hit.url)
-                    quotes.append(quote)
-                if profile_hits:
-                    continue
-
-            product_urls = extract_competitor_product_urls(
-                search_text,
-                site.domain,
-                limit=3,
-            )
-            if not product_urls:
-                continue
-
-            for product_url in product_urls:
-                if page_fetches >= COMPETITOR_NATIVE_SEARCH_MAX_FETCHES:
-                    break
-                if product_url in seen_urls:
-                    continue
-                page_fetches += 1
-                page_text, page_price = self._fetch_page_price(product_url)
-                quote = self._quote_from_competitor_page(
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    self._search_competitor_site_native,
                     query,
-                    product_url,
                     site,
                     threshold=threshold,
-                    title=self._extract_page_title(page_text) or query,
-                    page_text=page_text,
-                    prefetched_price=page_price,
+                    max_page_fetches=per_site_fetches,
                 )
-                if not quote:
+                for site in sites
+            ]
+            for future in as_completed(futures):
+                try:
+                    site_quotes = future.result()
+                except Exception:
+                    logger.warning(
+                        "Parallel native competitor search failed for %r",
+                        query,
+                        exc_info=True,
+                    )
                     continue
-                seen_urls.add(product_url)
-                quotes.append(quote)
-                if len(quotes) >= limit:
-                    break
-
+                for quote in site_quotes:
+                    if quote.url and quote.url in seen_urls:
+                        continue
+                    if quote.url:
+                        seen_urls.add(quote.url)
+                    quotes.append(quote)
+                    if has_priced_competitor_quote(quotes) and len(quotes) >= limit:
+                        return quotes[:limit]
         return quotes
 
     def _quote_from_competitor_hit(
@@ -622,6 +677,7 @@ class WebSearchService:
         product_name: str,
         *,
         limit: int | None = None,
+        skip_competitors: bool = False,
     ) -> list[PriceQuote]:
         """Сначала сайты конкурентов, затем прочий интернет, затем маркетплейсы."""
         query = product_name.strip()
@@ -640,10 +696,11 @@ class WebSearchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
-        competitor_quotes = self.search_competitor_offers(query, limit=max_results)
-        _extend(competitor_quotes)
-        if has_priced_competitor_quote(quotes):
-            return quotes
+        if not skip_competitors:
+            competitor_quotes = self.search_competitor_offers(query, limit=max_results)
+            _extend(competitor_quotes)
+            if has_priced_competitor_quote(quotes):
+                return quotes
 
         _extend(self.search_offers(query, limit=max_results))
         if pick_best_web_priced_quote(quotes):
