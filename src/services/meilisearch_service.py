@@ -12,7 +12,7 @@ from src.config import (
 
 logger = logging.getLogger(__name__)
 
-_MEILI_ROOT = Path(__file__).resolve().parents[2] / "meilisearch"
+_MEILI_ROOT = Path(__file__).resolve().parents[2] / "kp_meilisearch"
 if _MEILI_ROOT.exists() and str(_MEILI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MEILI_ROOT))
 

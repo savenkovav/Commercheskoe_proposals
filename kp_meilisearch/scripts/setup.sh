@@ -16,12 +16,12 @@ fi
 
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
-python -m pip install --upgrade pip
-pip install -r "$ROOT/requirements.txt"
+python3 -m pip install --upgrade pip
+pip3 install -r "$ROOT/requirements.txt"
 
 echo
 echo "Done. Next steps:"
-echo "  1. Add Meilisearch keys to $PROJECT_ROOT/.env (see meilisearch/env.example)"
+echo "  1. Add Meilisearch keys to $PROJECT_ROOT/.env (see kp_meilisearch/env.example)"
 echo "  2. Start server: docker compose up -d meilisearch"
 echo "  3. Sync index:   $ROOT/scripts/sync_index.sh"
 echo "  4. Test search:  $ROOT/scripts/search_cli.sh \"стол ученический\""

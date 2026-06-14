@@ -80,12 +80,21 @@ class ProductIndexer:
             index = client.get_index(self.settings.index_name)
         except MeilisearchApiError:
             task = client.create_index(self.settings.index_name, {"primaryKey": "id"})
-            client.wait_for_task(task.task_uid)
+            self._wait_task(client, task.task_uid)
             index = client.get_index(self.settings.index_name)
 
         task = index.update_settings(_INDEX_SETTINGS)
-        client.wait_for_task(task.task_uid)
+        self._wait_task(client, task.task_uid)
         return index
+
+    def _wait_task(self, client: meilisearch.Client, task_uid: int) -> None:
+        task = client.wait_for_task(task_uid)
+        if task.status != "succeeded":
+            error = getattr(task, "error", None)
+            message = error.get("message") if isinstance(error, dict) else error
+            raise RuntimeError(
+                f"Meilisearch task {task_uid} ({task.type}) failed: {message or task.status}"
+            )
 
     def sync_all(
         self,
@@ -103,7 +112,7 @@ class ProductIndexer:
         client = self._client_or_raise()
 
         delete_task = index.delete_all_documents()
-        client.wait_for_task(delete_task.task_uid)
+        self._wait_task(client, delete_task.task_uid)
 
         indexed = 0
         for start in range(0, len(documents), batch_size):
@@ -111,7 +120,7 @@ class ProductIndexer:
             if not chunk:
                 continue
             task = index.add_documents(chunk)
-            client.wait_for_task(task.task_uid)
+            self._wait_task(client, task.task_uid)
             indexed += len(chunk)
 
         logger.info("Meilisearch index %s synced: %s documents", self.settings.index_name, indexed)

@@ -5,7 +5,7 @@
 ## Структура
 
 ```
-meilisearch/
+kp_meilisearch/
   .venv/                 # изолированное окружение (scripts/setup.sh)
   kp_search/             # Python-пакет: индексация и поиск
   scripts/
@@ -21,7 +21,7 @@ meilisearch/
 ### 1. Установка окружения модуля
 
 ```bash
-./meilisearch/scripts/setup.sh
+./kp_meilisearch/scripts/setup.sh
 ```
 
 ### 2. Настройка `.env` в корне проекта
@@ -46,13 +46,13 @@ docker compose up -d meilisearch
 ### 4. Индексация данных
 
 ```bash
-./meilisearch/scripts/sync_index.sh
+./kp_meilisearch/scripts/sync_index.sh
 ```
 
 ### 5. Тест поиска
 
 ```bash
-./meilisearch/scripts/search_cli.sh "стол ученический"
+./kp_meilisearch/scripts/search_cli.sh "стол ученический"
 ```
 
 ## Интеграция с приложением
@@ -68,5 +68,5 @@ docker compose up -d meilisearch
 
 ## Зависимости
 
-- Изолированный venv: `meilisearch/requirements.txt`
+- Изолированный venv: `kp_meilisearch/requirements.txt`
 - Основное приложение: `meilisearch` добавлен в корневой `requirements.txt`

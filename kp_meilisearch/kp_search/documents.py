@@ -11,7 +11,7 @@ def _catalog_doc(item: CatalogItem, index: int) -> dict[str, Any] | None:
     if not item.name.strip():
         return None
     return {
-        "id": f"catalog:{index}",
+        "id": f"catalog_{index}",
         "name": item.name.strip(),
         "source": "catalog",
         "source_index": index,
@@ -27,7 +27,7 @@ def _registry_doc(item: RegistryItem, index: int) -> dict[str, Any] | None:
     if not item.name.strip():
         return None
     return {
-        "id": f"registry:{index}",
+        "id": f"registry_{index}",
         "name": item.name.strip(),
         "source": "registry",
         "source_index": index,
@@ -40,7 +40,7 @@ def _price_doc(item: PriceListItem, index: int) -> dict[str, Any] | None:
     if not item.name.strip():
         return None
     return {
-        "id": f"price:{index}:{item.code}",
+        "id": f"price_{index}",
         "name": item.name.strip(),
         "source": "price_list",
         "source_index": index,
