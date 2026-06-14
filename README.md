@@ -82,18 +82,56 @@ PII_EXTRA_TERMS=Фамилия Иванов|Название заказчика
 
 ## Деплой на облачный сервер
 
-### Домен savenkoff.beget.tech (Beget VPS)
+### GitHub Actions → VPS (195.133.73.215)
 
-1. **Панель Beget → DNS** — A-запись `savenkoff.beget.tech` → IP вашего VPS.
-2. На VPS установите Docker и откройте порты 80/443.
-3. Скопируйте `.env` на сервер (`WEB_HOST=0.0.0.0`, `WEB_BEHIND_PROXY=true`).
-4. Деплой через GitHub Actions (секреты `VPS_HOST`, `VPS_USER`, `VPS_PASSWORD`) или:
+Автодеплой при **push в `main`**: workflow `.github/workflows/deploy-vps.yml`.
+
+**1. Подготовка SSH-ключа для GitHub**
 
 ```bash
-VPS_PASSWORD='...' ./scripts/vps_rsync_deploy.sh
+chmod +x scripts/vps_prepare_github_deploy.sh
+./scripts/vps_prepare_github_deploy.sh
 ```
 
-На сервере поднимается `docker compose -f docker-compose.prod.yml` (приложение + nginx).
+Добавьте публичный ключ на сервер (`root@195.133.73.215`) в `~/.ssh/authorized_keys`.
+
+**2. Секреты репозитория**  
+GitHub → `Commercheskoe_proposals` → Settings → Secrets and variables → Actions:
+
+| Секрет | Значение |
+|--------|----------|
+| `VPS_HOST` | `195.133.73.215` |
+| `VPS_USER` | `root` |
+| `VPS_SSH_KEY` | приватный ключ (весь файл, включая `BEGIN/END`) |
+| `VPS_DOTENV` | production `.env` (WEB_HOST=0.0.0.0, WEB_BEHIND_PROXY=true, API-ключи) |
+
+Опционально: `VPS_PASSWORD` (если без ключа), `VPS_PORT` (по умолчанию 22).
+
+**3. Запуск**
+
+- Push в `main` — деплой автоматически
+- Или вручную: Actions → **Deploy VPS** → Run workflow
+
+На сервере: `/opt/comm-proposals`, `docker compose -f docker-compose.prod.yml up -d`.
+
+**4. Проверка**
+
+```bash
+curl -I http://195.133.73.215/
+ssh root@195.133.73.215 'docker compose -f /opt/comm-proposals/docker-compose.prod.yml ps'
+```
+
+### Ручной деплой (пароль)
+
+```bash
+VPS_HOST=195.133.73.215 VPS_PASSWORD='...' ./scripts/vps_rsync_deploy.sh
+```
+
+### Домен savenkoff.beget.tech (Beget VPS)
+
+1. **Панель Beget → DNS** — A-запись `savenkoff.beget.tech` → IP VPS (`195.133.73.215`).
+2. На VPS открыты порты 80/443.
+3. В `VPS_DOTENV` укажите `PUBLIC_BASE_URL=https://savenkoff.beget.tech`.
 
 ### Docker (локально)
 

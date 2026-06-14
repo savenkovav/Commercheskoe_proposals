@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOST="${VPS_HOST:-155.212.131.144}"
+HOST="${VPS_HOST:-195.133.73.215}"
 USER="${VPS_USER:-root}"
 APP_DIR="${VPS_APP_DIR:-/opt/comm-proposals}"
 
@@ -49,7 +49,7 @@ expect {
   eof
 }
 
-spawn ssh -o StrictHostKeyChecking=no ${user}@${host} "export APP_DIR=$app_dir REPO_URL=https://github.com/savenkovav/Comm_proposals.git; if \[ ! -f $app_dir/scripts/vps_remote_setup.sh \]; then apt-get update -qq && apt-get install -y -qq git curl ca-certificates && git clone \$REPO_URL \$APP_DIR; fi; bash $app_dir/scripts/vps_remote_setup.sh"
+spawn ssh -o StrictHostKeyChecking=no ${user}@${host} "export APP_DIR=$app_dir REPO_URL=https://github.com/savenkovav/Commercheskoe_proposals.git; if \[ ! -f $app_dir/scripts/vps_remote_setup.sh \]; then apt-get update -qq && apt-get install -y -qq git curl ca-certificates && git clone \$REPO_URL \$APP_DIR; fi; bash $app_dir/scripts/vps_remote_setup.sh"
 expect {
   -re "(?i)password:" { send "$password\r"; exp_continue }
   eof

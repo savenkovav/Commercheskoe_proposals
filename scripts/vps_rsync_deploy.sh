@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOST="${VPS_HOST:-155.212.131.144}"
+HOST="${VPS_HOST:-195.133.73.215}"
 USER="${VPS_USER:-root}"
 APP_DIR="${VPS_APP_DIR:-/opt/comm-proposals}"
 

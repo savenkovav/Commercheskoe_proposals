@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Первичная настройка VPS (запускается на сервере)
+# Настройка и перезапуск приложения на VPS (вызывается из GitHub Actions или вручную)
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/comm-proposals}"
-REPO_URL="${REPO_URL:-https://github.com/savenkovav/Comm_proposals.git}"
+REPO_URL="${REPO_URL:-https://github.com/savenkovav/Commercheskoe_proposals.git}"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -24,7 +24,7 @@ mkdir -p output data
 
 if [[ ! -f .env ]]; then
   cp env.example .env
-  echo "Создан .env из env.example"
+  echo "Создан .env из env.example — задайте PROXYAPI_API_KEY и пути к data/"
 fi
 
 sed -i 's/^WEB_HOST=.*/WEB_HOST=0.0.0.0/' .env
@@ -35,6 +35,6 @@ if grep -q '^PROCUREMENT_REPORT_PATH=\.\./' .env 2>/dev/null; then
   sed -i 's|^PROCUREMENT_REPORT_PATH=.*|PROCUREMENT_REPORT_PATH=|' .env
 fi
 
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs --tail=20 kp-web || true
+docker compose -f docker-compose.prod.yml logs --tail=30 kp-web || true
