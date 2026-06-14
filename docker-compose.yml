@@ -6,13 +6,18 @@ services:
     ports:
       - "7700:7700"
     environment:
-      MEILI_ENV: development
-      MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY:-masterKey}
-      MEILI_NO_ANALYTICS: "true"
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_LOG_LEVEL: INFO
     volumes:
-      - meilisearch_data:/meili_data
+      - meili_data:/meili_data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
     networks:
-      - default
+      - app-network
 
   kp-web:
     build: .
@@ -34,14 +39,16 @@ services:
     depends_on:
       - meilisearch
     networks:
-      - default
+      - app-network
       - target_network
     command: ["python", "-m", "src.web.server"]
 
 volumes:
-  meilisearch_data:
+  meili_data:
 
 networks:
+  app-network:
+    driver: bridge
   target_network:
     external: true
     name: root_target_network
