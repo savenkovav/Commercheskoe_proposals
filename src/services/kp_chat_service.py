@@ -14,15 +14,15 @@ from src.services.models import MatchResult, MatchSource, ProposalSummary
 from src.services.product_lookup import (
     ProductLookupService,
     kp_lookup_reply,
-    resolve_kp_price_lookup,
+    resolve_freeform_product_lookup,
 )
 from src.services.proposal_processor import ProposalProcessor
 
 logger = logging.getLogger(__name__)
 
 WELCOME_MESSAGE = (
-    "Я КП-Ассистент. Загрузите ТЗ или опишите позиции в чате.\n\n"
-    "Поиск в каталогах и прайсах начну только по вашей команде.\n"
+    "Я КП-Ассистент. Напишите название товара — найду в каталоге, прайсах и реестре.\n\n"
+    "Для расчёта КП по ТЗ загрузите файл .docx/.pdf/.xlsx или опишите несколько позиций.\n"
     "Выберите задачу:\n"
     "• Задача 1 — поиск и себестоимость\n"
     "• Задача 1+2 — плюс конкуренты и рекомендация цены"
@@ -89,6 +89,29 @@ class KpChatService:
         session.chat_history.append(ChatTurn(role="assistant", text=greeting))
         return self.store.create(session)
 
+    def create_free_session(self, *, use_ai: bool = True) -> str:
+        from src.services.kp_session import new_session_id
+
+        session = KpSession(
+            session_id="",
+            tz_items=[],
+            results=[],
+            summary=self.processor.empty_summary(0),
+            output_path=OUTPUT_DIR / "pending.xlsx",
+            use_ai=use_ai,
+            preferences=KpPreferences(
+                search_kit_component_links=SEARCH_KIT_COMPONENT_LINKS,
+            ),
+            task_mode="task1",
+            stage="intake",
+            search_completed=False,
+        )
+        session.session_id = new_session_id()
+        session.chat_history.append(ChatTurn(role="assistant", text=WELCOME_MESSAGE))
+        session_id = self.store.create(session)
+        logger.info("KP free session created: %s", session_id)
+        return session_id
+
     def chat(self, session_id: str, message: str) -> dict:
         session = self.store.get(session_id)
         if not session:
@@ -98,11 +121,24 @@ class KpChatService:
         if not text:
             raise ValueError("Введите сообщение")
 
+        logger.info(
+            "KP chat session=%s tz_items=%s message=%r",
+            session_id,
+            len(session.tz_items),
+            text[:120],
+        )
+        started = time.perf_counter()
+
         session.chat_history.append(ChatTurn(role="user", text=text))
 
-        lookup_query = resolve_kp_price_lookup(text, session.tz_items)
+        lookup_query = resolve_freeform_product_lookup(text, session.tz_items)
         lookup_result = None
         if lookup_query:
+            logger.info(
+                "KP chat lookup product=%r fields=%s",
+                lookup_query.product_name,
+                [field.value for field in lookup_query.requested_fields],
+            )
             lookup_result = self.lookup.lookup(
                 lookup_query.product_name,
                 lookup_query.requested_fields,
@@ -223,6 +259,15 @@ class KpChatService:
         }
         if lookup_result is not None:
             response["lookup"] = lookup_result
+        logger.info(
+            "KP chat done session=%s lookup=%s local=%s web=%s excel=%s %.0fms",
+            session_id,
+            lookup_result is not None,
+            run_local,
+            run_web,
+            excel_generated,
+            (time.perf_counter() - started) * 1000,
+        )
         return response
 
     def _run_search(

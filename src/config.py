@@ -167,6 +167,10 @@ MEILISEARCH_SEARCH_LIMIT = max(5, int(os.getenv("MEILISEARCH_SEARCH_LIMIT", "20"
 
 KP_PARALLEL_WORKERS = max(1, int(os.getenv("KP_PARALLEL_WORKERS", "4")))
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip()
+LOG_DIR = os.getenv("LOG_DIR", str(PROJECT_ROOT / "logs"))
+LOG_FILE = os.getenv("LOG_FILE", "").strip()
+
 SEARCH_KIT_COMPONENT_LINKS = os.getenv("SEARCH_KIT_COMPONENT_LINKS", "false").lower() in {
     "1",
     "true",

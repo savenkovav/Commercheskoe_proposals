@@ -30,12 +30,14 @@ services:
     volumes:
       - ./data:/app/data
       - ./output:/app/output
+      - ./logs:/app/logs
     environment:
       PYTHONPATH: /app
       WEB_HOST: "0.0.0.0"
       WEB_PORT: "8080"
       WEB_BEHIND_PROXY: "true"
       MEILISEARCH_HOST: http://meilisearch:7700
+      LOG_DIR: /app/logs
     depends_on:
       - meilisearch
     networks:

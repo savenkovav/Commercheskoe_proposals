@@ -207,6 +207,7 @@ class ProductLookupService:
 
     def lookup(self, product_name: str, requested_fields: list[LookupField] | None = None) -> ProductLookupResult:
         fields = requested_fields or DEFAULT_FIELDS
+        logger.info("Product lookup start: %r fields=%s", product_name, [f.value for f in fields])
         tz_item = TZItem(number=1, name=product_name.strip(), unit="шт.", quantity=1)
         candidates = self.matcher.find_candidates(tz_item)
 
@@ -1218,6 +1219,44 @@ def _find_tz_item_in_message(message: str, tz_items: list[TZItem]) -> TZItem | N
                 best_score = score
 
     return best_item
+
+
+ASSISTANT_COMMAND_ONLY = re.compile(
+    r"^(?:"
+    r"задача\s*1(?:\+2)?|"
+    r"1\+2|"
+    r"только\s+поиск|"
+    r"начни\s+поиск|"
+    r"запусти\s+поиск|"
+    r"сформируй\s+(?:excel|кп)|"
+    r"наценк\w*\s*\d|"
+    r"запомни\s+правило"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def resolve_freeform_product_lookup(
+    message: str,
+    tz_items: list[TZItem] | None = None,
+) -> ProductQuery | None:
+    """Распознать запрос на поиск одной позиции без обязательных ключевых слов."""
+    text = message.strip()
+    if not text or is_bulk_kp_search_message(text):
+        return None
+
+    items = tz_items or []
+    existing = resolve_kp_price_lookup(text, items)
+    if existing:
+        return existing
+
+    if ASSISTANT_COMMAND_ONLY.search(text):
+        return None
+
+    parsed = parse_lookup_query(f"/find {text}")
+    if parsed and len(parsed.product_name) >= 2:
+        return parsed
+    return None
 
 
 def resolve_kp_price_lookup(message: str, tz_items: list[TZItem]) -> ProductQuery | None:

@@ -14,6 +14,6 @@ COPY . .
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-RUN mkdir -p output
+RUN mkdir -p output logs
 
 CMD ["python", "-m", "src.web.server"]

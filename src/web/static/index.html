@@ -64,7 +64,7 @@
           <div class="card card--summary" id="summaryCard">
             <h2>Сводка</h2>
             <div class="empty-state" id="summaryEmpty">
-              Загрузите ТЗ — сводка и цены появятся после автопоиска в каталогах.
+              Напишите название в чате или загрузите ТЗ — сводка появится после поиска.
             </div>
             <div class="summary hidden" id="summaryBlock"></div>
           </div>
@@ -73,7 +73,7 @@
         <div class="card" id="kpChatCard">
           <div class="chat-header">
             <h2>Диалог с КП-Ассистентом</h2>
-            <p class="muted">Загрузите ТЗ или опишите позиции. Поиск в каталогах и прайсах — только по вашей команде.</p>
+            <p class="muted">Напишите название товара — результат сразу. Для расчёта КП по ТЗ загрузите файл ниже.</p>
             <div class="assistant-mode" id="assistantMode">
               <span class="assistant-mode__label">Задача:</span>
               <span class="assistant-mode__value" id="taskModeLabel">не выбрана</span>
@@ -150,7 +150,7 @@
           <div class="chat-main card">
             <div class="chat-header">
               <h2>Быстрый поиск позиции</h2>
-              <p class="muted">Одна позиция — поиск сразу по каталогу, прайсам, реестру и сайтам конкурентов. Пример: <code>термометр лабораторный | цена, остаток</code></p>
+              <p class="muted">Без загрузки ТЗ: одна позиция — сразу каталог, прайсы, реестр и конкуренты. Пример: <code>мольберт</code> или <code>термометр | цена, остаток</code></p>
             </div>
             <div class="chat-messages" id="chatMessages" aria-live="polite">
               <div class="chat-welcome">
@@ -226,6 +226,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260614a"></script>
+  <script src="/app.js?v=20260615b"></script>
 </body>
 </html>

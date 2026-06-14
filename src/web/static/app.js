@@ -628,8 +628,35 @@ function renderComparisonTable(item) {
 }
 
 let kpSessionId = null;
+let kpSessionPromise = null;
 let kpChatMessages = [];
 let kpChatLoading = false;
+
+async function ensureKpSession() {
+  if (kpSessionId) return kpSessionId;
+  if (!kpSessionPromise) {
+    kpSessionPromise = api("/api/kp/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ use_ai: $("#useAiUpload")?.checked ?? true }),
+    })
+      .then((data) => {
+        kpSessionId = data.session_id;
+        if (data.welcome_reply && !kpChatMessages.length) {
+          kpChatMessages.push({
+            role: "assistant",
+            text: data.welcome_reply,
+            ts: Date.now(),
+          });
+        }
+        return kpSessionId;
+      })
+      .finally(() => {
+        kpSessionPromise = null;
+      });
+  }
+  return kpSessionPromise;
+}
 
 function renderKpChatMessages() {
   const box = $("#kpChatMessages");
@@ -638,7 +665,7 @@ function renderKpChatMessages() {
   if (!kpChatMessages.length) {
     box.innerHTML = `
       <div class="chat-welcome">
-        <p>Я КП-Ассистент. Загрузите ТЗ или напишите запрос. Поиск в каталогах и прайсах начну только по вашей команде.</p>
+        <p>Напишите название товара — поиск сразу по каталогу, прайсам, реестру и конкурентам. Для КП по ТЗ загрузите файл ниже.</p>
       </div>`;
     return;
   }
@@ -709,7 +736,7 @@ function updateKpChatFormState() {
   if (input) input.disabled = !enabled;
   if (sendBtn) sendBtn.disabled = !enabled;
   $("#kpChatHints")?.querySelectorAll(".kp-chat-hint").forEach((btn) => {
-    btn.disabled = !enabled || !kpSessionId;
+    btn.disabled = !enabled;
   });
 }
 
@@ -725,17 +752,13 @@ async function sendKpChatMessage(text) {
   const message = text.trim();
   if (!message || kpChatLoading) return;
 
-  if (!kpSessionId) {
-    showToast("Сначала загрузите ТЗ в чат", true);
-    return;
-  }
-
   kpChatMessages.push({ role: "user", text: message, ts: Date.now() });
   kpChatLoading = true;
   updateKpChatFormState();
   renderKpChatMessages();
 
   try {
+    await ensureKpSession();
     const data = await api("/api/kp/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -774,6 +797,13 @@ async function sendKpChatMessage(text) {
 function initKpChat() {
   const form = $("#kpChatForm");
   if (!form) return;
+
+  ensureKpSession()
+    .then(() => {
+      updateKpChatFormState();
+      renderKpChatMessages();
+    })
+    .catch((e) => showToast(e.message, true));
 
   updateKpChatFormState();
 
@@ -1069,7 +1099,7 @@ function renderChatMessages() {
   if (!chatMessages.length) {
     box.innerHTML = `
       <div class="chat-welcome">
-        <p>Задайте вопрос о товаре — я поищу в каталоге, прайсах и реестре. Если совпадений нет, подключу нейросеть.</p>
+        <p>Напишите название товара — поиск сразу по каталогу, прайсам, реестру и конкурентам. ТЗ не нужно.</p>
       </div>`;
     return;
   }

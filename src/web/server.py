@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.logging_config import setup_logging
 from src.services.app_state import get_processor, reload_processor
 from src.config import (
     OUTPUT_DIR,
@@ -23,7 +24,7 @@ from src.config import (
     WEB_HOST,
     WEB_PORT,
 )
-from src.services.kp_chat_service import KpChatService
+from src.services.kp_chat_service import KpChatService, WELCOME_MESSAGE
 from src.services.kp_preferences import KpPreferences
 from src.services.markup_settings import get_markup_percent, set_markup_percent
 from src.services.meilisearch_service import meilisearch_health
@@ -37,6 +38,7 @@ from src.services.product_lookup import (
     ProductLookupService,
     get_field_labels,
     parse_lookup_query,
+    resolve_freeform_product_lookup,
 )
 from src.services.static_source_manager import (
     StaticSourceManager,
@@ -45,11 +47,43 @@ from src.services.static_source_manager import (
 
 logger = logging.getLogger(__name__)
 
+setup_logging()
+
 STATIC_DIR = Path(__file__).parent / "static"
 PRICE_EXTENSIONS = (".xls", ".xlsx")
 DEMO_TZ_PATH = PROJECT_ROOT / "data" / "sample_tz.docx"
 
 app = FastAPI(title="КП — коммерческие предложения", version="1.0.0")
+
+
+@app.middleware("http")
+async def log_http_requests(request, call_next):
+    if request.url.path.startswith("/app.") or request.url.path.endswith(
+        (".css", ".js", ".svg", ".ico")
+    ):
+        return await call_next(request)
+
+    started = time.perf_counter()
+    logger.info("→ %s %s", request.method, request.url.path)
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "← %s %s failed after %.0fms",
+            request.method,
+            request.url.path,
+            (time.perf_counter() - started) * 1000,
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "← %s %s %s %.0fms",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 
 class LookupRequest(BaseModel):
@@ -66,8 +100,12 @@ class MarkupUpdate(BaseModel):
 
 
 class KpChatRequest(BaseModel):
-    session_id: str = Field(min_length=8, max_length=64)
+    session_id: str | None = Field(default=None, max_length=64)
     message: str = Field(min_length=1, max_length=4000)
+
+
+class KpSessionCreateRequest(BaseModel):
+    use_ai: bool = True
 
 
 def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
@@ -412,11 +450,26 @@ def api_process_demo(use_ai: bool = True, parse_only: bool = True) -> dict[str, 
         raise HTTPException(status_code=500, detail=f"Ошибка обработки: {exc}") from exc
 
 
+@app.post("/api/kp/session")
+def api_kp_session_create(body: KpSessionCreateRequest = KpSessionCreateRequest()) -> dict[str, Any]:
+    session_id = _kp_chat_service().create_free_session(use_ai=body.use_ai)
+    return {
+        "session_id": session_id,
+        "welcome_reply": WELCOME_MESSAGE,
+        "search_completed": False,
+        "stage": "intake",
+    }
+
+
 @app.post("/api/kp/chat")
 def api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
     try:
-        chat_result = _kp_chat_service().chat(body.session_id, body.message)
-        return _kp_chat_response(chat_result, body.session_id)
+        service = _kp_chat_service()
+        session_id = body.session_id
+        if not session_id:
+            session_id = service.create_free_session()
+        chat_result = service.chat(session_id, body.message)
+        return _kp_chat_response(chat_result, session_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -465,13 +518,24 @@ def api_download_file(filename: str) -> FileResponse:
 
 @app.post("/api/lookup")
 def api_lookup(body: LookupRequest) -> dict[str, Any]:
-    parsed = parse_lookup_query(body.query if body.query.startswith("/find") else f"/find {body.query}")
+    started = time.perf_counter()
+    parsed = resolve_freeform_product_lookup(body.query)
     if not parsed:
+        parsed = parse_lookup_query(
+            body.query if body.query.startswith("/find") else f"/find {body.query}"
+        )
+    if not parsed:
+        logger.warning("Lookup parse failed: %r", body.query[:120])
         raise HTTPException(
             status_code=400,
             detail="Не удалось распознать запрос. Пример: термометр лабораторный | цена, остаток",
         )
 
+    logger.info(
+        "Lookup start product=%r fields=%s",
+        parsed.product_name,
+        [field.value for field in parsed.requested_fields],
+    )
     processor = get_processor()
     lookup = ProductLookupService(
         processor.matcher,
@@ -479,6 +543,13 @@ def api_lookup(body: LookupRequest) -> dict[str, Any]:
         processor.tz_matcher.web_search,
     )
     result = lookup.lookup(parsed.product_name, parsed.requested_fields)
+    logger.info(
+        "Lookup done product=%r status=%s score=%.1f %.0fms",
+        parsed.product_name,
+        result.status.value,
+        result.match_score,
+        (time.perf_counter() - started) * 1000,
+    )
     return _lookup_result_to_dict(result)
 
 
@@ -717,10 +788,6 @@ app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 def main() -> None:
     import uvicorn
 
-    logging.basicConfig(
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        level=logging.INFO,
-    )
     logger.info("Веб-интерфейс: http://%s:%s", WEB_HOST, WEB_PORT)
     uvicorn.run(
         "src.web.server:app",

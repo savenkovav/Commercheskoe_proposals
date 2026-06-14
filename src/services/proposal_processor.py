@@ -178,6 +178,13 @@ class ProposalProcessor:
             return results
 
         workers = min(KP_PARALLEL_WORKERS, len(targets))
+        logger.info(
+            "TZ search start: items=%s workers=%s include_web=%s",
+            len(targets),
+            workers,
+            include_web,
+        )
+        started = time.perf_counter()
         indexed_results: list[MatchResult | None] = [None] * len(targets)
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
