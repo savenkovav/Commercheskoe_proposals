@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from dataclasses import dataclass
 from html import unescape
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
@@ -16,6 +18,8 @@ from src.config import (
     COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
     COMPETITOR_SEARCH_MAX_RESULTS,
     COMPETITOR_SEARCH_PARALLEL_WORKERS,
+    COMPETITOR_SEARCH_TIMEOUT,
+    INTERNET_SEARCH_BUDGET_SECONDS,
     WEB_SEARCH_EXACT_THRESHOLD,
     WEB_SEARCH_FETCH_PAGES,
     WEB_SEARCH_MAX_PAGE_FETCHES,
@@ -46,6 +50,39 @@ from src.services.web_quote_priority import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _SearchDeadline:
+    """Ограничение времени на интернет-поиск по одной позиции."""
+
+    monotonic_deadline: float | None = None
+
+    @classmethod
+    def from_budget(cls, budget_seconds: float) -> "_SearchDeadline":
+        if budget_seconds <= 0:
+            return cls(None)
+        return cls(time.monotonic() + budget_seconds)
+
+    def expired(self) -> bool:
+        return (
+            self.monotonic_deadline is not None
+            and time.monotonic() >= self.monotonic_deadline
+        )
+
+    def remaining(self) -> float | None:
+        if self.monotonic_deadline is None:
+            return None
+        return max(0.0, self.monotonic_deadline - time.monotonic())
+
+    def request_timeout(self, default: float) -> float:
+        remaining = self.remaining()
+        if remaining is None:
+            return default
+        if remaining <= 0:
+            return 0.1
+        return min(default, remaining)
+
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -312,7 +349,10 @@ class WebSearchService:
         *,
         limit: int | None = None,
         exact_threshold: int | None = None,
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
+        if deadline and deadline.expired():
+            return []
         query = product_name.strip()
         if not query:
             return []
@@ -320,15 +360,22 @@ class WebSearchService:
         max_results = limit or WEB_SEARCH_MAX_RESULTS
         threshold = exact_threshold if exact_threshold is not None else WEB_SEARCH_EXACT_THRESHOLD
         quotes = self._collect_offers(
-            query, threshold=threshold, limit=max_results, quoted=True
+            query,
+            threshold=threshold,
+            limit=max_results,
+            quoted=True,
+            deadline=deadline,
         )
         if quotes:
             return quotes
+        if deadline and deadline.expired():
+            return []
         return self._collect_offers(
             query,
             threshold=threshold,
             limit=max_results,
             quoted=False,
+            deadline=deadline,
         )
 
     def search_competitor_offers(
@@ -337,8 +384,11 @@ class WebSearchService:
         *,
         limit: int | None = None,
         exact_threshold: int | None = None,
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
         if not COMPETITOR_SEARCH_ENABLED:
+            return []
+        if deadline and deadline.expired():
             return []
 
         query = product_name.strip()
@@ -360,16 +410,20 @@ class WebSearchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
-        if COMPETITOR_NATIVE_SEARCH_ENABLED:
+        if COMPETITOR_NATIVE_SEARCH_ENABLED and not (deadline and deadline.expired()):
             _extend(
                 self._search_competitor_via_native(
                     query,
                     threshold=strict_threshold,
                     limit=max_results,
                     seen_urls=seen_urls,
+                    deadline=deadline,
                 )
             )
         if has_priced_competitor_quote(quotes):
+            return self._finalize_competitor_quotes(quotes, max_results)
+
+        if deadline and deadline.expired():
             return self._finalize_competitor_quotes(quotes, max_results)
 
         _extend(
@@ -377,12 +431,17 @@ class WebSearchService:
                 query,
                 threshold=strict_threshold,
                 limit=max_results,
+                deadline=deadline,
             )
         )
         if has_priced_competitor_quote(quotes):
             return self._finalize_competitor_quotes(quotes, max_results)
 
-        if COMPETITOR_SEARCH_FALLBACK_THRESHOLD < strict_threshold:
+        if (
+            COMPETITOR_SEARCH_FALLBACK_THRESHOLD < strict_threshold
+            and not (deadline and deadline.expired())
+            and (deadline is None or (deadline.remaining() or 0) >= 4)
+        ):
             if COMPETITOR_NATIVE_SEARCH_ENABLED:
                 _extend(
                     self._search_competitor_via_native(
@@ -390,18 +449,21 @@ class WebSearchService:
                         threshold=COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
                         limit=max_results,
                         seen_urls=seen_urls,
+                        deadline=deadline,
                     )
                 )
             if has_priced_competitor_quote(quotes):
                 return self._finalize_competitor_quotes(quotes, max_results)
 
-            _extend(
-                self._search_competitor_via_ddg(
-                    query,
-                    threshold=COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
-                    limit=max_results,
+            if not (deadline and deadline.expired()):
+                _extend(
+                    self._search_competitor_via_ddg(
+                        query,
+                        threshold=COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
+                        limit=max_results,
+                        deadline=deadline,
+                    )
                 )
-            )
 
         return self._finalize_competitor_quotes(quotes, max_results)
 
@@ -433,7 +495,11 @@ class WebSearchService:
         *,
         threshold: int,
         limit: int,
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
+        if deadline and deadline.expired():
+            return []
+
         batches = list(iter_competitor_domain_batches(COMPETITOR_SEARCH_BATCH_SIZE))
         if not batches:
             return []
@@ -443,6 +509,8 @@ class WebSearchService:
         workers = min(COMPETITOR_SEARCH_PARALLEL_WORKERS, len(batches))
 
         def _search_batch(batch: list[str]) -> list[PriceQuote]:
+            if deadline and deadline.expired():
+                return []
             batch_quotes = self._collect_offers(
                 query,
                 threshold=threshold,
@@ -450,6 +518,7 @@ class WebSearchService:
                 quoted=True,
                 site_domains=batch,
                 stop_at_first_priced=False,
+                deadline=deadline,
             )
             if not batch_quotes:
                 batch_quotes = self._collect_offers(
@@ -459,14 +528,22 @@ class WebSearchService:
                     quoted=False,
                     site_domains=batch,
                     stop_at_first_priced=False,
+                    deadline=deadline,
                 )
             return batch_quotes
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(_search_batch, batch) for batch in batches]
-            for future in as_completed(futures):
+            wait_timeout = deadline.remaining() if deadline else None
+            try:
+                completed = as_completed(futures, timeout=wait_timeout)
+            except FuturesTimeoutError:
+                return quotes
+            for future in completed:
+                if deadline and deadline.expired():
+                    break
                 try:
-                    batch_quotes = future.result()
+                    batch_quotes = future.result(timeout=0.1)
                 except Exception:
                     logger.warning(
                         "Parallel DuckDuckGo competitor batch failed for %r",
@@ -491,9 +568,18 @@ class WebSearchService:
         *,
         threshold: int,
         max_page_fetches: int,
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
+        if deadline and deadline.expired():
+            return []
+
         quotes: list[PriceQuote] = []
         page_fetches = 0
+        http_timeout = (
+            deadline.request_timeout(COMPETITOR_SEARCH_TIMEOUT)
+            if deadline
+            else COMPETITOR_SEARCH_TIMEOUT
+        )
 
         search_url = build_competitor_search_url(site, query)
         if not search_url:
@@ -503,6 +589,7 @@ class WebSearchService:
         search_text, _search_price = self._fetch_page_price(
             search_url,
             max_chars=WEB_SEARCH_RESULTS_PAGE_MAX_CHARS,
+            timeout=http_timeout,
         )
 
         profile_hits = parse_competitor_search_results(
@@ -531,10 +618,19 @@ class WebSearchService:
             return quotes
 
         for product_url in product_urls:
+            if deadline and deadline.expired():
+                break
             if page_fetches >= max_page_fetches:
                 break
             page_fetches += 1
-            page_text, page_price = self._fetch_page_price(product_url)
+            page_text, page_price = self._fetch_page_price(
+                product_url,
+                timeout=(
+                    deadline.request_timeout(COMPETITOR_SEARCH_TIMEOUT)
+                    if deadline
+                    else COMPETITOR_SEARCH_TIMEOUT
+                ),
+            )
             quote = self._quote_from_competitor_page(
                 query,
                 product_url,
@@ -555,7 +651,11 @@ class WebSearchService:
         threshold: int,
         limit: int,
         seen_urls: set[str],
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
+        if deadline and deadline.expired():
+            return []
+
         sites = list(competitor_sites_with_search())
         if not sites:
             return []
@@ -572,12 +672,20 @@ class WebSearchService:
                     site,
                     threshold=threshold,
                     max_page_fetches=per_site_fetches,
+                    deadline=deadline,
                 )
                 for site in sites
             ]
-            for future in as_completed(futures):
+            wait_timeout = deadline.remaining() if deadline else None
+            try:
+                completed = as_completed(futures, timeout=wait_timeout)
+            except FuturesTimeoutError:
+                return quotes
+            for future in completed:
+                if deadline and deadline.expired():
+                    break
                 try:
-                    site_quotes = future.result()
+                    site_quotes = future.result(timeout=0.1)
                 except Exception:
                     logger.warning(
                         "Parallel native competitor search failed for %r",
@@ -678,10 +786,16 @@ class WebSearchService:
         *,
         limit: int | None = None,
         skip_competitors: bool = False,
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
         """Сначала сайты конкурентов, затем прочий интернет, затем маркетплейсы."""
         query = product_name.strip()
         if not query:
+            return []
+
+        if deadline is None and INTERNET_SEARCH_BUDGET_SECONDS > 0:
+            deadline = _SearchDeadline.from_budget(INTERNET_SEARCH_BUDGET_SECONDS)
+        if deadline and deadline.expired():
             return []
 
         max_results = limit or WEB_SEARCH_MAX_RESULTS
@@ -696,17 +810,39 @@ class WebSearchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
-        if not skip_competitors:
-            competitor_quotes = self.search_competitor_offers(query, limit=max_results)
+        if not skip_competitors and not (deadline and deadline.expired()):
+            competitor_quotes = self.search_competitor_offers(
+                query,
+                limit=max_results,
+                deadline=deadline,
+            )
             _extend(competitor_quotes)
             if has_priced_competitor_quote(quotes):
                 return quotes
 
-        _extend(self.search_offers(query, limit=max_results))
+        if deadline and deadline.expired():
+            return quotes
+
+        _extend(
+            self.search_offers(
+                query,
+                limit=max_results,
+                deadline=deadline,
+            )
+        )
         if pick_best_web_priced_quote(quotes):
             return quotes
 
-        _extend(self.search_marketplace_offers(query, limit=1))
+        if deadline and deadline.expired():
+            return quotes
+
+        _extend(
+            self.search_marketplace_offers(
+                query,
+                limit=1,
+                deadline=deadline,
+            )
+        )
         return quotes
 
     def search_web_price_fallback(
@@ -714,8 +850,13 @@ class WebSearchService:
         product_name: str,
         *,
         limit: int | None = None,
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
         """Интернет и маркетплейсы, если у конкурента совпадение без цены."""
+        if deadline is None and INTERNET_SEARCH_BUDGET_SECONDS > 0:
+            deadline = _SearchDeadline.from_budget(INTERNET_SEARCH_BUDGET_SECONDS)
+        if deadline and deadline.expired():
+            return []
         query = product_name.strip()
         if not query:
             return []
@@ -732,11 +873,26 @@ class WebSearchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
-        _extend(self.search_offers(query, limit=max_results))
+        _extend(
+            self.search_offers(
+                query,
+                limit=max_results,
+                deadline=deadline,
+            )
+        )
         if pick_best_web_priced_quote(quotes):
             return quotes
 
-        _extend(self.search_marketplace_offers(query, limit=1))
+        if deadline and deadline.expired():
+            return quotes
+
+        _extend(
+            self.search_marketplace_offers(
+                query,
+                limit=1,
+                deadline=deadline,
+            )
+        )
         return quotes
 
     def search_marketplace_offers(
@@ -744,7 +900,10 @@ class WebSearchService:
         product_name: str,
         *,
         limit: int | None = None,
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
+        if deadline and deadline.expired():
+            return []
         query = product_name.strip()
         if not query:
             return []
@@ -755,15 +914,28 @@ class WebSearchService:
         seen_urls: set[str] = set()
 
         for platform, template in _MARKETPLACE_SEARCH:
+            if deadline and deadline.expired():
+                break
             if len(quotes) >= max_results:
                 break
             search_url = template.format(query=quote_plus(query))
-            search_text, _search_price = self._fetch_page_price(search_url)
+            fetch_timeout = (
+                deadline.request_timeout(WEB_SEARCH_TIMEOUT)
+                if deadline
+                else WEB_SEARCH_TIMEOUT
+            )
+            search_text, _search_price = self._fetch_page_price(
+                search_url,
+                timeout=fetch_timeout,
+            )
             product_url = self._extract_product_url(search_text, platform)
             if not product_url:
                 continue
 
-            page_text, page_price = self._fetch_page_price(product_url)
+            page_text, page_price = self._fetch_page_price(
+                product_url,
+                timeout=fetch_timeout,
+            )
             price = page_price
             title = self._extract_page_title(page_text) or query
             if not is_exact_title_match(
@@ -841,13 +1013,22 @@ class WebSearchService:
         require_price: bool = False,
         site_domains: list[str] | None = None,
         stop_at_first_priced: bool = True,
+        deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
+        if deadline and deadline.expired():
+            return []
         serp_hits = self._search_duckduckgo(
-            query, quoted=quoted, site_domains=site_domains
+            query,
+            quoted=quoted,
+            site_domains=site_domains,
+            deadline=deadline,
         )
-        if not serp_hits and site_domains and quoted:
+        if not serp_hits and site_domains and quoted and not (deadline and deadline.expired()):
             serp_hits = self._search_duckduckgo(
-                query, quoted=False, site_domains=site_domains
+                query,
+                quoted=False,
+                site_domains=site_domains,
+                deadline=deadline,
             )
         quotes: list[PriceQuote] = []
         seen_urls: set[str] = set()
@@ -855,6 +1036,8 @@ class WebSearchService:
         allowed_hosts = {domain.lower() for domain in site_domains} if site_domains else None
 
         for hit in serp_hits:
+            if deadline and deadline.expired():
+                break
             if len(quotes) >= limit:
                 break
             title = hit.get("title") or ""
@@ -901,9 +1084,20 @@ class WebSearchService:
                 price is None
                 and WEB_SEARCH_FETCH_PAGES
                 and page_fetches < WEB_SEARCH_MAX_PAGE_FETCHES
+                and not (deadline and deadline.expired())
             ):
                 page_fetches += 1
-                page_text, page_price = self._fetch_page_price(url)
+                fetch_timeout = (
+                    deadline.request_timeout(
+                        COMPETITOR_SEARCH_TIMEOUT if competitor_hit else WEB_SEARCH_TIMEOUT
+                    )
+                    if deadline
+                    else (COMPETITOR_SEARCH_TIMEOUT if competitor_hit else WEB_SEARCH_TIMEOUT)
+                )
+                page_text, page_price = self._fetch_page_price(
+                    url,
+                    timeout=fetch_timeout,
+                )
                 if page_price is not None:
                     price = page_price
                     notes = (
@@ -975,7 +1169,10 @@ class WebSearchService:
         *,
         quoted: bool = True,
         site_domains: list[str] | None = None,
+        deadline: _SearchDeadline | None = None,
     ) -> list[dict[str, str]]:
+        if deadline and deadline.expired():
+            return []
         if site_domains:
             site_clause = " OR ".join(f"site:{domain}" for domain in site_domains)
             search_query = (
@@ -983,20 +1180,34 @@ class WebSearchService:
             )
         else:
             search_query = f'"{query}"' if quoted else query
-        hits = self._execute_duckduckgo_search(search_query)
+        hits = self._execute_duckduckgo_search(search_query, deadline=deadline)
         if hits or quoted or site_domains:
             return hits
-        return self._search_duckduckgo(query, quoted=True)
+        if deadline and deadline.expired():
+            return []
+        return self._search_duckduckgo(query, quoted=True, site_domains=site_domains, deadline=deadline)
 
-    def _execute_duckduckgo_search(self, search_query: str) -> list[dict[str, str]]:
+    def _execute_duckduckgo_search(
+        self,
+        search_query: str,
+        *,
+        deadline: _SearchDeadline | None = None,
+    ) -> list[dict[str, str]]:
+        if deadline and deadline.expired():
+            return []
         url = "https://html.duckduckgo.com/html/"
         headers = {"User-Agent": _USER_AGENT}
         data = {"q": search_query}
+        timeout = (
+            deadline.request_timeout(WEB_SEARCH_TIMEOUT)
+            if deadline
+            else WEB_SEARCH_TIMEOUT
+        )
 
         try:
             with httpx.Client(
                 follow_redirects=True,
-                timeout=WEB_SEARCH_TIMEOUT,
+                timeout=timeout,
                 headers=headers,
             ) as client:
                 response = client.post(url, data=data)
@@ -1034,13 +1245,17 @@ class WebSearchService:
         url: str,
         *,
         max_chars: int | None = None,
+        timeout: float | None = None,
     ) -> tuple[str, float | None]:
         headers = {"User-Agent": _USER_AGENT}
         limit = max_chars if max_chars is not None else WEB_SEARCH_PAGE_MAX_CHARS
+        request_timeout = timeout if timeout is not None else WEB_SEARCH_TIMEOUT
+        if request_timeout <= 0:
+            return "", None
         try:
             with httpx.Client(
                 follow_redirects=True,
-                timeout=WEB_SEARCH_TIMEOUT,
+                timeout=request_timeout,
                 headers=headers,
             ) as client:
                 response = client.get(url)

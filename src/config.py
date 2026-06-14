@@ -106,6 +106,10 @@ WEB_SEARCH_FETCH_PAGES = os.getenv("WEB_SEARCH_FETCH_PAGES", "true").lower() in 
 }
 WEB_SEARCH_MAX_PAGE_FETCHES = max(0, int(os.getenv("WEB_SEARCH_MAX_PAGE_FETCHES", "2")))
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
+# Таймаут одного HTTP-запроса к сайту конкурента (короче общего WEB_SEARCH_TIMEOUT)
+COMPETITOR_SEARCH_TIMEOUT = float(os.getenv("COMPETITOR_SEARCH_TIMEOUT", "5"))
+# Макс. время интернет-поиска на одну позицию (0 — без лимита)
+INTERNET_SEARCH_BUDGET_SECONDS = float(os.getenv("INTERNET_SEARCH_BUDGET_SECONDS", "25"))
 # Лимит символов HTML при загрузке карточки товара
 WEB_SEARCH_PAGE_MAX_CHARS = max(
     50_000, int(os.getenv("WEB_SEARCH_PAGE_MAX_CHARS", "200000"))

@@ -162,6 +162,9 @@ class TZMatchService:
             price_hit,
             self.matcher,
         )
+        internet_searched = (
+            local_miss and WEB_SEARCH_ENABLED and not skip_competitors
+        )
         web_quote, competitors = self._fetch_internet_comparison(
             tz_item,
             prefs,
@@ -226,11 +229,21 @@ class TZMatchService:
 
         primary.comparison = filter_web_quotes(primary.comparison, prefs)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
-        self._finalize_result_pricing(primary, use_ai=use_ai, prefs=prefs)
+        self._finalize_result_pricing(
+            primary,
+            use_ai=use_ai,
+            prefs=prefs,
+            skip_internet_search=internet_searched,
+        )
         self._ensure_internet_comparison(primary)
         self._normalize_result_metadata(primary)
-        if local_miss:
-            self._ensure_mandatory_internet_pricing(primary, prefs, use_ai=use_ai)
+        if local_miss and not skip_competitors:
+            self._ensure_mandatory_internet_pricing(
+                primary,
+                prefs,
+                use_ai=use_ai,
+                skip_internet_search=internet_searched,
+            )
         primary.comparison = filter_web_quotes(primary.comparison, prefs)
         primary.comparison = sort_web_quotes(primary.comparison)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
@@ -424,7 +437,7 @@ class TZMatchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
-        if local_miss and WEB_SEARCH_ENABLED:
+        if local_miss and WEB_SEARCH_ENABLED and not skip_competitors:
             search_text = primary_search_text(tz_item)
             _append_quotes(
                 self.web_search.search_internet_cascade(
@@ -917,6 +930,8 @@ class TZMatchService:
         result: MatchResult,
         use_ai: bool = True,
         prefs: KpPreferences | None = None,
+        *,
+        skip_internet_search: bool = False,
     ) -> None:
         needs_price = result.unit_base_price is None
         web_without_price = (
@@ -948,6 +963,7 @@ class TZMatchService:
         if (
             WEB_SEARCH_ENABLED
             and needs_price
+            and not skip_internet_search
             and not has_acceptable_web_pricing_in_comparison(result.comparison)
         ):
             search_text = primary_search_text(result.tz_item)
@@ -1081,6 +1097,7 @@ class TZMatchService:
         prefs: KpPreferences,
         *,
         use_ai: bool,
+        skip_internet_search: bool = False,
     ) -> None:
         if "web" in prefs.disabled_sources or not WEB_SEARCH_ENABLED:
             self._promote_internet_status(result)
@@ -1097,7 +1114,7 @@ class TZMatchService:
                 for q in result.comparison
             )
             search_text = primary_search_text(result.tz_item)
-            if not has_priced_web:
+            if not has_priced_web and not skip_internet_search:
                 candidates.extend(
                     self.web_search.search_web_price_fallback(search_text)
                 )
