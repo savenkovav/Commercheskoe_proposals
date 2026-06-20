@@ -17,6 +17,7 @@ output/
 products.json
 data/competitor_products.json
 data/competitor_catalog_urls.json
+data/rag_docs_index/
 storage/
 data/prices/
 data/prices_registry.json
