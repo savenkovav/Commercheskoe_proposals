@@ -293,6 +293,39 @@ def _doc_rag_index_service():
     return index
 
 
+def _index_static_source_rag(source_id: str, *, force: bool = True) -> dict[str, str | int | bool]:
+    static_manager = get_static_source_manager()
+    config = static_manager.get_config(source_id)
+    return _doc_rag_index_service().index_document(
+        doc_id=f"{config.source_id}:main",
+        source_type=config.source_id,
+        source_name=static_manager.get_display_name(config.source_id),
+        file_path=config.path,
+        force=force,
+    )
+
+
+async def _upload_static_source_file(source_id: str, upload: UploadFile) -> dict[str, Any]:
+    filename = upload.filename or "data.xlsx"
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Файл должен быть .xlsx")
+
+    static_manager = get_static_source_manager()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source_path = Path(tmpdir) / filename
+        source_path.write_bytes(await upload.read())
+        try:
+            static_manager.replace_file(source_id, source_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    reload_processor()
+    rag = _index_static_source_rag(source_id, force=True)
+    response = _static_source_response(source_id.lower())
+    response["rag"] = rag
+    return response
+
+
 def _parse_tz_path(
     tz_path: Path,
     use_ai: bool,
@@ -769,22 +802,28 @@ def api_prices_list() -> dict[str, Any]:
     processor = get_processor()
     manager = get_price_list_manager()
     entries = manager.list_entries()
+    catalog = _catalog_source(processor)
+    registry = _registry_source(processor)
+    price_items = [
+        {
+            "id": entry.id,
+            "type": "price_list",
+            "type_label": "Прайс",
+            "name": entry.name,
+            "supplier": entry.supplier,
+            "filename": entry.filename,
+            "items_count": entry.items_count,
+            "updated_at": entry.updated_at,
+        }
+        for entry in entries
+    ]
     return {
-        "catalog": _catalog_source(processor),
-        "registry": _registry_source(processor),
-        "items": [
-            {
-                "id": entry.id,
-                "type": "price_list",
-                "type_label": "Прайс",
-                "name": entry.name,
-                "supplier": entry.supplier,
-                "filename": entry.filename,
-                "items_count": entry.items_count,
-                "updated_at": entry.updated_at,
-            }
-            for entry in entries
-        ],
+        "catalog": catalog,
+        "registry": registry,
+        "items": price_items,
+        "catalogs": [catalog] if catalog else [],
+        "prices": price_items,
+        "stock": [registry] if registry else [],
     }
 
 
@@ -812,11 +851,12 @@ async def api_prices_add(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     total_items = reload_processor()
-    _doc_rag_index_service().index_document(
+    rag = _doc_rag_index_service().index_document(
         doc_id=f"price:{entry.id}",
         source_type="price",
         source_name=entry.name,
         file_path=manager.file_path(entry),
+        force=True,
     )
     return {
         "entry": {
@@ -827,7 +867,18 @@ async def api_prices_add(
             "updated_at": entry.updated_at,
         },
         "total_price_items": total_items,
+        "rag": rag,
     }
+
+
+@app.post("/api/sources/catalog/upload")
+async def api_upload_catalog(file: UploadFile = File(...)) -> dict[str, Any]:
+    return await _upload_static_source_file("catalog", file)
+
+
+@app.post("/api/sources/registry/upload")
+async def api_upload_registry(file: UploadFile = File(...)) -> dict[str, Any]:
+    return await _upload_static_source_file("registry", file)
 
 
 @app.put("/api/prices/{price_id}/file")
@@ -848,14 +899,10 @@ async def api_prices_replace(price_id: str, file: UploadFile = File(...)) -> dic
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         reload_processor()
-        config = static_manager.get_config(price_id)
-        _doc_rag_index_service().index_document(
-            doc_id=f"{config.source_id}:main",
-            source_type=config.source_id,
-            source_name=static_manager.get_display_name(config.source_id),
-            file_path=config.path,
-        )
-        return _static_source_response(price_id.lower())
+        rag = _index_static_source_rag(price_id.lower(), force=True)
+        response = _static_source_response(price_id.lower())
+        response["rag"] = rag
+        return response
 
     if not filename.lower().endswith(PRICE_EXTENSIONS):
         raise HTTPException(status_code=400, detail="Прайс должен быть .xls или .xlsx")
@@ -873,11 +920,12 @@ async def api_prices_replace(price_id: str, file: UploadFile = File(...)) -> dic
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     total_items = reload_processor()
-    _doc_rag_index_service().index_document(
+    rag = _doc_rag_index_service().index_document(
         doc_id=f"price:{entry.id}",
         source_type="price",
         source_name=entry.name,
         file_path=manager.file_path(entry),
+        force=True,
     )
     return {
         "entry": {
@@ -888,6 +936,7 @@ async def api_prices_replace(price_id: str, file: UploadFile = File(...)) -> dic
             "updated_at": entry.updated_at,
         },
         "total_price_items": total_items,
+        "rag": rag,
     }
 
 

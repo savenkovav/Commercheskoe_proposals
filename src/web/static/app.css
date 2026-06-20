@@ -279,6 +279,50 @@ body {
 
 .form-stack { display: flex; flex-direction: column; gap: 12px; }
 
+.upload-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.upload-block {
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+}
+
+.upload-block:first-of-type {
+  border-top: none;
+  padding-top: 8px;
+}
+
+.upload-block__title {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.upload-block__hint {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+}
+
+.data-sources-section {
+  margin-bottom: 20px;
+}
+
+.data-sources-section:last-child {
+  margin-bottom: 0;
+}
+
+.data-sources-section__title {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .lookup-form {
   display: flex;
   gap: 10px;

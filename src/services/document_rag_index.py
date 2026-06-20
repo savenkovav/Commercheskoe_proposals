@@ -79,17 +79,31 @@ class DocumentRagIndexService:
         source_type: str,
         source_name: str,
         file_path: Path,
-    ) -> None:
+        force: bool = False,
+    ) -> dict[str, str | int | bool]:
         self.ensure_loaded()
         if not file_path.exists():
-            return
+            return {"indexed": False, "chunks": 0, "vectorized": False}
+
         file_mtime = file_path.stat().st_mtime
         current = self._entries.get(doc_id)
-        if current and current.path == str(file_path) and abs(current.file_mtime - file_mtime) < 0.001:
-            return
+        if (
+            not force
+            and current
+            and current.path == str(file_path)
+            and abs(current.file_mtime - file_mtime) < 0.001
+        ):
+            return {
+                "indexed": True,
+                "chunks": len(current.chunks),
+                "vectorized": bool(current.vectors),
+                "skipped": True,
+            }
+
         text = extract_tz_document_text(file_path)
         if not text.strip():
-            return
+            return {"indexed": False, "chunks": 0, "vectorized": False}
+
         rag_index = self.rag.build_index(text, [], filename=file_path.name)
         self._entries[doc_id] = DocumentRagEntry(
             doc_id=doc_id,
@@ -102,6 +116,12 @@ class DocumentRagIndexService:
             vectors=rag_index.vectors,
         )
         self.save()
+        return {
+            "indexed": True,
+            "chunks": len(rag_index.chunks),
+            "vectorized": bool(rag_index.vectors),
+            "skipped": False,
+        }
 
     def bootstrap(self, price_manager: PriceListManager) -> None:
         self.ensure_loaded()

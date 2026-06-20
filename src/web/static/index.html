@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <title>КП-Ассистент</title>
-  <link rel="stylesheet" href="/app.css?v=20260614a">
+  <link rel="stylesheet" href="/app.css?v=20260620a">
 </head>
 <body>
   <div class="layout">
@@ -173,31 +173,42 @@
 
       <section class="panel" id="panel-prices" data-panel="prices">
         <div class="grid-2">
-          <div class="card">
-            <h2>Добавить прайс</h2>
-            <div class="form-stack">
-              <input type="text" id="priceName" class="input" placeholder="Название">
-              <input type="text" id="priceSupplier" class="input" placeholder="Поставщик">
-              <input type="file" id="priceFile" class="input" accept=".xls,.xlsx">
-              <button class="btn btn--primary" id="btnAddPrice">Загрузить прайс</button>
+          <div class="card upload-blocks">
+            <h2>Загрузка документов</h2>
+            <p class="muted">Файлы сохраняются в базе и индексируются для RAG (нейросеть использует содержимое при поиске)</p>
+
+            <div class="upload-block">
+              <h3 class="upload-block__title">Прайсы</h3>
+              <div class="form-stack">
+                <input type="text" id="priceName" class="input" placeholder="Название">
+                <input type="text" id="priceSupplier" class="input" placeholder="Поставщик">
+                <input type="file" id="priceFile" class="input" accept=".xls,.xlsx">
+                <button class="btn btn--primary" id="btnAddPrice">Загрузить прайс</button>
+              </div>
+            </div>
+
+            <div class="upload-block">
+              <h3 class="upload-block__title">Каталоги</h3>
+              <p class="muted upload-block__hint">Excel (.xlsx) с номенклатурой и ценами каталога</p>
+              <div class="form-stack">
+                <input type="file" id="catalogFile" class="input" accept=".xlsx">
+                <button class="btn btn--primary" id="btnUploadCatalog">Загрузить каталог</button>
+              </div>
+            </div>
+
+            <div class="upload-block">
+              <h3 class="upload-block__title">Остатки на складе</h3>
+              <p class="muted upload-block__hint">Excel (.xlsx) с количеством остатков по позициям</p>
+              <div class="form-stack">
+                <input type="file" id="stockFile" class="input" accept=".xlsx">
+                <button class="btn btn--primary" id="btnUploadStock">Загрузить остатки</button>
+              </div>
             </div>
           </div>
           <div class="card">
             <h2>Загруженные таблицы</h2>
-            <p class="muted">Каталог, реестр остатков и прайсы поставщиков</p>
-            <div class="table-wrap">
-              <table class="data-table" id="pricesTable">
-                <thead>
-                  <tr>
-                    <th>Тип</th>
-                    <th>Название</th>
-                    <th>Позиций</th>
-                    <th>Действия</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
+            <p class="muted">Каталоги, прайсы и остатки на складе — отдельные разделы</p>
+            <div id="dataSourcesContainer"></div>
           </div>
         </div>
       </section>
@@ -226,6 +237,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260615c"></script>
+  <script src="/app.js?v=20260620a"></script>
 </body>
 </html>

@@ -1563,7 +1563,6 @@ function renderDataSourceRow(row) {
 
   return `
     <tr>
-      <td>${escapeHtml(row.type_label || row.type || "—")}</td>
       <td>${nameCell}</td>
       <td>${count}</td>
       <td>${actions}</td>
@@ -1580,36 +1579,70 @@ function fileAcceptForSource(id) {
 
 function sourceLabel(id) {
   if (id === "catalog") return "каталог";
-  if (id === "registry") return "реестр остатков";
+  if (id === "registry") return "остатки на складе";
   return id;
 }
 
 function collectDataSources(data) {
-  const rows = [];
-  if (data.catalog) rows.push(data.catalog);
-  if (data.registry) rows.push(data.registry);
-  if (data.items?.length) rows.push(...data.items);
-  return rows;
+  return {
+    catalogs: data.catalogs?.length ? data.catalogs : data.catalog ? [data.catalog] : [],
+    prices: data.prices?.length ? data.prices : data.items || [],
+    stock: data.stock?.length ? data.stock : data.registry ? [data.registry] : [],
+  };
+}
+
+function renderDataSourceSection(title, rows) {
+  if (!rows.length) {
+    return `
+      <div class="data-sources-section">
+        <h3 class="data-sources-section__title">${escapeHtml(title)}</h3>
+        <p class="muted">Нет загруженных файлов</p>
+      </div>`;
+  }
+
+  return `
+    <div class="data-sources-section">
+      <h3 class="data-sources-section__title">${escapeHtml(title)}</h3>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Название</th>
+              <th>Позиций</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>${rows.map(renderDataSourceRow).join("")}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function ragUploadMessage(rag) {
+  if (!rag?.indexed) return "";
+  const chunks = rag.chunks ?? 0;
+  const mode = rag.vectorized ? "векторный" : "текстовый";
+  return ` · RAG: ${chunks} чанков (${mode})`;
 }
 
 async function loadPrices() {
   try {
     const data = await api("/api/prices");
-    const tbody = $("#pricesTable tbody");
-    const rows = collectDataSources(data);
-    if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="4" class="muted">Нет загруженных таблиц</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = rows.map(renderDataSourceRow).join("");
+    const groups = collectDataSources(data);
+    const container = $("#dataSourcesContainer");
+    container.innerHTML = [
+      renderDataSourceSection("Каталоги", groups.catalogs),
+      renderDataSourceSection("Прайсы", groups.prices),
+      renderDataSourceSection("Остатки на складе", groups.stock),
+    ].join("");
 
-    tbody.querySelectorAll("[data-replace]").forEach((btn) => {
+    container.querySelectorAll("[data-replace]").forEach((btn) => {
       btn.addEventListener("click", () => replaceDataSource(btn.dataset.replace));
     });
-    tbody.querySelectorAll("[data-rename]").forEach((btn) => {
+    container.querySelectorAll("[data-rename]").forEach((btn) => {
       btn.addEventListener("click", () => renameDataSource(btn.dataset.rename));
     });
-    tbody.querySelectorAll("[data-remove]").forEach((btn) => {
+    container.querySelectorAll("[data-remove]").forEach((btn) => {
       btn.addEventListener("click", () => removeDataSource(btn.dataset.remove));
     });
   } catch (e) {
@@ -1626,18 +1659,80 @@ async function addPrice() {
     return;
   }
 
-  showOverlay("Загружаю прайс...");
+  showOverlay("Загружаю прайс и индексирую для RAG...");
   const form = new FormData();
   form.append("name", name);
   form.append("supplier", supplier || name);
   form.append("file", file);
 
   try {
-    await api("/api/prices", { method: "POST", body: form });
-    showToast("Прайс добавлен");
+    const data = await api("/api/prices", { method: "POST", body: form });
+    showToast(`Прайс добавлен${ragUploadMessage(data.rag)}`);
     $("#priceName").value = "";
     $("#priceSupplier").value = "";
     $("#priceFile").value = "";
+    loadPrices();
+    loadStatus();
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    hideOverlay();
+  }
+}
+
+async function uploadCatalog() {
+  const file = $("#catalogFile").files[0];
+  if (!file) {
+    showToast("Выберите файл каталога (.xlsx)", true);
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith(".xlsx")) {
+    showToast("Каталог должен быть в формате .xlsx", true);
+    return;
+  }
+
+  showOverlay("Загружаю каталог и индексирую для RAG...");
+  const form = new FormData();
+  form.append("file", file);
+
+  try {
+    const data = await api("/api/sources/catalog/upload", { method: "POST", body: form });
+    const entry = data.entry || {};
+    showToast(
+      `Каталог обновлён: ${entry.items_count ?? "—"} поз.${ragUploadMessage(data.rag)}`,
+    );
+    $("#catalogFile").value = "";
+    loadPrices();
+    loadStatus();
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    hideOverlay();
+  }
+}
+
+async function uploadStock() {
+  const file = $("#stockFile").files[0];
+  if (!file) {
+    showToast("Выберите файл остатков (.xlsx)", true);
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith(".xlsx")) {
+    showToast("Остатки должны быть в формате .xlsx", true);
+    return;
+  }
+
+  showOverlay("Загружаю остатки и индексирую для RAG...");
+  const form = new FormData();
+  form.append("file", file);
+
+  try {
+    const data = await api("/api/sources/registry/upload", { method: "POST", body: form });
+    const entry = data.entry || {};
+    showToast(
+      `Остатки обновлены: ${entry.items_count ?? "—"} поз.${ragUploadMessage(data.rag)}`,
+    );
+    $("#stockFile").value = "";
     loadPrices();
     loadStatus();
   } catch (e) {
@@ -1658,12 +1753,12 @@ function replaceDataSource(id) {
       registry: "реестр",
       default: "прайс",
     };
-    showOverlay(`Обновляю ${labels[id] || labels.default}...`);
+    showOverlay(`Обновляю ${labels[id] || labels.default} и индексирую для RAG...`);
     const form = new FormData();
     form.append("file", input.files[0]);
     try {
-      await api(`/api/prices/${id}/file`, { method: "PUT", body: form });
-      showToast("Таблица обновлена");
+      const data = await api(`/api/prices/${id}/file`, { method: "PUT", body: form });
+      showToast(`Таблица обновлена${ragUploadMessage(data.rag)}`);
       loadPrices();
       loadStatus();
     } catch (e) {
@@ -1724,5 +1819,7 @@ document.addEventListener("DOMContentLoaded", () => {
   updateKpChatFormState();
   initPhotoModal();
   $("#btnAddPrice").addEventListener("click", addPrice);
+  $("#btnUploadCatalog").addEventListener("click", uploadCatalog);
+  $("#btnUploadStock").addEventListener("click", uploadStock);
   loadInitialStatus();
 });
