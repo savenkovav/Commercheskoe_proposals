@@ -416,7 +416,7 @@ def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
             f"URL: {entry.url}\n"
             f"Поиск: {entry.search_url or '—'}"
         )
-    return _doc_rag_index_service().index_text(
+    meta = _doc_rag_index_service().index_text(
         doc_id=f"competitor:{entry.id}",
         source_type="competitor",
         source_name=entry.label,
@@ -424,6 +424,16 @@ def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
         filename=entry.domain,
         force=True,
     )
+    from src.services.competitor_catalog_service import index_competitor_site_catalog
+    from src.services.competitor_sites import CompetitorSite
+
+    site = CompetitorSite(
+        domain=entry.domain,
+        label=entry.label or entry.domain,
+        search_url=entry.search_url,
+    )
+    catalog = index_competitor_site_catalog(site, _doc_rag_index_service(), force=True)
+    return {"meta": meta, "catalog": catalog}
 
 
 def _parse_tz_path(
@@ -954,6 +964,7 @@ def api_competitors_remove(site_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     _doc_rag_index_service().remove_document(f"competitor:{entry.id}")
+    _doc_rag_index_service().remove_document(f"competitor-catalog:{entry.domain}")
     return {
         "removed_id": entry.id,
         "removed_domain": entry.domain,

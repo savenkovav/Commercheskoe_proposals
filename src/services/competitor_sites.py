@@ -90,7 +90,7 @@ COMPETITOR_SITES: tuple[CompetitorSite, ...] = (
     CompetitorSite(
         "skale.ru",
         "Скале",
-        "https://skale.ru/prays-list?search={query}",
+        "https://skale.ru/magazin/search?search={query}",
     ),
 )
 
@@ -104,6 +104,14 @@ _SITES_WITH_SEARCH: tuple[CompetitorSite, ...] = tuple(
 
 # Профили точного парсинга (дополняют универсальный разбор href, не заменяют его).
 _COMPETITOR_SEARCH_PROFILES: dict[str, CompetitorSearchProfile] = {
+    "skale.ru": CompetitorSearchProfile(
+        search_url="https://skale.ru/magazin/search?search={query}",
+        result_item_pattern=(
+            r'class="product-name"><a\s+href="(?P<url>[^"]+)">(?P<name>[^<]+)</a>.*?'
+            r'class="price-current"><strong[^>]*>(?P<price>[^<]+)</strong>'
+        ),
+        result_section_markers=("product-name", "shop2-product", "Найдено"),
+    ),
     "xn----7sbbumkojddmeoc1a7r.xn--p1acf": CompetitorSearchProfile(
         search_url=(
             "https://xn----7sbbumkojddmeoc1a7r.xn--p1acf/search/search_do/"
@@ -145,6 +153,7 @@ _PRODUCT_PATH_MARKERS = (
     "/catalog/",
     "/products/",
     "/product/",
+    "/magazin/product/",
     "/tovar",
     "/goods/",
     "/item/",
@@ -249,6 +258,35 @@ def parse_competitor_search_results(
     *,
     limit: int = 5,
 ) -> list[CompetitorSearchHit]:
+    if page_text and 'class="product-top"' in page_text:
+        from src.services.competitor_catalog_service import parse_catalog_html
+
+        products = parse_catalog_html(
+            page_text,
+            domain=site.domain,
+            site_label=site.label,
+            page_url=build_competitor_search_url(site, "search"),
+        )
+        hits: list[CompetitorSearchHit] = []
+        seen: set[str] = set()
+        for product in products:
+            if not product.url:
+                continue
+            if product.url in seen:
+                continue
+            seen.add(product.url)
+            hits.append(
+                CompetitorSearchHit(
+                    url=product.url,
+                    name=product.name,
+                    price=product.price,
+                )
+            )
+            if len(hits) >= limit:
+                break
+        if hits:
+            return hits
+
     profile = competitor_search_profile(site.domain)
     if not profile or not profile.result_item_pattern or not page_text:
         return []
@@ -271,7 +309,12 @@ def parse_competitor_search_results(
 
         name = re.sub(r"\s+", " ", match.group("name")).strip()
         price_raw = match.groupdict().get("price")
-        price = float(price_raw) if price_raw else None
+        price = None
+        if price_raw:
+            from src.services.web_search_service import extract_prices_from_text
+
+            prices = extract_prices_from_text(str(price_raw))
+            price = prices[0] if prices else None
         hits.append(CompetitorSearchHit(url=absolute, name=name, price=price))
         if len(hits) >= limit:
             break
