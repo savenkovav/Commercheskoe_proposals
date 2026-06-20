@@ -350,6 +350,18 @@ body {
   color: #7dd3fc;
 }
 
+.competitors-list-scroll {
+  max-height: calc(2.5rem + 10 * 3.25rem);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  margin-right: -4px;
+}
+
+.competitors-list-scroll .data-sources-section:last-child {
+  margin-bottom: 0;
+}
+
 .competitor-chat-card {
   margin-top: 16px;
 }
