@@ -428,6 +428,7 @@ def merge_competitor_quotes(
                         match_score=existing.match_score,
                         url=existing.url,
                         notes=existing.notes,
+                        image_url=existing.image_url or quote.image_url,
                     )
                 elif quote.articul and not existing.articul:
                     quotes[index] = PriceQuote(
@@ -444,6 +445,7 @@ def merge_competitor_quotes(
                         match_score=existing.match_score,
                         url=existing.url,
                         notes=existing.notes,
+                        image_url=existing.image_url or quote.image_url,
                     )
                 replaced = True
                 break
@@ -1014,6 +1016,15 @@ class WebSearchService:
 
         articul = _extract_articul_from_page(page_text)
         domain = urlparse(url).netloc.lower().removeprefix("www.") if url else ""
+        image_url: str | None = None
+        if domain == "vrtorg.ru" and page_text:
+            from src.services.competitor_catalog_service import _extract_vrtorg_product_image
+
+            image_url = _extract_vrtorg_product_image(
+                page_text,
+                domain=site.domain,
+                page_url=url,
+            )
         needs_catalog_fetch = (
             url
             and (
@@ -1031,6 +1042,8 @@ class WebSearchService:
                 if price is None and fetched[0].price is not None:
                     price = fetched[0].price
                     note = "Конкурент | цена со страницы товара"
+                if fetched[0].image_url:
+                    image_url = fetched[0].image_url
 
         competitor_label = site.label or competitor_label_for_url(url) or site.domain
         return PriceQuote(
@@ -1045,6 +1058,7 @@ class WebSearchService:
             match_score=match_score,
             url=url,
             notes=note,
+            image_url=image_url,
         )
 
     def search_internet_cascade(

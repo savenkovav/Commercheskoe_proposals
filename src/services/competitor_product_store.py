@@ -64,6 +64,7 @@ class CompetitorProductStore:
                     price_label=row.get("price_label") or None,
                     details=row.get("details") or None,
                     wholesale_price=row.get("wholesale_price"),
+                    image_url=row.get("image_url") or None,
                 )
                 if product.name.strip():
                     self._products.append(product)
@@ -159,6 +160,7 @@ class CompetitorProductStore:
                     price_label=product.price_label,
                     details=product.details,
                     wholesale_price=product.wholesale_price,
+                    image_url=product.image_url,
                 )
             )
             added += 1

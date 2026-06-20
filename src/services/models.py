@@ -60,6 +60,7 @@ class PriceQuote:
     match_score: float = 0.0
     url: Optional[str] = None
     notes: str = ""
+    image_url: Optional[str] = None
 
 
 @dataclass

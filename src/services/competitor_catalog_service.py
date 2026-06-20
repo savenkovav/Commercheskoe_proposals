@@ -67,6 +67,7 @@ _PRODUCT_LINE_RE = re.compile(
     r"\s*name=(?P<name>[^|]+)\s*\|\s*price=(?P<price>[^|]*)\s*\|"
     r"\s*url=(?P<url>[^|]*)\s*\|\s*articul=(?P<articul>[^|]*)(?:\s*\|\s*price_label=(?P<price_label>[^|]*))?"
     r"(?:\s*\|\s*wholesale_price=(?P<wholesale_price>[^|]*))?"
+    r"(?:\s*\|\s*image_url=(?P<image_url>[^|]*))?"
     r"(?:\s*\|\s*details=(?P<details>.*))?",
     re.I,
 )
@@ -83,6 +84,7 @@ class CompetitorCatalogProduct:
     price_label: str | None = None
     details: str | None = None
     wholesale_price: float | None = None
+    image_url: str | None = None
 
 
 _STRONIKUM_PRODUCT_PATH_RE = re.compile(r"^/\d+_[^/]+/\d+_", re.I)
@@ -514,6 +516,7 @@ def _is_vrtorg_product_path(path: str) -> bool:
 def _vrtorg_product_html_slice(html: str) -> str:
     marker_positions: list[int] = []
     for marker in (
+        "product-gallery__image",
         "product-buy__price-current",
         'class="product__title"',
         'class="product__code"',
@@ -529,6 +532,22 @@ def _vrtorg_product_html_slice(html: str) -> str:
     if len(html) > 120_000:
         return html[:120_000]
     return html
+
+
+def _extract_vrtorg_product_image(html: str, *, domain: str, page_url: str) -> str | None:
+    for match in re.finditer(r"<img\b[^>]*class=\"product-gallery__image\"[^>]*>", html, re.I | re.S):
+        tag = match.group(0)
+        src_match = re.search(r'\ssrc="([^"]+)"', tag, re.I)
+        if src_match:
+            return _absolute_url(domain, src_match.group(1), page_url)
+    for match in re.finditer(r"<img\b[^>]*itemprop=\"contentUrl\"[^>]*>", html, re.I | re.S):
+        tag = match.group(0)
+        if "product-gallery" not in tag.lower():
+            continue
+        src_match = re.search(r'\ssrc="([^"]+)"', tag, re.I)
+        if src_match:
+            return _absolute_url(domain, src_match.group(1), page_url)
+    return None
 
 
 def _parse_vrtorg_product_html(
@@ -577,6 +596,8 @@ def _parse_vrtorg_product_html(
     if not articul_match:
         articul_match = _ARTICUL_RE.search(html)
 
+    image_url = _extract_vrtorg_product_image(html, domain=domain, page_url=page_url)
+
     price_label = price_on_request_label(focused) if price is None else None
     return CompetitorCatalogProduct(
         domain=domain,
@@ -586,6 +607,7 @@ def _parse_vrtorg_product_html(
         url=page_url.split("#")[0],
         articul=articul_match.group("articul").strip() if articul_match else None,
         price_label=price_label,
+        image_url=image_url,
     )
 
 
@@ -1493,6 +1515,7 @@ def products_to_rag_text(
             f"url={product.url or ''} | articul={product.articul or ''} | "
             f"price_label={product.price_label or ''} | "
             f"wholesale_price={product.wholesale_price or ''} | "
+            f"image_url={product.image_url or ''} | "
             f"details={product.details or ''}"
         )
     return "\n".join(lines)
@@ -1761,6 +1784,7 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
             price_label=(match.group("price_label") or "").strip() or None,
             details=(match.group("details") or "").strip() or None,
             wholesale_price=_parse_price(match.group("wholesale_price")),
+            image_url=(match.group("image_url") or "").strip() or None,
         )
 
     domain = ""
@@ -1790,6 +1814,10 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
     if "price_label=" in text:
         price_label_raw = text.split("price_label=", 1)[1].split("|", 1)[0].strip()
         price_label = price_label_raw or None
+    image_url = None
+    if "image_url=" in text:
+        image_url_raw = text.split("image_url=", 1)[1].split("|", 1)[0].strip()
+        image_url = image_url_raw or None
     return CompetitorCatalogProduct(
         domain=domain or "unknown",
         site_label=competitor_label_for_url(url) or domain or "Конкурент",
@@ -1798,6 +1826,7 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
         url=url,
         articul=articul,
         price_label=price_label,
+        image_url=image_url,
     )
 
 
@@ -1856,6 +1885,7 @@ def enrich_catalog_product_price(
                 price_label=item.price_label or product.price_label,
                 details=item.details or product.details,
                 wholesale_price=item.wholesale_price or product.wholesale_price,
+                image_url=item.image_url or product.image_url,
             )
     if fetched[0].price is not None or fetched[0].price_label:
         item = fetched[0]
@@ -1869,6 +1899,7 @@ def enrich_catalog_product_price(
             price_label=item.price_label,
             details=item.details or product.details,
             wholesale_price=item.wholesale_price or product.wholesale_price,
+            image_url=item.image_url or product.image_url,
         )
     return product
 
@@ -1925,6 +1956,7 @@ def _score_catalog_products(
                     if product.articul
                     else "Индекс каталога конкурента"
                 ),
+                image_url=product.image_url,
             )
         )
     return quotes

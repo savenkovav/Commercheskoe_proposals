@@ -201,6 +201,7 @@ def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
         "match_score": round(quote.match_score, 1),
         "url": quote.url,
         "notes": quote.notes,
+        "image_url": quote.image_url,
     }
 
 

@@ -537,12 +537,32 @@ body {
 }
 
 .competitor-result-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.02);
   min-width: 0;
   overflow: hidden;
+}
+
+.competitor-result-item__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.competitor-result-item__photo {
+  flex: 0 0 auto;
+}
+
+.competitor-result-item__image {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .competitor-result-item__head {

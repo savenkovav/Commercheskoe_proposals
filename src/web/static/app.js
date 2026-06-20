@@ -1411,6 +1411,45 @@ function renderRegistryPhotos(registry) {
     </div>`;
 }
 
+function renderLookupResultPhotos(registry, competitors) {
+  const registryUrls =
+    registry?.photo_urls?.length > 0
+      ? registry.photo_urls
+      : registry?.photo_url
+        ? [registry.photo_url]
+        : [];
+  if (registryUrls.length) {
+    return renderRegistryPhotos(registry);
+  }
+
+  const competitorItems = competitors?.items?.length
+    ? competitors.items
+    : competitors?.found
+      ? [competitors]
+      : [];
+  const competitorUrls = competitorItems
+    .map((item) => item.image_url)
+    .filter(Boolean);
+  if (!competitorUrls.length) {
+    return renderRegistryPhotos(registry);
+  }
+
+  const alt =
+    competitorItems.find((item) => item.name)?.name ||
+    competitorItems.find((item) => item.matched_name)?.matched_name ||
+    "Фото товара";
+  const [mainUrl, ...extraUrls] = competitorUrls;
+  const extras = extraUrls
+    .map((url) => renderPhotoButton(url, alt, "lookup-result__photo lookup-result__photo--thumb"))
+    .join("");
+
+  return `
+    <div class="lookup-result__photos">
+      ${renderPhotoButton(mainUrl, alt)}
+      ${extras ? `<div class="lookup-result__photo-stack">${extras}</div>` : ""}
+    </div>`;
+}
+
 function fitPhotoModalImage(img) {
   const previewSize = 220;
   const target = previewSize * 3;
@@ -1557,7 +1596,7 @@ function renderCompetitorsBlock(competitors) {
 }
 
 function renderLookupResultHtml(data) {
-  const photoHtml = renderRegistryPhotos(data.registry);
+  const photoHtml = renderLookupResultPhotos(data.registry, data.competitors);
 
   const registryBlock = data.registry?.found
     ? renderMatchVariants(
@@ -2080,8 +2119,17 @@ function renderCompetitorSearchResults(data) {
 
   const rows = data.items
     .map((item) => {
+      const photoHtml = item.image_url
+        ? `<div class="competitor-result-item__photo">${renderPhotoButton(
+            item.image_url,
+            item.matched_name || "Фото товара",
+            "competitor-result-item__image",
+          )}</div>`
+        : "";
       return `
         <div class="competitor-result-item">
+          ${photoHtml}
+          <div class="competitor-result-item__body">
           <div class="competitor-result-item__head">
             <strong class="competitor-result-item__title">${escapeHtml(formatCompetitorSiteLabel(item.label))}</strong>
             <span class="competitor-result-item__price">${escapeHtml(fmtCompetitorPrice(item))}</span>
@@ -2094,6 +2142,7 @@ function renderCompetitorSearchResults(data) {
               ? `<div class="chat-link-wrap">${renderChatLink(item.url, "Открыть на сайте")}</div>`
               : `<div class="muted">${escapeHtml(item.notes || "")}</div>`
           }
+          </div>
         </div>`;
     })
     .join("");

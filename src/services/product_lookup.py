@@ -413,6 +413,7 @@ class ProductLookupService:
                     "url": quote.url,
                     "notes": quote.notes or "",
                     "has_price": base_price is not None,
+                    "image_url": quote.image_url,
                     "_sort_price": base_price if base_price is not None else float("inf"),
                 }
             )
