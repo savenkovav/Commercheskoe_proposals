@@ -33,7 +33,7 @@ from src.services.models import KitComponentLine, MatchResult, MatchSource, Matc
 from src.services.web_quote_priority import resolve_price_source_url
 from src.services.tz_parser import resolve_tz_upload_filename
 from src.services.tz_parser import extract_tz_document_text
-from src.services.tz_rag_service import TZRagService
+from src.services.tz_rag_service import RagIndex, TZRagService
 from src.services.price_list_manager import get_price_list_manager
 from src.services.product_lookup import (
     LookupField,
@@ -47,6 +47,7 @@ from src.services.static_source_manager import (
     StaticSourceManager,
     get_static_source_manager,
 )
+from src.services.document_rag_index import get_document_rag_index
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,18 @@ class KpChatRequest(BaseModel):
 
 class KpSessionCreateRequest(BaseModel):
     use_ai: bool = True
+
+
+class RagQueryRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=64)
+    query: str = Field(min_length=1, max_length=4000)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class RagSourceQueryRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    source_type: str | None = Field(default=None, max_length=32)
 
 
 def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
@@ -271,6 +284,13 @@ def _static_source_response(source_id: str) -> dict[str, Any]:
 
 def _kp_chat_service() -> KpChatService:
     return KpChatService(get_processor())
+
+
+def _doc_rag_index_service():
+    service = _kp_chat_service()
+    index = get_document_rag_index(service.rag)
+    index.bootstrap(get_price_list_manager())
+    return index
 
 
 def _parse_tz_path(
@@ -453,6 +473,7 @@ def _kp_chat_response(chat_result: dict[str, Any], session_id: str) -> dict[str,
 def api_status() -> dict[str, Any]:
     processor = get_processor()
     price_entries = processor.price_manager.list_entries()
+    rag_docs_stats = _doc_rag_index_service().stats()
     return {
         "catalog_count": len(processor.catalog),
         "registry_count": len(processor.registry),
@@ -475,6 +496,7 @@ def api_status() -> dict[str, Any]:
         "catalog": _catalog_source(processor),
         "registry": _registry_source(processor),
         "meilisearch": meilisearch_health(),
+        "rag_docs": rag_docs_stats,
     }
 
 
@@ -530,6 +552,82 @@ def api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
     except Exception as exc:
         logger.exception("KP chat failed")
         raise HTTPException(status_code=500, detail=f"Ошибка чата: {exc}") from exc
+
+
+@app.post("/api/rag/query")
+def api_rag_query(body: RagQueryRequest) -> dict[str, Any]:
+    service = _kp_chat_service()
+    session = service.store.get(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+
+    index = RagIndex(
+        chunks=session.rag_chunks,
+        vectors=session.rag_vectors,
+    )
+    if not index.chunks:
+        return {
+            "session_id": body.session_id,
+            "query": body.query,
+            "top_k": body.top_k,
+            "retrieval_mode": "empty",
+            "chunks": [],
+            "total_chunks": 0,
+        }
+
+    rows = service.rag.retrieve_debug(body.query, index, top_k=body.top_k)
+    retrieval_mode = "vector" if index.vectors else "lexical"
+    chunks = [
+        {
+            "rank": rank,
+            "chunk_id": row.get("chunk_id"),
+            "filename": row.get("filename"),
+            "score": row.get("score"),
+            "start": row.get("start"),
+            "end": row.get("end"),
+            "text": row.get("text"),
+        }
+        for rank, row in enumerate(rows, start=1)
+    ]
+    return {
+        "session_id": body.session_id,
+        "query": body.query,
+        "top_k": body.top_k,
+        "retrieval_mode": retrieval_mode,
+        "chunks": chunks,
+        "total_chunks": len(index.chunks),
+    }
+
+
+@app.post("/api/rag/query/sources")
+def api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
+    index = _doc_rag_index_service()
+    rows = index.query(
+        body.query,
+        source_type=body.source_type.strip().lower() if body.source_type else None,
+        top_k=body.top_k,
+    )
+    return {
+        "query": body.query,
+        "top_k": body.top_k,
+        "source_type": body.source_type,
+        "stats": index.stats(),
+        "chunks": [
+            {
+                "rank": rank,
+                "doc_id": row.get("doc_id"),
+                "source_type": row.get("source_type"),
+                "source_name": row.get("source_name"),
+                "chunk_id": row.get("chunk_id"),
+                "filename": row.get("filename"),
+                "score": row.get("score"),
+                "start": row.get("start"),
+                "end": row.get("end"),
+                "text": row.get("text"),
+            }
+            for rank, row in enumerate(rows, start=1)
+        ],
+    }
 
 
 @app.post("/api/process/upload")
@@ -714,6 +812,12 @@ async def api_prices_add(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     total_items = reload_processor()
+    _doc_rag_index_service().index_document(
+        doc_id=f"price:{entry.id}",
+        source_type="price",
+        source_name=entry.name,
+        file_path=manager.file_path(entry),
+    )
     return {
         "entry": {
             "id": entry.id,
@@ -744,6 +848,13 @@ async def api_prices_replace(price_id: str, file: UploadFile = File(...)) -> dic
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         reload_processor()
+        config = static_manager.get_config(price_id)
+        _doc_rag_index_service().index_document(
+            doc_id=f"{config.source_id}:main",
+            source_type=config.source_id,
+            source_name=static_manager.get_display_name(config.source_id),
+            file_path=config.path,
+        )
         return _static_source_response(price_id.lower())
 
     if not filename.lower().endswith(PRICE_EXTENSIONS):
@@ -762,6 +873,12 @@ async def api_prices_replace(price_id: str, file: UploadFile = File(...)) -> dic
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     total_items = reload_processor()
+    _doc_rag_index_service().index_document(
+        doc_id=f"price:{entry.id}",
+        source_type="price",
+        source_name=entry.name,
+        file_path=manager.file_path(entry),
+    )
     return {
         "entry": {
             "id": entry.id,
@@ -818,6 +935,7 @@ def api_prices_remove(price_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         reload_processor()
+        _doc_rag_index_service().remove_document(f"{config.source_id}:main")
         return {
             "removed_id": config.source_id,
             "removed_name": static_manager.get_display_name(config.source_id),
@@ -830,6 +948,7 @@ def api_prices_remove(price_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     total_items = reload_processor()
+    _doc_rag_index_service().remove_document(f"price:{entry.id}")
     return {
         "removed_id": entry.id,
         "removed_name": entry.name,

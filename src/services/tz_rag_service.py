@@ -61,7 +61,31 @@ class TZRagService:
             if row.get("text")
         )[:5000]
 
+    def retrieve_debug(
+        self,
+        query: str,
+        index: RagIndex,
+        *,
+        top_k: int = RAG_TOP_K,
+    ) -> list[dict[str, str | int | float]]:
+        if not query.strip() or not index.chunks:
+            return []
+        return self._retrieve_with_scores(query, index, top_k=top_k)
+
     def _retrieve(self, query: str, index: RagIndex, *, top_k: int) -> list[dict[str, str | int | float]]:
+        scored = self._retrieve_with_scores(query, index, top_k=top_k)
+        return [
+            {key: value for key, value in row.items() if key != "score"}
+            for row in scored
+        ]
+
+    def _retrieve_with_scores(
+        self,
+        query: str,
+        index: RagIndex,
+        *,
+        top_k: int,
+    ) -> list[dict[str, str | int | float]]:
         if index.vectors:
             query_vecs = self._embed([query])
             if query_vecs:
@@ -71,7 +95,13 @@ class TZRagService:
                     for vec, chunk in zip(index.vectors, index.chunks)
                 ]
                 scored.sort(key=lambda item: item[0], reverse=True)
-                return [chunk for _, chunk in scored[:top_k]]
+                return [
+                    {
+                        **chunk,
+                        "score": round(score, 6),
+                    }
+                    for score, chunk in scored[:top_k]
+                ]
 
         return self._retrieve_lexical(query, index.chunks, top_k=top_k)
 
@@ -95,7 +125,17 @@ class TZRagService:
             scored.append((density, chunk))
 
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [chunk for score, chunk in scored[:top_k] if score > 0] or chunks[:top_k]
+        ranked = [
+            {
+                **chunk,
+                "score": round(score, 6),
+            }
+            for score, chunk in scored[:top_k]
+            if score > 0
+        ]
+        if ranked:
+            return ranked
+        return [{**chunk, "score": 0.0} for chunk in chunks[:top_k]]
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         if not self.ai.enabled or not self.ai.client:
