@@ -189,7 +189,10 @@ function refreshAiStatusUi() {
 
 function fmtCount(v) {
   if (v == null || Number.isNaN(Number(v))) return "0";
-  return Number(v).toLocaleString("ru-RU");
+  return Number(v)
+    .toLocaleString("ru-RU")
+    .replace(/\u00a0/g, "\u202f")
+    .replace(/ /g, "\u202f");
 }
 
 function competitorStatsTitle(status) {
@@ -213,10 +216,14 @@ function applyCompetitorCatalogStats(stats) {
 
 function renderHeaderStats(status) {
   const aiOn = getEffectiveAiEnabled(status);
+  const competitorCount = Number(status.competitor_products_count);
+  const competitorLabel = Number.isFinite(competitorCount)
+    ? fmtCount(competitorCount)
+    : "0";
   $("#headerStats").innerHTML = `
     <span class="stat-pill">Каталог: <strong>${fmtCount(status.catalog_count)}</strong></span>
     <span class="stat-pill">Прайсы: <strong>${fmtCount(status.price_items_count)}</strong></span>
-    <span class="stat-pill" title="${escapeHtml(competitorStatsTitle(status))}">Товаров на сайтах: <strong>${fmtCount(status.competitor_products_count)}</strong></span>
+    <span class="stat-pill stat-pill--count" title="${escapeHtml(competitorStatsTitle(status))}">На сайтах: <strong class="stat-pill__value">${competitorLabel}</strong></span>
     <span class="stat-pill">AI: <strong>${aiStatusText(aiOn)}</strong></span>
   `;
 }
