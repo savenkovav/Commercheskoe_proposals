@@ -192,10 +192,22 @@ function fmtCount(v) {
   return Number(v).toLocaleString("ru-RU");
 }
 
+function competitorStatsTitle(status) {
+  const byDomain = status?.competitor_products_by_domain;
+  if (!byDomain || typeof byDomain !== "object") {
+    return "Проиндексированные товары на сайтах конкурентов";
+  }
+  const rows = Object.entries(byDomain)
+    .sort((a, b) => b[1] - a[1])
+    .map(([domain, count]) => `${domain}: ${fmtCount(count)}`);
+  return ["По сайтам:", ...rows].join("\n");
+}
+
 function applyCompetitorCatalogStats(stats) {
   if (!stats || cachedStatus == null) return;
   cachedStatus.competitor_products_count = stats.products ?? 0;
   cachedStatus.competitor_sites_count = stats.sites ?? 0;
+  cachedStatus.competitor_products_by_domain = stats.by_domain ?? {};
   renderHeaderStats(cachedStatus);
 }
 
@@ -204,7 +216,7 @@ function renderHeaderStats(status) {
   $("#headerStats").innerHTML = `
     <span class="stat-pill">Каталог: <strong>${fmtCount(status.catalog_count)}</strong></span>
     <span class="stat-pill">Прайсы: <strong>${fmtCount(status.price_items_count)}</strong></span>
-    <span class="stat-pill" title="Проиндексированные товары на сайтах конкурентов">Товаров на сайтах: <strong>${fmtCount(status.competitor_products_count)}</strong></span>
+    <span class="stat-pill" title="${escapeHtml(competitorStatsTitle(status))}">Товаров на сайтах: <strong>${fmtCount(status.competitor_products_count)}</strong></span>
     <span class="stat-pill">AI: <strong>${aiStatusText(aiOn)}</strong></span>
   `;
 }
@@ -2193,4 +2205,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btnAddCompetitor").addEventListener("click", addCompetitorSite);
   initCompetitorChat();
   loadInitialStatus();
+  setInterval(() => {
+    if (document.visibilityState === "visible") loadInitialStatus();
+  }, 30_000);
 });

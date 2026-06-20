@@ -425,7 +425,13 @@ def _discover_labkabinet_product_urls() -> list[str]:
     return urls
 
 
-def fetch_labkabinet_catalog(site: CompetitorSite) -> list[CompetitorCatalogProduct]:
+def fetch_labkabinet_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
     product_urls = _discover_labkabinet_product_urls()
     if not product_urls:
         logger.warning("Labkabinet sitemap empty")
@@ -434,6 +440,7 @@ def fetch_labkabinet_catalog(site: CompetitorSite) -> list[CompetitorCatalogProd
     products: list[CompetitorCatalogProduct] = []
     seen_names: set[str] = set()
     total = len(product_urls)
+    store = get_competitor_product_store() if checkpoint_every > 0 else None
     logger.info("Labkabinet: indexing %s products from sitemap", total)
 
     with httpx.Client(
@@ -463,7 +470,21 @@ def fetch_labkabinet_catalog(site: CompetitorSite) -> list[CompetitorCatalogProd
             seen_names.add(key)
             products.append(product)
 
-            if index % 500 == 0 or index == total:
+            if store and checkpoint_every > 0 and (
+                index % checkpoint_every == 0 or index == total
+            ):
+                saved = store.replace_site_products(
+                    site.domain,
+                    products,
+                    site_label=site.label,
+                )
+                logger.info(
+                    "Labkabinet checkpoint %s/%s urls, %s products saved",
+                    index,
+                    total,
+                    saved,
+                )
+            elif index % 500 == 0 or index == total:
                 logger.info("Labkabinet indexed %s/%s products", index, total)
 
     logger.info("Labkabinet catalog complete: %s products", len(products))

@@ -20,11 +20,30 @@ class CompetitorProductStore:
         self._pages: list[dict[str, str | int]] = []
         self._site_labels: dict[str, str] = {}
         self._loaded = False
+        self._file_mtime: float = 0.0
+
+    def _disk_mtime(self) -> float:
+        if not self.path.exists():
+            return 0.0
+        return self.path.stat().st_mtime
+
+    def reload(self) -> None:
+        self._loaded = False
+        self._products = []
+        self._pages = []
+        self._site_labels = {}
+        self._file_mtime = 0.0
+        self.ensure_loaded()
 
     def ensure_loaded(self) -> None:
-        if self._loaded:
+        mtime = self._disk_mtime()
+        if self._loaded and mtime == self._file_mtime:
             return
         self._loaded = True
+        self._file_mtime = mtime
+        self._products = []
+        self._pages = []
+        self._site_labels = {}
         if not self.path.exists():
             return
         try:
@@ -65,6 +84,7 @@ class CompetitorProductStore:
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        self._file_mtime = self._disk_mtime()
 
     def has_site(self, domain: str) -> bool:
         self.ensure_loaded()
@@ -185,10 +205,16 @@ class CompetitorProductStore:
 
     def stats(self) -> dict[str, int]:
         self.ensure_loaded()
+        by_domain: dict[str, int] = {}
+        for product in self._products:
+            domain = product.domain.lower().removeprefix("www.")
+            if domain:
+                by_domain[domain] = by_domain.get(domain, 0) + 1
         return {
             "products": len(self._products),
             "sites": len(self.site_domains()),
             "pages": len(self._pages),
+            "by_domain": by_domain,
         }
 
 

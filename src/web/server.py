@@ -676,6 +676,7 @@ def api_status() -> dict[str, Any]:
         "price_items_count": len(processor.price_lists),
         "competitor_products_count": competitor_catalog["products"],
         "competitor_sites_count": competitor_catalog["sites"],
+        "competitor_products_by_domain": competitor_catalog.get("by_domain", {}),
         "price_files_count": len(price_entries),
         "price_files": [
             {
