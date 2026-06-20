@@ -1893,9 +1893,9 @@ def _score_catalog_products(
                 match_score=round(score, 1),
                 url=product.url,
                 notes=(
-                    f"RAG-каталог | articul: {product.articul}"
+                    f"Индекс каталога | articul: {product.articul}"
                     if product.articul
-                    else "RAG-каталог конкурента"
+                    else "Индекс каталога конкурента"
                 ),
             )
         )
@@ -1910,13 +1910,33 @@ def search_competitor_catalog_rag(
 ) -> list[PriceQuote]:
     from src.services.competitor_product_store import get_competitor_product_store
 
-    products = get_competitor_product_store().iter_products()
-    if not products:
-        products = _iter_catalog_products(doc_rag_index)
-    if not products and doc_rag_index is not None:
-        rows = doc_rag_index.query(query, source_type="competitor", top_k=max(limit * 4, 12))
+    store = get_competitor_product_store()
+    candidates: list[CompetitorCatalogProduct] = []
+    seen: set[str] = set()
+
+    def _add(product: CompetitorCatalogProduct | None) -> None:
+        if not product or not product.name.strip():
+            return
+        key = normalize_name(product.name)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        candidates.append(product)
+
+    for product in store.search_products(query, limit=max(limit * 3, 24)):
+        _add(product)
+
+    if doc_rag_index is not None:
+        rows = doc_rag_index.query(query, source_type="competitor", top_k=max(limit * 4, 16))
         for row in rows:
-            product = parse_product_from_chunk(str(row.get("text", "")))
-            if product:
-                products.append(product)
-    return _score_catalog_products(query, products, limit=limit)
+            text = str(row.get("text", ""))
+            for line in re.findall(r"\[product\][^\n]+", text, re.I):
+                _add(parse_product_from_chunk(line))
+            if "[product]" not in text.lower():
+                _add(parse_product_from_chunk(text))
+
+    if not candidates:
+        for product in _iter_catalog_products(doc_rag_index):
+            _add(product)
+
+    return _score_catalog_products(query, candidates, limit=limit)

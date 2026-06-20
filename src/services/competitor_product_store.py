@@ -6,7 +6,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.config import COMPETITOR_PRODUCTS_PATH
+from rapidfuzz import fuzz, process
+
+from src.config import COMPETITOR_PRODUCTS_PATH, COMPETITOR_SEARCH_FALLBACK_THRESHOLD
 from src.services.competitor_catalog_service import CompetitorCatalogProduct
 from src.services.data_loader import normalize_name
 
@@ -202,6 +204,51 @@ class CompetitorProductStore:
     def iter_products(self) -> list[CompetitorCatalogProduct]:
         self.ensure_loaded()
         return list(self._products)
+
+    def search_products(
+        self,
+        query: str,
+        *,
+        limit: int = 24,
+    ) -> list[CompetitorCatalogProduct]:
+        """Fuzzy search по проиндексированным карточкам конкурентов."""
+        self.ensure_loaded()
+        normalized_query = normalize_name(query.strip())
+        if not normalized_query or not self._products:
+            return []
+
+        query_words = [word for word in normalized_query.split() if len(word) >= 3]
+        pool = self._products
+        if query_words and len(self._products) > 400:
+            filtered: list[CompetitorCatalogProduct] = []
+            for product in self._products:
+                normalized_name = normalize_name(product.name)
+                if all(word in normalized_name for word in query_words):
+                    filtered.append(product)
+            if filtered:
+                pool = filtered
+
+        by_name: dict[str, CompetitorCatalogProduct] = {}
+        for product in pool:
+            key = normalize_name(product.name)
+            if key and key not in by_name:
+                by_name[key] = product
+        if not by_name:
+            return []
+
+        min_score = max(70, COMPETITOR_SEARCH_FALLBACK_THRESHOLD - 10)
+        matches = process.extract(
+            normalized_query,
+            by_name.keys(),
+            scorer=fuzz.WRatio,
+            limit=max(limit, 8),
+        )
+        results: list[CompetitorCatalogProduct] = []
+        for name_key, score, _ in matches:
+            if score < min_score:
+                continue
+            results.append(by_name[name_key])
+        return results[:limit]
 
     def stats(self) -> dict[str, int]:
         self.ensure_loaded()

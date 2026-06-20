@@ -4,6 +4,7 @@ import re
 
 from src.config import COMPETITOR_SEARCH_FALLBACK_THRESHOLD, WEB_SEARCH_EXACT_THRESHOLD
 from src.services.competitor_sites import (
+    is_competitor_product_page_url,
     is_competitor_url,
     meets_competitor_match_threshold,
     meets_web_display_threshold,
@@ -145,6 +146,19 @@ def has_priced_competitor_quote(quotes: list[PriceQuote]) -> bool:
         and is_acceptable_web_pricing_quote(quote)
         for quote in quotes
     )
+
+
+def has_indexed_competitor_catalog_quote(quotes: list[PriceQuote]) -> bool:
+    """Сильное совпадение из проиндексированного каталога (store/RAG), без live-поиска."""
+    for quote in quotes:
+        if quote.source != "web" or not is_competitor_product_page_url(quote.url):
+            continue
+        notes = (quote.notes or "").lower()
+        if "rag-каталог" not in notes and "индекс каталога" not in notes:
+            continue
+        if meets_competitor_match_threshold(float(quote.match_score or 0), strict=False):
+            return True
+    return False
 
 
 def has_unpriced_competitor_display_quote(quotes: list[PriceQuote]) -> bool:
