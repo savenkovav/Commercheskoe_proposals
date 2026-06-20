@@ -48,6 +48,8 @@ from src.services.static_source_manager import (
     get_static_source_manager,
 )
 from src.services.document_rag_index import get_document_rag_index
+from src.services.competitor_sites import COMPETITOR_SITES
+from src.services.competitor_site_manager import get_competitor_site_manager
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,17 @@ class RagSourceQueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=5, ge=1, le=20)
     source_type: str | None = Field(default=None, max_length=32)
+
+
+class CompetitorSiteAnalyzeRequest(BaseModel):
+    url: str = Field(min_length=4, max_length=500)
+    label: str = Field(default="", max_length=200)
+
+
+class CompetitorSiteAddRequest(BaseModel):
+    url: str = Field(min_length=4, max_length=500)
+    label: str = Field(default="", max_length=200)
+    search_url: str | None = Field(default=None, max_length=500)
 
 
 def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
@@ -324,6 +337,88 @@ async def _upload_static_source_file(source_id: str, upload: UploadFile) -> dict
     response = _static_source_response(source_id.lower())
     response["rag"] = rag
     return response
+
+
+def _competitor_site_to_dict(
+    *,
+    site_id: str,
+    domain: str,
+    label: str,
+    url: str,
+    search_url: str | None,
+    builtin: bool,
+    title: str = "",
+    notes: str = "",
+    status: str = "",
+    added_at: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": site_id,
+        "domain": domain,
+        "label": label,
+        "url": url,
+        "search_url": search_url,
+        "builtin": builtin,
+        "title": title,
+        "notes": notes,
+        "status": status,
+        "added_at": added_at,
+    }
+
+
+def _list_competitor_sites_payload() -> dict[str, Any]:
+    manager = get_competitor_site_manager()
+    builtin_rows = [
+        _competitor_site_to_dict(
+            site_id=f"builtin:{site.domain}",
+            domain=site.domain,
+            label=site.label,
+            url=f"https://{site.domain}",
+            search_url=site.search_url,
+            builtin=True,
+        )
+        for site in COMPETITOR_SITES
+    ]
+    custom_rows = [
+        _competitor_site_to_dict(
+            site_id=entry.id,
+            domain=entry.domain,
+            label=entry.label,
+            url=entry.url,
+            search_url=entry.search_url,
+            builtin=False,
+            title=entry.title,
+            notes=entry.notes,
+            status=entry.status,
+            added_at=entry.added_at,
+        )
+        for entry in manager.list_custom()
+    ]
+    return {
+        "builtin": builtin_rows,
+        "custom": custom_rows,
+        "items": builtin_rows + custom_rows,
+        "total": len(builtin_rows) + len(custom_rows),
+    }
+
+
+def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
+    rag_text = str(analysis.get("rag_text") or "")
+    if not rag_text.strip():
+        rag_text = (
+            f"Сайт конкурента: {entry.label}\n"
+            f"Домен: {entry.domain}\n"
+            f"URL: {entry.url}\n"
+            f"Поиск: {entry.search_url or '—'}"
+        )
+    return _doc_rag_index_service().index_text(
+        doc_id=f"competitor:{entry.id}",
+        source_type="competitor",
+        source_name=entry.label,
+        text=rag_text,
+        filename=entry.domain,
+        force=True,
+    )
 
 
 def _parse_tz_path(
@@ -795,6 +890,69 @@ def api_registry_photo(filename: str) -> FileResponse:
     }
     media_type = media_types.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=media_type)
+
+
+@app.get("/api/competitors")
+def api_competitors_list() -> dict[str, Any]:
+    payload = _list_competitor_sites_payload()
+    payload["rag_docs"] = _doc_rag_index_service().stats()
+    return payload
+
+
+@app.post("/api/competitors/analyze")
+def api_competitors_analyze(body: CompetitorSiteAnalyzeRequest) -> dict[str, Any]:
+    manager = get_competitor_site_manager()
+    try:
+        analysis = manager.analyze_url(body.url, label=body.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"analysis": analysis}
+
+
+@app.post("/api/competitors")
+def api_competitors_add(body: CompetitorSiteAddRequest) -> dict[str, Any]:
+    manager = get_competitor_site_manager()
+    try:
+        entry, analysis = manager.add(
+            body.url,
+            label=body.label,
+            search_url=body.search_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    rag = _index_competitor_rag(entry, analysis)
+    return {
+        "entry": _competitor_site_to_dict(
+            site_id=entry.id,
+            domain=entry.domain,
+            label=entry.label,
+            url=entry.url,
+            search_url=entry.search_url,
+            builtin=False,
+            title=entry.title,
+            notes=entry.notes,
+            status=entry.status,
+            added_at=entry.added_at,
+        ),
+        "analysis": analysis,
+        "rag": rag,
+    }
+
+
+@app.delete("/api/competitors/{site_id}")
+def api_competitors_remove(site_id: str) -> dict[str, Any]:
+    manager = get_competitor_site_manager()
+    try:
+        entry = manager.remove(site_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _doc_rag_index_service().remove_document(f"competitor:{entry.id}")
+    return {
+        "removed_id": entry.id,
+        "removed_domain": entry.domain,
+    }
 
 
 @app.get("/api/prices")

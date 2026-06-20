@@ -104,6 +104,7 @@ function initTabs() {
       btn.classList.add("tabs__btn--active");
       $(`#panel-${btn.dataset.tab}`).classList.add("panel--active");
       if (btn.dataset.tab === "prices") loadPrices();
+      if (btn.dataset.tab === "competitors") loadCompetitors();
       if (btn.dataset.tab === "status") loadStatus();
     });
   });
@@ -1805,6 +1806,157 @@ async function removeDataSource(id) {
   }
 }
 
+function renderCompetitorAnalysis(analysis) {
+  const box = $("#competitorAnalysis");
+  if (!analysis) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = `
+    <p><strong>Домен:</strong> ${escapeHtml(analysis.domain || "—")}</p>
+    <p><strong>Заголовок:</strong> ${escapeHtml(analysis.title || "—")}</p>
+    <p><strong>Поиск:</strong> ${escapeHtml(analysis.search_url || "—")}</p>
+    <p><strong>Статус:</strong> ${escapeHtml(analysis.status || "—")}</p>
+    <p class="muted">${escapeHtml(analysis.notes || "")}</p>
+  `;
+  if (analysis.search_url && !$("#competitorSearchUrl").value.trim()) {
+    $("#competitorSearchUrl").value = analysis.search_url;
+  }
+  if (analysis.label && !$("#competitorLabel").value.trim()) {
+    $("#competitorLabel").value = analysis.label;
+  }
+}
+
+function renderCompetitorRow(site) {
+  const badge = site.builtin
+    ? '<span class="competitor-badge">встроенный</span>'
+    : '<span class="competitor-badge competitor-badge--custom">добавленный</span>';
+  const actions = site.builtin
+    ? "—"
+    : `<button class="btn btn--danger btn--small" data-remove-competitor="${escapeHtml(site.id)}">Удалить</button>`;
+  return `
+    <tr>
+      <td>${escapeHtml(site.label || site.domain)} ${badge}</td>
+      <td><a href="${escapeHtml(site.url)}" target="_blank" rel="noopener">${escapeHtml(site.domain)}</a></td>
+      <td>${site.search_url ? `<small>${escapeHtml(site.search_url)}</small>` : "—"}</td>
+      <td>${actions}</td>
+    </tr>`;
+}
+
+function renderCompetitorSection(title, rows) {
+  if (!rows.length) {
+    return `
+      <div class="data-sources-section">
+        <h3 class="data-sources-section__title">${escapeHtml(title)}</h3>
+        <p class="muted">Нет сайтов</p>
+      </div>`;
+  }
+  return `
+    <div class="data-sources-section">
+      <h3 class="data-sources-section__title">${escapeHtml(title)}</h3>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Название</th>
+              <th>Домен</th>
+              <th>Поиск</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>${rows.map(renderCompetitorRow).join("")}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function loadCompetitors() {
+  try {
+    const data = await api("/api/competitors");
+    const container = $("#competitorsList");
+    container.innerHTML = [
+      renderCompetitorSection("Добавленные сайты", data.custom || []),
+      renderCompetitorSection("Встроенные сайты", data.builtin || []),
+    ].join("");
+
+    container.querySelectorAll("[data-remove-competitor]").forEach((btn) => {
+      btn.addEventListener("click", () => removeCompetitorSite(btn.dataset.removeCompetitor));
+    });
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+async function analyzeCompetitorSite() {
+  const url = $("#competitorUrl").value.trim();
+  if (!url) {
+    showToast("Введите ссылку на сайт", true);
+    return;
+  }
+  showOverlay("Анализирую сайт...");
+  try {
+    const data = await api("/api/competitors/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        label: $("#competitorLabel").value.trim(),
+      }),
+    });
+    renderCompetitorAnalysis(data.analysis);
+    showToast("Анализ завершён");
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    hideOverlay();
+  }
+}
+
+async function addCompetitorSite() {
+  const url = $("#competitorUrl").value.trim();
+  if (!url) {
+    showToast("Введите ссылку на сайт", true);
+    return;
+  }
+  showOverlay("Добавляю сайт и индексирую для RAG...");
+  try {
+    const data = await api("/api/competitors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        label: $("#competitorLabel").value.trim(),
+        search_url: $("#competitorSearchUrl").value.trim() || null,
+      }),
+    });
+    renderCompetitorAnalysis(data.analysis);
+    showToast(`Сайт добавлен${ragUploadMessage(data.rag)}`);
+    $("#competitorUrl").value = "";
+    $("#competitorLabel").value = "";
+    $("#competitorSearchUrl").value = "";
+    loadCompetitors();
+    loadStatus();
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    hideOverlay();
+  }
+}
+
+async function removeCompetitorSite(siteId) {
+  if (!confirm("Удалить сайт конкурента из базы?")) return;
+  try {
+    await api(`/api/competitors/${siteId}`, { method: "DELETE" });
+    showToast("Сайт удалён");
+    loadCompetitors();
+    loadStatus();
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
 function initAiToggle() {
   $("#useAiUpload").addEventListener("change", refreshAiStatusUi);
 }
@@ -1821,5 +1973,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btnAddPrice").addEventListener("click", addPrice);
   $("#btnUploadCatalog").addEventListener("click", uploadCatalog);
   $("#btnUploadStock").addEventListener("click", uploadStock);
+  $("#btnAnalyzeCompetitor").addEventListener("click", analyzeCompetitorSite);
+  $("#btnAddCompetitor").addEventListener("click", addCompetitorSite);
   loadInitialStatus();
 });

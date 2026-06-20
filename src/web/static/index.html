@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <title>КП-Ассистент</title>
-  <link rel="stylesheet" href="/app.css?v=20260620a">
+  <link rel="stylesheet" href="/app.css?v=20260620b">
 </head>
 <body>
   <div class="layout">
@@ -24,6 +24,7 @@
       <button class="tabs__btn tabs__btn--active" data-tab="kp" role="tab">КП-Ассистент</button>
       <button class="tabs__btn" data-tab="lookup" role="tab">Быстрый поиск</button>
       <button class="tabs__btn" data-tab="prices" role="tab">Прайсы</button>
+      <button class="tabs__btn" data-tab="competitors" role="tab">Сайты конкурентов</button>
       <button class="tabs__btn" data-tab="status" role="tab">Статус</button>
     </nav>
 
@@ -213,6 +214,30 @@
         </div>
       </section>
 
+      <section class="panel" id="panel-competitors" data-panel="competitors">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Добавить сайт конкурента</h2>
+            <p class="muted">Вставьте ссылку — сайт будет проанализирован и добавлен в базу для поиска цен и RAG</p>
+            <div class="form-stack">
+              <input type="url" id="competitorUrl" class="input" placeholder="https://example-shop.ru">
+              <input type="text" id="competitorLabel" class="input" placeholder="Название (необязательно)">
+              <input type="url" id="competitorSearchUrl" class="input" placeholder="URL поиска с {query} (необязательно)">
+              <div class="actions actions--wrap">
+                <button class="btn btn--secondary" type="button" id="btnAnalyzeCompetitor">Проанализировать</button>
+                <button class="btn btn--primary" type="button" id="btnAddCompetitor">Добавить сайт</button>
+              </div>
+            </div>
+            <div class="competitor-analysis hidden" id="competitorAnalysis"></div>
+          </div>
+          <div class="card">
+            <h2>Список сайтов конкурентов</h2>
+            <p class="muted">Встроенные сайты используются при поиске цен; добавленные — в категории «конкуренты»</p>
+            <div id="competitorsList"></div>
+          </div>
+        </div>
+      </section>
+
       <section class="panel" id="panel-status" data-panel="status">
         <div class="stats-grid" id="statusGrid"></div>
         <div class="card">
@@ -237,6 +262,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260620a"></script>
+  <script src="/app.js?v=20260620b"></script>
 </body>
 </html>

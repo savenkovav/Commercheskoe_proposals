@@ -323,6 +323,33 @@ body {
   letter-spacing: 0.04em;
 }
 
+.actions--wrap {
+  flex-wrap: wrap;
+}
+
+.competitor-analysis {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.competitor-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.competitor-badge--custom {
+  background: rgba(56, 189, 248, 0.15);
+  color: #7dd3fc;
+}
+
 .lookup-form {
   display: flex;
   gap: 10px;

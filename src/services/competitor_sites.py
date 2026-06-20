@@ -158,12 +158,32 @@ _PRODUCT_PATH_MARKERS = (
 _HREF_RE = re.compile(r'href="([^"]+)"', re.I)
 
 
-def all_competitor_domains() -> list[str]:
-    return [site.domain for site in COMPETITOR_SITES]
+def _merged_competitor_sites() -> tuple[CompetitorSite, ...]:
+    from src.services.competitor_site_manager import get_competitor_site_manager
+
+    builtin_domains = {site.domain.lower() for site in COMPETITOR_SITES}
+    custom = [
+        site
+        for site in get_competitor_site_manager().as_competitor_sites()
+        if site.domain.lower() not in builtin_domains
+    ]
+    return COMPETITOR_SITES + tuple(custom)
+
+
+def _merged_domain_labels() -> dict[str, str]:
+    labels = dict(_DOMAIN_TO_LABEL)
+    for site in _merged_competitor_sites():
+        labels.setdefault(site.domain.lower(), site.label)
+    return labels
+
+
+def all_competitor_domains(*, include_custom: bool = True) -> list[str]:
+    sites = _merged_competitor_sites() if include_custom else COMPETITOR_SITES
+    return [site.domain for site in sites]
 
 
 def competitor_sites_with_search() -> tuple[CompetitorSite, ...]:
-    return _SITES_WITH_SEARCH
+    return tuple(site for site in _merged_competitor_sites() if site.search_url)
 
 
 def competitor_search_profile(domain: str) -> CompetitorSearchProfile | None:
@@ -280,14 +300,14 @@ def is_competitor_url(url: str | None) -> bool:
     host = _normalize_host(url)
     if not host:
         return False
-    return any(host_matches_competitor(host, domain) for domain in _DOMAIN_TO_LABEL)
+    return any(host_matches_competitor(host, domain) for domain in _merged_domain_labels())
 
 
 def competitor_label_for_url(url: str | None) -> str | None:
     if not url:
         return None
     host = _normalize_host(url)
-    for domain, label in _DOMAIN_TO_LABEL.items():
+    for domain, label in _merged_domain_labels().items():
         if host_matches_competitor(host, domain):
             return label
     return None
@@ -297,7 +317,7 @@ def competitor_site_for_url(url: str | None) -> CompetitorSite | None:
     if not url:
         return None
     host = _normalize_host(url)
-    for site in COMPETITOR_SITES:
+    for site in _merged_competitor_sites():
         if host_matches_competitor(host, site.domain):
             return site
     return None

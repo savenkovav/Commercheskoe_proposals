@@ -199,3 +199,7 @@ RAG_CHUNK_OVERLAP = max(0, int(os.getenv("RAG_CHUNK_OVERLAP", "150")))
 RAG_TOP_K = max(1, int(os.getenv("RAG_TOP_K", "5")))
 RAG_DOCS_INDEX_DIR = PROJECT_ROOT / os.getenv("RAG_DOCS_INDEX_DIR", "data/rag_docs_index")
 RAG_DOCS_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+
+COMPETITOR_SITES_REGISTRY_PATH = PROJECT_ROOT / os.getenv(
+    "COMPETITOR_SITES_REGISTRY_PATH", "data/competitor_sites_registry.json"
+)

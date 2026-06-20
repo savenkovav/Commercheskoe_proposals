@@ -123,6 +123,39 @@ class DocumentRagIndexService:
             "skipped": False,
         }
 
+    def index_text(
+        self,
+        *,
+        doc_id: str,
+        source_type: str,
+        source_name: str,
+        text: str,
+        filename: str = "",
+        force: bool = True,
+    ) -> dict[str, str | int | bool]:
+        self.ensure_loaded()
+        if not text.strip():
+            return {"indexed": False, "chunks": 0, "vectorized": False}
+
+        rag_index = self.rag.build_index(text, [], filename=filename or source_name)
+        self._entries[doc_id] = DocumentRagEntry(
+            doc_id=doc_id,
+            source_type=source_type,
+            source_name=source_name,
+            filename=filename or source_name,
+            path="",
+            file_mtime=0.0,
+            chunks=rag_index.chunks,
+            vectors=rag_index.vectors,
+        )
+        self.save()
+        return {
+            "indexed": True,
+            "chunks": len(rag_index.chunks),
+            "vectorized": bool(rag_index.vectors),
+            "skipped": False,
+        }
+
     def bootstrap(self, price_manager: PriceListManager) -> None:
         self.ensure_loaded()
         if self._bootstrapped:
@@ -153,6 +186,25 @@ class DocumentRagIndexService:
                 source_type="price",
                 source_name=entry.name,
                 file_path=path,
+            )
+
+        from src.services.competitor_site_manager import get_competitor_site_manager
+
+        for site in get_competitor_site_manager().list_custom():
+            rag_text = (
+                f"Сайт конкурента: {site.label}\n"
+                f"Домен: {site.domain}\n"
+                f"URL: {site.url}\n"
+                f"Поиск: {site.search_url or '—'}\n"
+                f"Заголовок: {site.title or '—'}\n"
+                f"Примечание: {site.notes or '—'}"
+            )
+            self.index_text(
+                doc_id=f"competitor:{site.id}",
+                source_type="competitor",
+                source_name=site.label,
+                text=rag_text,
+                filename=site.domain,
             )
 
     def query(
