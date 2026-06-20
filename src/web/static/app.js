@@ -202,15 +202,24 @@ function fmtCountPlain(v) {
   return String(Math.trunc(n));
 }
 
-function competitorStatsTitle(status) {
+function competitorStatsRows(status) {
   const byDomain = status?.competitor_products_by_domain;
-  if (!byDomain || typeof byDomain !== "object") {
-    return "Проиндексированные товары на сайтах конкурентов";
+  if (!byDomain || typeof byDomain !== "object") return [];
+  return Object.entries(byDomain).sort((a, b) => b[1] - a[1]);
+}
+
+function renderCompetitorTooltip(status) {
+  const rows = competitorStatsRows(status);
+  if (!rows.length) {
+    return `<div class="stat-tooltip__title">По сайтам</div><div class="stat-tooltip__empty">Нет проиндексированных товаров</div>`;
   }
-  const rows = Object.entries(byDomain)
-    .sort((a, b) => b[1] - a[1])
-    .map(([domain, count]) => `${domain}: ${fmtCount(count)}`);
-  return ["По сайтам:", ...rows].join("\n");
+  const body = rows
+    .map(
+      ([domain, count]) =>
+        `<div class="stat-tooltip__row"><span>${escapeHtml(domain)}</span><strong>${fmtCountPlain(count)}</strong></div>`,
+    )
+    .join("");
+  return `<div class="stat-tooltip__title">По сайтам</div>${body}`;
 }
 
 function applyCompetitorCatalogStats(stats) {
@@ -230,7 +239,10 @@ function renderHeaderStats(status) {
   $("#headerStats").innerHTML = `
     <span class="stat-pill">Каталог: <strong>${fmtCount(status.catalog_count)}</strong></span>
     <span class="stat-pill">Прайсы: <strong>${fmtCount(status.price_items_count)}</strong></span>
-    <span class="stat-pill stat-pill--sites" title="${escapeHtml(competitorStatsTitle(status))}">На сайтах:<span class="stat-pill__num">${competitorLabel}</span></span>
+    <span class="stat-pill stat-pill--sites has-tooltip" tabindex="0">
+      На сайтах:<span class="stat-pill__num">${competitorLabel}</span>
+      <span class="stat-tooltip" role="tooltip">${renderCompetitorTooltip(status)}</span>
+    </span>
     <span class="stat-pill">AI: <strong>${aiStatusText(aiOn)}</strong></span>
   `;
 }
