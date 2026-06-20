@@ -410,6 +410,16 @@ class WebSearchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
+        if not (deadline and deadline.expired()):
+            _extend(
+                self._search_competitor_via_rag(
+                    query,
+                    limit=max_results,
+                )
+            )
+        if has_priced_competitor_quote(quotes):
+            return self._finalize_competitor_quotes(quotes, max_results)
+
         if COMPETITOR_NATIVE_SEARCH_ENABLED and not (deadline and deadline.expired()):
             _extend(
                 self._search_competitor_via_native(
@@ -465,14 +475,6 @@ class WebSearchService:
                     )
                 )
 
-        if not has_priced_competitor_quote(quotes) and not (deadline and deadline.expired()):
-            _extend(
-                self._search_competitor_via_rag(
-                    query,
-                    limit=max_results,
-                )
-            )
-
         return self._finalize_competitor_quotes(quotes, max_results)
 
     def _search_competitor_via_rag(
@@ -487,29 +489,37 @@ class WebSearchService:
             if not RAG_ENABLED:
                 return []
 
-            from src.services.app_state import get_processor
             from src.services.competitor_catalog_service import (
                 bootstrap_competitor_catalogs,
                 search_competitor_catalog_rag,
             )
+            from src.services.competitor_product_store import get_competitor_product_store
+
+            store = get_competitor_product_store()
+            if store.iter_products():
+                return search_competitor_catalog_rag(query, None, limit=limit)
+
+            from src.services.app_state import get_processor
             from src.services.document_rag_index import get_document_rag_index
             from src.services.tz_rag_service import TZRagService
 
             rag_index = get_document_rag_index(TZRagService(get_processor().ai))
-            bootstrap_competitor_catalogs(rag_index, max_new_sites=4)
+
+            bootstrap_competitor_catalogs(rag_index, max_new_sites=2)
             quotes = search_competitor_catalog_rag(
                 query,
                 rag_index,
                 limit=limit,
             )
-            if not quotes:
-                bootstrap_competitor_catalogs(rag_index, max_new_sites=6)
-                quotes = search_competitor_catalog_rag(
-                    query,
-                    rag_index,
-                    limit=limit,
-                )
-            return quotes
+            if quotes:
+                return quotes
+
+            bootstrap_competitor_catalogs(rag_index, max_new_sites=4)
+            return search_competitor_catalog_rag(
+                query,
+                rag_index,
+                limit=limit,
+            )
         except Exception:
             logger.exception("RAG competitor catalog search failed for %r", query)
             return []

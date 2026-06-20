@@ -48,7 +48,7 @@ from src.services.static_source_manager import (
     get_static_source_manager,
 )
 from src.services.document_rag_index import get_document_rag_index
-from src.services.competitor_sites import COMPETITOR_SITES
+from src.services.competitor_sites import COMPETITOR_SITES, competitor_sites_with_search
 from src.services.competitor_site_manager import get_competitor_site_manager
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,40 @@ PRICE_EXTENSIONS = (".xls", ".xlsx")
 DEMO_TZ_PATH = PROJECT_ROOT / "data" / "sample_tz.docx"
 
 app = FastAPI(title="КП — коммерческие предложения", version="1.0.0")
+
+
+@app.on_event("startup")
+def _startup_competitor_catalog_bootstrap() -> None:
+    import threading
+
+    def _run() -> None:
+        try:
+            from src.services.competitor_catalog_service import reindex_all_competitor_sites
+            from src.services.competitor_catalog_urls import get_competitor_catalog_url_registry
+            from src.services.competitor_product_store import get_competitor_product_store
+
+            store = get_competitor_product_store()
+            index = _doc_rag_index_service()
+            index.ensure_loaded()
+            if store.stats()["products"] > 0 and "competitor-catalog:all" in index._entries:
+                return
+
+            registry = get_competitor_catalog_url_registry()
+            registry.add_page(
+                "https://skale.ru/magazin/folder/uchebnoe-oborudovanie-po-astronomii-i-astrofizike",
+                domain="skale.ru",
+                label="Скале",
+                source="seed",
+            )
+            reindex_all_competitor_sites(_doc_rag_index_service(), force=False)
+        except Exception:
+            logger.exception("Competitor catalog startup bootstrap failed")
+
+    threading.Thread(
+        target=_run,
+        daemon=True,
+        name="competitor-catalog-bootstrap",
+    ).start()
 
 
 @app.middleware("http")
@@ -140,6 +174,16 @@ class CompetitorSiteAddRequest(BaseModel):
 class CompetitorSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(default=10, ge=1, le=30)
+
+
+class CompetitorReindexRequest(BaseModel):
+    force: bool = False
+    domains: list[str] | None = None
+
+
+class CompetitorPageIndexRequest(BaseModel):
+    url: str = Field(min_length=4, max_length=800)
+    label: str = Field(default="", max_length=200)
 
 
 def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
@@ -432,8 +476,25 @@ def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
         label=entry.label or entry.domain,
         search_url=entry.search_url,
     )
-    catalog = index_competitor_site_catalog(site, _doc_rag_index_service(), force=True)
-    return {"meta": meta, "catalog": catalog}
+    catalog = index_competitor_site_catalog(
+        site,
+        _doc_rag_index_service(),
+        force=True,
+        extra_urls=entry.catalog_urls,
+    )
+    pages: list[dict[str, object]] = []
+    from src.services.competitor_catalog_service import index_competitor_page_url
+
+    for page_url in entry.catalog_urls:
+        pages.append(
+            index_competitor_page_url(
+                page_url,
+                domain=entry.domain,
+                site_label=entry.label,
+                doc_rag_index=_doc_rag_index_service(),
+            )
+        )
+    return {"meta": meta, "catalog": catalog, "pages": pages}
 
 
 def _parse_tz_path(
@@ -909,8 +970,11 @@ def api_registry_photo(filename: str) -> FileResponse:
 
 @app.get("/api/competitors")
 def api_competitors_list() -> dict[str, Any]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
     payload = _list_competitor_sites_payload()
     payload["rag_docs"] = _doc_rag_index_service().stats()
+    payload["catalog_products"] = get_competitor_product_store().stats()
     return payload
 
 
@@ -965,9 +1029,76 @@ def api_competitors_remove(site_id: str) -> dict[str, Any]:
 
     _doc_rag_index_service().remove_document(f"competitor:{entry.id}")
     _doc_rag_index_service().remove_document(f"competitor-catalog:{entry.domain}")
+    from src.services.competitor_catalog_urls import get_competitor_catalog_url_registry
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    get_competitor_product_store().remove_domain(entry.domain)
+    get_competitor_catalog_url_registry().remove_domain(entry.domain)
+    from src.services.competitor_catalog_service import sync_unified_competitor_rag
+
+    sync_unified_competitor_rag(_doc_rag_index_service())
     return {
         "removed_id": entry.id,
         "removed_domain": entry.domain,
+    }
+
+
+@app.post("/api/competitors/reindex")
+def api_competitors_reindex(body: CompetitorReindexRequest) -> dict[str, Any]:
+    from src.services.competitor_catalog_service import (
+        index_competitor_site_catalog,
+        reindex_all_competitor_sites,
+        sync_unified_competitor_rag,
+    )
+    from src.services.competitor_product_store import get_competitor_product_store
+    from src.services.competitor_sites import competitor_sites_with_search
+
+    index = _doc_rag_index_service()
+
+    if body.domains:
+        results: list[dict[str, Any]] = []
+        for site in competitor_sites_with_search():
+            if site.domain.lower() not in {d.lower() for d in body.domains}:
+                continue
+            results.append(
+                index_competitor_site_catalog(site, index, force=body.force)
+                | {"domain": site.domain, "label": site.label}
+            )
+        sync_unified_competitor_rag(index)
+        return {
+            "sites": results,
+            "catalog_products": get_competitor_product_store().stats(),
+            "rag_docs": index.stats(),
+        }
+
+    return reindex_all_competitor_sites(index, force=True)
+
+
+@app.post("/api/competitors/pages/index")
+def api_competitors_index_page(body: CompetitorPageIndexRequest) -> dict[str, Any]:
+    from src.services.competitor_catalog_service import index_competitor_page_url
+    from src.services.competitor_product_store import get_competitor_product_store
+    from src.services.competitor_site_manager import get_competitor_site_manager
+    from src.services.competitor_sites import competitor_label_for_url
+
+    manager = get_competitor_site_manager()
+    try:
+        normalized = manager.normalize_url(body.url)
+        domain = manager.domain_from_url(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    label = body.label.strip() or competitor_label_for_url(normalized) or domain
+    result = index_competitor_page_url(
+        normalized,
+        domain=domain,
+        site_label=label,
+        doc_rag_index=_doc_rag_index_service(),
+    )
+    return {
+        "result": result,
+        "catalog_products": get_competitor_product_store().stats(),
+        "rag_docs": _doc_rag_index_service().stats(),
     }
 
 

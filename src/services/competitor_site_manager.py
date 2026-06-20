@@ -28,6 +28,7 @@ class CompetitorSiteEntry:
     domain: str
     label: str
     search_url: str | None
+    catalog_urls: list[str]
     notes: str
     builtin: bool
     title: str
@@ -37,12 +38,16 @@ class CompetitorSiteEntry:
 
     @classmethod
     def from_dict(cls, data: dict) -> CompetitorSiteEntry:
+        catalog_urls = data.get("catalog_urls") or []
+        if not catalog_urls and data.get("url"):
+            catalog_urls = [str(data["url"])]
         return cls(
             id=str(data.get("id", "")),
             url=str(data.get("url", "")),
             domain=str(data.get("domain", "")),
             label=str(data.get("label", "")),
             search_url=data.get("search_url") or None,
+            catalog_urls=[str(url) for url in catalog_urls if url],
             notes=str(data.get("notes", "")),
             builtin=bool(data.get("builtin", False)),
             title=str(data.get("title", "")),
@@ -136,13 +141,13 @@ class CompetitorSiteManager:
     def analyze_url(self, url: str, *, label: str = "") -> dict[str, str | bool | None]:
         normalized = self.normalize_url(url)
         domain = self.domain_from_url(normalized)
-        homepage = f"https://{domain}"
+        fetch_url = normalized if urlparse(normalized).path not in ("", "/") else f"https://{domain}"
 
         title = ""
         notes = ""
         search_url: str | None = None
         status = "ok"
-        rag_text = f"Сайт конкурента: {domain}\nURL: {homepage}\n"
+        rag_text = f"Сайт конкурента: {domain}\nURL: {normalized}\n"
 
         try:
             with httpx.Client(
@@ -150,9 +155,17 @@ class CompetitorSiteManager:
                 follow_redirects=True,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
             ) as client:
-                response = client.get(homepage)
+                response = client.get(fetch_url)
                 response.raise_for_status()
                 html = response.text[:300_000]
+                homepage_html = html
+                if fetch_url != f"https://{domain}":
+                    try:
+                        home_response = client.get(f"https://{domain}")
+                        home_response.raise_for_status()
+                        homepage_html = home_response.text[:300_000]
+                    except Exception:
+                        homepage_html = html
         except Exception as exc:
             status = "fetch_failed"
             notes = f"Не удалось загрузить сайт: {exc}"
@@ -172,9 +185,10 @@ class CompetitorSiteManager:
         if title_match:
             title = re.sub(r"\s+", " ", title_match.group(1)).strip()
 
-        search_url = self._guess_search_url(html, domain)
+        search_url = self._guess_search_url(homepage_html, domain)
         plain = re.sub(r"\s+", " ", _TAG_RE.sub(" ", html)).strip()
         rag_text += f"Заголовок: {title or domain}\n"
+        rag_text += f"Страница: {fetch_url}\n"
         if search_url:
             rag_text += f"Поиск: {search_url}\n"
         rag_text += plain[:4000]
@@ -190,6 +204,7 @@ class CompetitorSiteManager:
             "label": label.strip() or title or domain,
             "title": title,
             "search_url": search_url,
+            "catalog_url": normalized,
             "notes": notes,
             "status": status,
             "rag_text": rag_text,
@@ -267,12 +282,14 @@ class CompetitorSiteManager:
             resolved_search = f"{resolved_search.rstrip('/')}?q={{query}}"
 
         now = self._now()
+        catalog_urls = [str(analysis["url"])]
         entry = CompetitorSiteEntry(
             id=entry_id,
             url=str(analysis["url"]),
             domain=domain,
             label=str(analysis.get("label") or domain),
             search_url=resolved_search,
+            catalog_urls=catalog_urls,
             notes=str(analysis.get("notes") or ""),
             builtin=False,
             title=str(analysis.get("title") or ""),
@@ -282,6 +299,17 @@ class CompetitorSiteManager:
         )
         self._custom.append(entry)
         self._save()
+
+        from src.services.competitor_catalog_urls import get_competitor_catalog_url_registry
+
+        registry = get_competitor_catalog_url_registry()
+        for page_url in catalog_urls:
+            registry.add_page(
+                page_url,
+                domain=domain,
+                label=entry.label,
+                source="site_add",
+            )
         return entry, analysis
 
     def remove(self, site_id: str) -> CompetitorSiteEntry:

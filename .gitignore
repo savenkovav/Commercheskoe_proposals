@@ -15,6 +15,8 @@ dist/
 .eggs/
 output/
 products.json
+data/competitor_products.json
+data/competitor_catalog_urls.json
 storage/
 data/prices/
 data/prices_registry.json

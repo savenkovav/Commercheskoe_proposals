@@ -242,22 +242,68 @@ def _discover_folder_urls(html: str, *, domain: str, page_url: str, limit: int =
     return urls
 
 
-def fetch_catalog_products(site: CompetitorSite, *, max_pages: int = 4) -> list[CompetitorCatalogProduct]:
+def resolve_catalog_urls(
+    site: CompetitorSite,
+    *,
+    extra_urls: list[str] | None = None,
+) -> list[str]:
+    from src.services.competitor_catalog_urls import get_competitor_catalog_url_registry
+
     urls: list[str] = []
     if site.search_url:
         urls.append(site.search_url.format(query=quote_plus("")))
     urls.extend(_CATALOG_SEED_URLS.get(site.domain, []))
     urls.append(_site_root(site.domain))
+    urls.extend(get_competitor_catalog_url_registry().urls_for_domain(site.domain))
+    if extra_urls:
+        urls.extend(extra_urls)
 
-    dedup_urls: list[str] = []
-    seen_urls: set[str] = set()
+    dedup: list[str] = []
+    seen: set[str] = set()
     for url in urls:
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            dedup_urls.append(url)
+        normalized = url.strip().split("#")[0]
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            dedup.append(normalized)
+    return dedup
+
+
+def fetch_catalog_page(
+    page_url: str,
+    *,
+    domain: str,
+    site_label: str,
+) -> list[CompetitorCatalogProduct]:
+    try:
+        with httpx.Client(
+            timeout=WEB_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            response = client.get(page_url)
+            response.raise_for_status()
+            return parse_catalog_html(
+                response.text[:700_000],
+                domain=domain,
+                site_label=site_label,
+                page_url=str(response.url),
+            )
+    except Exception:
+        logger.debug("Catalog page fetch failed %s", page_url, exc_info=True)
+        return []
+
+
+def fetch_catalog_products(
+    site: CompetitorSite,
+    *,
+    max_pages: int = 6,
+    extra_urls: list[str] | None = None,
+) -> list[CompetitorCatalogProduct]:
+    dedup_urls = resolve_catalog_urls(site, extra_urls=extra_urls)
 
     products: list[CompetitorCatalogProduct] = []
     seen_names: set[str] = set()
+    seen_urls: set[str] = set()
 
     try:
         with httpx.Client(
@@ -267,6 +313,9 @@ def fetch_catalog_products(site: CompetitorSite, *, max_pages: int = 4) -> list[
         ) as client:
             discovered: list[str] = []
             for page_url in list(dedup_urls[:max_pages]):
+                if page_url in seen_urls:
+                    continue
+                seen_urls.add(page_url)
                 try:
                     response = client.get(page_url)
                     response.raise_for_status()
@@ -274,19 +323,21 @@ def fetch_catalog_products(site: CompetitorSite, *, max_pages: int = 4) -> list[
                     logger.debug("Catalog fetch failed %s", page_url, exc_info=True)
                     continue
                 html = response.text[:700_000]
+                final_url = str(response.url)
                 discovered.extend(
                     _discover_folder_urls(
                         html,
                         domain=site.domain,
-                        page_url=str(response.url),
+                        page_url=final_url,
                     )
                 )
-                for item in parse_catalog_html(
+                page_products = parse_catalog_html(
                     html,
                     domain=site.domain,
                     site_label=site.label,
-                    page_url=str(response.url),
-                ):
+                    page_url=final_url,
+                )
+                for item in page_products:
                     key = normalize_name(item.name)
                     if key in seen_names:
                         continue
@@ -319,15 +370,22 @@ def fetch_catalog_products(site: CompetitorSite, *, max_pages: int = 4) -> list[
     return products
 
 
-def products_to_rag_text(products: list[CompetitorCatalogProduct], *, site: CompetitorSite) -> str:
+def products_to_rag_text(
+    products: list[CompetitorCatalogProduct],
+    *,
+    site: CompetitorSite | None = None,
+    title: str = "",
+) -> str:
+    header_label = site.label if site else title or "Все конкуренты"
+    header_domain = site.domain if site else "all"
     lines = [
-        f"Каталог конкурента: {site.label}",
-        f"Домен: {site.domain}",
-        f"Поиск: {site.search_url or '—'}",
+        f"Каталог конкурента: {header_label}",
+        f"Домен: {header_domain}",
+        f"Поиск: {site.search_url if site else '—'}",
         f"Позиций: {len(products)}",
         "",
     ]
-    for product in products[:500]:
+    for product in products:
         lines.append(
             "[product] "
             f"domain={product.domain} | site={product.site_label} | "
@@ -337,40 +395,207 @@ def products_to_rag_text(products: list[CompetitorCatalogProduct], *, site: Comp
     return "\n".join(lines)
 
 
+def index_competitor_page_url(
+    page_url: str,
+    *,
+    domain: str,
+    site_label: str,
+    doc_rag_index,
+) -> dict[str, int | bool | str]:
+    from src.services.competitor_catalog_urls import get_competitor_catalog_url_registry
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    products = fetch_catalog_page(page_url, domain=domain, site_label=site_label)
+    store = get_competitor_product_store()
+    added = store.merge_products(products, domain=domain, site_label=site_label)
+    store.record_indexed_page(
+        page_url,
+        domain=domain,
+        site_label=site_label,
+        products_count=len(products),
+    )
+    get_competitor_catalog_url_registry().add_page(
+        page_url,
+        domain=domain,
+        label=site_label,
+        source="page_index",
+    )
+
+    page_doc_id = f"competitor-page:{domain}:{abs(hash(page_url)) % 10_000_000}"
+    rag_result: dict[str, int | bool | str] = {"indexed": False, "chunks": 0}
+    if products:
+        rag_result = doc_rag_index.index_text(
+            doc_id=page_doc_id,
+            source_type="competitor",
+            source_name=f"{site_label} | {page_url}",
+            text=(
+                f"Страница каталога: {page_url}\n"
+                f"Домен: {domain}\n"
+                f"Позиций: {len(products)}\n\n"
+                + products_to_rag_text(products, title=site_label)
+            ),
+            filename=page_url,
+            force=True,
+        )
+
+    sync_unified_competitor_rag(doc_rag_index)
+    return {
+        "url": page_url,
+        "domain": domain,
+        "products_found": len(products),
+        "products_added": added,
+        "rag": rag_result,
+    }
+
+
+def sync_unified_competitor_rag(doc_rag_index) -> dict[str, int | bool]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    products = get_competitor_product_store().iter_products()
+    if not products:
+        return {"indexed": False, "chunks": 0, "products": 0}
+
+    text = products_to_rag_text(products, title="Каталог всех конкурентов")
+    result = doc_rag_index.index_text(
+        doc_id="competitor-catalog:all",
+        source_type="competitor",
+        source_name="Каталог конкурентов",
+        text=text,
+        filename="competitor-catalog-all",
+        force=True,
+    )
+    result["products"] = len(products)
+    return result
+
+
 def index_competitor_site_catalog(
     site: CompetitorSite,
     doc_rag_index,
     *,
     force: bool = False,
+    extra_urls: list[str] | None = None,
 ) -> dict[str, int | bool]:
+    from src.services.competitor_catalog_urls import get_competitor_catalog_url_registry
+    from src.services.competitor_product_store import get_competitor_product_store
+
     doc_id = f"competitor-catalog:{site.domain}"
     doc_rag_index.ensure_loaded()
-    if not force and doc_id in doc_rag_index._entries:
+    store = get_competitor_product_store()
+    if not force and store.has_site(site.domain) and doc_id in doc_rag_index._entries:
         entry = doc_rag_index._entries[doc_id]
         return {
             "indexed": True,
-            "products": 0,
+            "products": len(store.products_for_domain(site.domain)),
             "chunks": len(entry.chunks),
             "skipped": True,
         }
 
-    products = fetch_catalog_products(site)
+    for page_url in extra_urls or []:
+        get_competitor_catalog_url_registry().add_page(
+            page_url,
+            domain=site.domain,
+            label=site.label,
+            source="site_index",
+        )
+
+    products = fetch_catalog_products(site, extra_urls=extra_urls)
+    store_count = store.replace_site_products(
+        site.domain,
+        products,
+        site_label=site.label,
+    )
+    for page_url in resolve_catalog_urls(site, extra_urls=extra_urls)[:12]:
+        store.record_indexed_page(
+            page_url,
+            domain=site.domain,
+            site_label=site.label,
+            products_count=len(
+                [p for p in products if p.url and page_url.split("#")[0] in (p.url or "")]
+            )
+            or len(products),
+        )
+    store.save()
+    products = store.products_for_domain(site.domain)
+
+    if not products:
+        return {"indexed": False, "products": 0, "chunks": 0, "store_products": store_count}
+
     text = products_to_rag_text(products, site=site)
-    if not text.strip():
-        return {"indexed": False, "products": 0, "chunks": 0}
     result = doc_rag_index.index_text(
         doc_id=doc_id,
         source_type="competitor",
         source_name=site.label,
         text=text,
         filename=f"{site.domain}-catalog",
-        force=force,
+        force=True,
     )
     result["products"] = len(products)
+    result["store_products"] = store_count
+    sync_unified_competitor_rag(doc_rag_index)
     return result
 
 
+def reindex_all_competitor_sites(
+    doc_rag_index,
+    *,
+    force: bool = True,
+) -> dict[str, object]:
+    from src.services.competitor_site_manager import get_competitor_site_manager
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    results: list[dict[str, object]] = []
+    manager = get_competitor_site_manager()
+
+    for site in competitor_sites_with_search():
+        try:
+            result = index_competitor_site_catalog(site, doc_rag_index, force=force)
+            results.append({"domain": site.domain, "label": site.label, **result})
+        except Exception:
+            logger.exception("Failed to reindex competitor site %s", site.domain)
+            results.append({"domain": site.domain, "label": site.label, "indexed": False, "error": True})
+
+    for entry in manager.list_custom():
+        site = CompetitorSite(
+            domain=entry.domain,
+            label=entry.label or entry.domain,
+            search_url=entry.search_url,
+        )
+        try:
+            result = index_competitor_site_catalog(
+                site,
+                doc_rag_index,
+                force=force,
+                extra_urls=entry.catalog_urls,
+            )
+            for page_url in entry.catalog_urls:
+                index_competitor_page_url(
+                    page_url,
+                    domain=entry.domain,
+                    site_label=entry.label,
+                    doc_rag_index=doc_rag_index,
+                )
+            results.append({"domain": entry.domain, "label": entry.label, "custom": True, **result})
+        except Exception:
+            logger.exception("Failed to reindex custom competitor site %s", entry.domain)
+            results.append(
+                {"domain": entry.domain, "label": entry.label, "custom": True, "indexed": False, "error": True}
+            )
+
+    unified = sync_unified_competitor_rag(doc_rag_index)
+    store_stats = get_competitor_product_store().stats()
+    rag_stats = doc_rag_index.stats()
+    return {
+        "sites": results,
+        "unified_rag": unified,
+        "catalog_products": store_stats,
+        "rag_docs": rag_stats,
+    }
+
+
 def bootstrap_competitor_catalogs(doc_rag_index, *, max_new_sites: int | None = None) -> None:
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    store = get_competitor_product_store()
     sites = sorted(
         competitor_sites_with_search(),
         key=lambda site: 0 if site.domain in _CATALOG_SEED_URLS else 1,
@@ -379,7 +604,7 @@ def bootstrap_competitor_catalogs(doc_rag_index, *, max_new_sites: int | None = 
     for site in sites:
         doc_id = f"competitor-catalog:{site.domain}"
         doc_rag_index.ensure_loaded()
-        if doc_id in doc_rag_index._entries:
+        if store.has_site(site.domain) and doc_id in doc_rag_index._entries:
             continue
         if max_new_sites is not None and indexed_new >= max_new_sites:
             break
@@ -388,6 +613,24 @@ def bootstrap_competitor_catalogs(doc_rag_index, *, max_new_sites: int | None = 
             indexed_new += 1
         except Exception:
             logger.exception("Failed to index competitor catalog for %s", site.domain)
+
+
+def bootstrap_competitor_catalogs_priority(
+    doc_rag_index,
+    *,
+    domains: list[str] | None = None,
+) -> None:
+    if not domains:
+        bootstrap_competitor_catalogs(doc_rag_index, max_new_sites=1)
+        return
+    domain_set = {domain.lower() for domain in domains}
+    for site in competitor_sites_with_search():
+        if site.domain.lower() not in domain_set:
+            continue
+        try:
+            index_competitor_site_catalog(site, doc_rag_index, force=False)
+        except Exception:
+            logger.exception("Failed to index priority competitor catalog for %s", site.domain)
 
 
 def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
@@ -436,44 +679,41 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
 
 
 def _iter_catalog_products(doc_rag_index) -> list[CompetitorCatalogProduct]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    store_products = get_competitor_product_store().iter_products()
+    if store_products:
+        return store_products
+
     doc_rag_index.ensure_loaded()
     products: list[CompetitorCatalogProduct] = []
     seen: set[str] = set()
+    product_line_re = re.compile(r"\[product\][^\n]+", re.I)
     for entry in doc_rag_index._entries.values():
         if not str(entry.doc_id).startswith("competitor-catalog:"):
             continue
-        for chunk in entry.chunks:
-            for line in str(chunk.get("text", "")).splitlines():
-                if "[product]" not in line:
-                    continue
-                product = parse_product_from_chunk(line)
-                if not product:
-                    continue
-                key = normalize_name(product.name)
-                if key in seen:
-                    continue
-                seen.add(key)
-                products.append(product)
+        full_text = "\n".join(str(chunk.get("text", "")) for chunk in entry.chunks)
+        for line in product_line_re.findall(full_text):
+            product = parse_product_from_chunk(line)
+            if not product:
+                continue
+            key = normalize_name(product.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            products.append(product)
     return products
 
 
-def search_competitor_catalog_rag(
+def _score_catalog_products(
     query: str,
-    doc_rag_index,
+    products: list[CompetitorCatalogProduct],
     *,
-    limit: int = 10,
+    limit: int,
 ) -> list[PriceQuote]:
     normalized_query = normalize_name(query)
     if not normalized_query:
         return []
-
-    products = _iter_catalog_products(doc_rag_index)
-    if not products:
-        rows = doc_rag_index.query(query, source_type="competitor", top_k=max(limit * 4, 12))
-        for row in rows:
-            product = parse_product_from_chunk(str(row.get("text", "")))
-            if product:
-                products.append(product)
 
     scored: list[tuple[float, CompetitorCatalogProduct]] = []
     seen: set[str] = set()
@@ -513,3 +753,23 @@ def search_competitor_catalog_rag(
             )
         )
     return quotes
+
+
+def search_competitor_catalog_rag(
+    query: str,
+    doc_rag_index,
+    *,
+    limit: int = 10,
+) -> list[PriceQuote]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    products = get_competitor_product_store().iter_products()
+    if not products:
+        products = _iter_catalog_products(doc_rag_index)
+    if not products and doc_rag_index is not None:
+        rows = doc_rag_index.query(query, source_type="competitor", top_k=max(limit * 4, 12))
+        for row in rows:
+            product = parse_product_from_chunk(str(row.get("text", "")))
+            if product:
+                products.append(product)
+    return _score_catalog_products(query, products, limit=limit)
