@@ -46,6 +46,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
         "https://labkabinet.ru/catalog/",
         "https://labkabinet.ru/sitemap.xml",
     ],
+    "vrtorg.ru": [
+        "https://vrtorg.ru/catalog/",
+        "https://vrtorg.ru/sitemap.xml",
+    ],
 }
 
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
@@ -491,6 +495,221 @@ def fetch_labkabinet_catalog(
     return products
 
 
+_VRTORG_PRODUCT_PATH_RE = re.compile(r"^/catalog/.+/\d+/?$", re.I)
+_VRTORG_SITEMAP_PRODUCT_RE = re.compile(
+    r"<loc>(https://vrtorg\.ru/catalog/[^<]+/\d+/)</loc>",
+    re.I,
+)
+_VRTORG_SITEMAP_INDEX_RE = re.compile(
+    r"<loc>(https://vrtorg\.ru/sitemap[^<]*\.xml)</loc>",
+    re.I,
+)
+
+
+def _is_vrtorg_product_path(path: str) -> bool:
+    return bool(_VRTORG_PRODUCT_PATH_RE.match(path.rstrip("/")))
+
+
+def _vrtorg_product_html_slice(html: str) -> str:
+    marker_positions: list[int] = []
+    for marker in (
+        "product-buy__price-current",
+        'class="product__title"',
+        'class="product__code"',
+        "<h1",
+    ):
+        idx = html.find(marker)
+        if idx >= 0:
+            marker_positions.append(idx)
+    if marker_positions:
+        start = max(0, min(marker_positions) - 4_000)
+        end = max(marker_positions) + 12_000
+        return html[start:end]
+    if len(html) > 120_000:
+        return html[:120_000]
+    return html
+
+
+def _parse_vrtorg_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    path = urlparse(page_url.split("#")[0]).path
+    if not _is_vrtorg_product_path(path):
+        return None
+
+    title_match = re.search(
+        r'<h1[^>]*class="product__title"[^>]*>\s*(?P<name>[^<]+?)\s*</h1>',
+        html,
+        re.I | re.S,
+    )
+    if not title_match:
+        title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not title_match:
+        return None
+
+    name = unescape(re.sub(r"\s+", " ", title_match.group("name")).strip())
+    if len(name) < 4:
+        return None
+
+    focused = _vrtorg_product_html_slice(html)
+    price = None
+    price_match = re.search(
+        r'class="product-buy__price-current"[^>]*>(?P<price>[^<]+)',
+        focused,
+        re.I,
+    )
+    if price_match:
+        price = _parse_price(unescape(price_match.group("price")))
+    if price is None:
+        price = _extract_primary_product_price(focused)
+
+    articul = None
+    articul_match = re.search(
+        r'class="product__code"[^>]*>\s*Артикул:\s*(?P<articul>[^<]+)',
+        html,
+        re.I,
+    )
+    if not articul_match:
+        articul_match = _ARTICUL_RE.search(html)
+
+    price_label = price_on_request_label(focused) if price is None else None
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=page_url.split("#")[0],
+        articul=articul_match.group("articul").strip() if articul_match else None,
+        price_label=price_label,
+    )
+
+
+def _parse_vrtorg_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if domain.lower().removeprefix("www.") != "vrtorg.ru":
+        return []
+
+    product = _parse_vrtorg_product_html(
+        _vrtorg_product_html_slice(html),
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    return [product] if product else []
+
+
+def _discover_vrtorg_product_urls() -> list[str]:
+    index_url = "https://vrtorg.ru/sitemap.xml"
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    try:
+        with httpx.Client(
+            timeout=WEB_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            index_response = client.get(index_url)
+            index_response.raise_for_status()
+            sitemap_urls = _VRTORG_SITEMAP_INDEX_RE.findall(index_response.text)
+            if not sitemap_urls:
+                sitemap_urls = ["https://vrtorg.ru/sitemap-iblock-9.xml"]
+
+            for sitemap_url in sitemap_urls:
+                if "iblock-9" not in sitemap_url.lower():
+                    continue
+                try:
+                    response = client.get(sitemap_url)
+                    response.raise_for_status()
+                except Exception:
+                    continue
+                for url in _VRTORG_SITEMAP_PRODUCT_RE.findall(response.text):
+                    clean = url.split("#")[0].split("?")[0]
+                    if clean in seen:
+                        continue
+                    seen.add(clean)
+                    urls.append(clean)
+    except Exception:
+        logger.exception("Failed to fetch vrtorg sitemap")
+
+    return urls
+
+
+def fetch_vrtorg_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    product_urls = _discover_vrtorg_product_urls()
+    if not product_urls:
+        logger.warning("Vrtorg sitemap empty")
+        return []
+
+    products: list[CompetitorCatalogProduct] = []
+    seen_names: set[str] = set()
+    total = len(product_urls)
+    store = get_competitor_product_store() if checkpoint_every > 0 else None
+    logger.info("Vrtorg: indexing %s products from sitemap", total)
+
+    with httpx.Client(
+        timeout=WEB_SEARCH_TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+    ) as client:
+        for index, product_url in enumerate(product_urls, start=1):
+            try:
+                response = client.get(product_url)
+                response.raise_for_status()
+            except Exception:
+                logger.debug("Vrtorg product fetch failed %s", product_url, exc_info=True)
+                continue
+
+            product = _parse_vrtorg_product_html(
+                _vrtorg_product_html_slice(response.text),
+                domain=site.domain,
+                site_label=site.label,
+                page_url=str(response.url),
+            )
+            if not product:
+                continue
+            key = normalize_name(product.name)
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            products.append(product)
+
+            if store and checkpoint_every > 0 and (
+                index % checkpoint_every == 0 or index == total
+            ):
+                saved = store.replace_site_products(
+                    site.domain,
+                    products,
+                    site_label=site.label,
+                )
+                logger.info(
+                    "Vrtorg checkpoint %s/%s urls, %s products saved",
+                    index,
+                    total,
+                    saved,
+                )
+            elif index % 500 == 0 or index == total:
+                logger.info("Vrtorg indexed %s/%s products", index, total)
+
+    logger.info("Vrtorg catalog complete: %s products", len(products))
+    return products
+
+
 def _parse_stronikum_page(
     html: str,
     *,
@@ -705,6 +924,7 @@ def _focus_product_price_html(html: str) -> str:
         "js_price_wrapper",
         "offers_price",
         "price_value_block",
+        "product-buy__price-current",
         'itemprop="price"',
         "<h1",
     ):
@@ -772,6 +992,8 @@ def _is_product_detail_path(path: str) -> bool:
     if "/catalog/product/" in lower:
         return True
     if re.match(r"^/product/[^/]+$", lower):
+        return True
+    if _is_vrtorg_product_path(lower):
         return True
     return "/products/" in lower and lower.count("/") >= 3
 
@@ -928,6 +1150,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     )
     if labkabinet_products:
         return labkabinet_products
+
+    vrtorg_products = _parse_vrtorg_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if vrtorg_products:
+        return vrtorg_products
 
     shop2_products = _parse_shop2_products(
         html,
@@ -1149,6 +1380,8 @@ def fetch_catalog_products(
         return fetch_stronikum_catalog(site)
     if normalized_domain == "labkabinet.ru":
         return fetch_labkabinet_catalog(site)
+    if normalized_domain == "vrtorg.ru":
+        return fetch_vrtorg_catalog(site)
 
     dedup_urls = resolve_catalog_urls(site, extra_urls=extra_urls)
 
