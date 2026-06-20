@@ -223,7 +223,7 @@ function renderHeaderStats(status) {
   $("#headerStats").innerHTML = `
     <span class="stat-pill">Каталог: <strong>${fmtCount(status.catalog_count)}</strong></span>
     <span class="stat-pill">Прайсы: <strong>${fmtCount(status.price_items_count)}</strong></span>
-    <span class="stat-pill stat-pill--count" title="${escapeHtml(competitorStatsTitle(status))}">На сайтах: <strong class="stat-pill__value">${competitorLabel}</strong></span>
+    <span class="stat-pill stat-pill--count" title="${escapeHtml(competitorStatsTitle(status))}"><span class="stat-pill__text">На сайтах: <strong class="stat-pill__value">${competitorLabel}</strong></span></span>
     <span class="stat-pill">AI: <strong>${aiStatusText(aiOn)}</strong></span>
   `;
 }

@@ -72,6 +72,10 @@ body {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 280px;
+  min-width: 0;
 }
 
 .stat-pill {
@@ -82,12 +86,34 @@ body {
   font-size: 0.82rem;
   color: var(--muted);
   white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.stat-pill--count {
+  flex: 1 0 auto;
+  min-width: max-content;
+  max-width: 100%;
+  padding-inline: 16px;
+}
+
+.stat-pill--count .stat-pill__text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+  white-space: nowrap;
 }
 
 .stat-pill strong,
 .stat-pill__value {
   color: var(--text);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.stat-pill__value {
+  display: inline-block;
+  min-width: 9ch;
+  text-align: right;
 }
 
 .tabs {
@@ -1287,6 +1313,7 @@ code {
 
   .header__stats {
     width: 100%;
+    justify-content: flex-start;
   }
 
   .stat-pill {
@@ -1295,6 +1322,22 @@ code {
     text-align: center;
     padding: 8px 10px;
     font-size: 0.78rem;
+  }
+
+  .stat-pill--count {
+    flex: 1 1 100%;
+    min-width: max-content;
+    max-width: 100%;
+    text-align: center;
+    justify-content: center;
+  }
+
+  .stat-pill--count .stat-pill__text {
+    justify-content: center;
+  }
+
+  .stat-pill--count .stat-pill__value {
+    min-width: 9ch;
   }
 
   .tabs {
