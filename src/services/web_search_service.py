@@ -323,6 +323,21 @@ def _parse_price_value(raw: str) -> float | None:
     return None
 
 
+PRICE_ON_REQUEST_LABEL = "По запросу"
+_PRICE_ON_REQUEST_RE = re.compile(
+    r"цена\s+по\s+запросу|class=\"price\"[^>]{0,80}>[^<]{0,160}по\s+запросу",
+    re.I | re.S,
+)
+
+
+def price_on_request_label(text: str) -> str | None:
+    if not text:
+        return None
+    if _PRICE_ON_REQUEST_RE.search(text):
+        return PRICE_ON_REQUEST_LABEL
+    return None
+
+
 def extract_prices_from_text(text: str) -> list[float]:
     prices: list[float] = []
     for pattern in _PRICE_PATTERNS:
@@ -404,7 +419,7 @@ class WebSearchService:
 
         def _extend(new_quotes: list[PriceQuote]) -> None:
             for quote in new_quotes:
-                if quote.url and quote.url in seen_urls:
+                if quote.url and any(existing.url == quote.url for existing in quotes):
                     continue
                 if quote.url:
                     seen_urls.add(quote.url)
@@ -778,10 +793,15 @@ class WebSearchService:
             title=hit.name or query,
             page_text="",
             prefetched_price=hit.price,
+            prefetched_price_label=hit.price_label,
             notes=(
                 "Конкурент | цена в выдаче поиска"
                 if hit.price is not None
-                else "Конкурент | совпадение в выдаче поиска, цена не указана"
+                else (
+                    f"Конкурент | {hit.price_label}"
+                    if hit.price_label
+                    else "Конкурент | совпадение в выдаче поиска, цена не указана"
+                )
             ),
         )
 
@@ -795,6 +815,7 @@ class WebSearchService:
         title: str,
         page_text: str,
         prefetched_price: float | None,
+        prefetched_price_label: str | None = None,
         notes: str | None = None,
     ) -> PriceQuote | None:
         if _is_blocked_url(url) or _is_search_listing_url(url):
@@ -816,14 +837,20 @@ class WebSearchService:
             return None
 
         price = prefetched_price
+        price_label = prefetched_price_label
         note = notes or "Поиск на сайте конкурента"
         if price is None and page_text:
             page_prices = extract_prices_from_text(page_text[:120_000])
             price = _pick_best_price(page_prices)
             if price is not None:
                 note = "Конкурент | цена со страницы товара"
+        if price is None and price_label is None and page_text:
+            price_label = price_on_request_label(page_text[:120_000])
         if price is None:
-            note = notes or "Конкурент | совпадение названия, цена не указана"
+            if price_label:
+                note = notes or f"Конкурент | {price_label}"
+            else:
+                note = notes or "Конкурент | совпадение названия, цена не указана"
 
         competitor_label = site.label or competitor_label_for_url(url) or site.domain
         return PriceQuote(
@@ -832,6 +859,7 @@ class WebSearchService:
             matched_name=_strip_html(title) or query,
             price=price,
             cost=price,
+            price_label=price_label,
             match_score=match_score,
             url=url,
             notes=note,
@@ -861,7 +889,7 @@ class WebSearchService:
 
         def _extend(new_quotes: list[PriceQuote]) -> None:
             for quote in new_quotes:
-                if quote.url and quote.url in seen_urls:
+                if quote.url and any(existing.url == quote.url for existing in quotes):
                     continue
                 if quote.url:
                     seen_urls.add(quote.url)
@@ -924,7 +952,7 @@ class WebSearchService:
 
         def _extend(new_quotes: list[PriceQuote]) -> None:
             for quote in new_quotes:
-                if quote.url and quote.url in seen_urls:
+                if quote.url and any(existing.url == quote.url for existing in quotes):
                     continue
                 if quote.url:
                     seen_urls.add(quote.url)

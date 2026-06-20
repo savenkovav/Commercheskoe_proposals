@@ -52,6 +52,7 @@ class PriceQuote:
     matched_name: str = ""
     price: Optional[float] = None
     cost: Optional[float] = None
+    price_label: Optional[str] = None
     supplier: Optional[str] = None
     purchase_date: Optional[str] = None
     match_score: float = 0.0

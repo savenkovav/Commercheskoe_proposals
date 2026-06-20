@@ -16,7 +16,11 @@ from src.services.competitor_sites import (
 from src.services.data_loader import normalize_name
 from src.services.fuzzy_scoring import name_match_score
 from src.services.models import PriceQuote
-from src.services.web_search_service import extract_prices_from_text
+from src.services.web_search_service import (
+    PRICE_ON_REQUEST_LABEL,
+    extract_prices_from_text,
+    price_on_request_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +30,9 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
         "https://skale.ru/magazin/folder/uchebnoe-oborudovanie-po-astronomii-i-astrofizike",
         "https://skale.ru/prays-list",
     ],
+    "xn----7sbbumkojddmeoc1a7r.xn--p1acf": [
+        "https://xn----7sbbumkojddmeoc1a7r.xn--p1acf/products/",
+    ],
 }
 
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
@@ -34,7 +41,7 @@ _ARTICUL_RE = re.compile(r"Артикул:\s*(?:<span>)?([A-Za-z0-9\-_.]+)", re.
 _PRODUCT_LINE_RE = re.compile(
     r"^\[product\]\s*domain=(?P<domain>[^|]+)\s*\|\s*site=(?P<site>[^|]+)\s*\|"
     r"\s*name=(?P<name>[^|]+)\s*\|\s*price=(?P<price>[^|]*)\s*\|"
-    r"\s*url=(?P<url>[^|]*)\s*\|\s*articul=(?P<articul>[^|]*)",
+    r"\s*url=(?P<url>[^|]*)\s*\|\s*articul=(?P<articul>[^|]*)(?:\s*\|\s*price_label=(?P<price_label>[^|]*))?",
     re.I,
 )
 
@@ -47,6 +54,7 @@ class CompetitorCatalogProduct:
     price: float | None
     url: str | None
     articul: str | None = None
+    price_label: str | None = None
 
 
 def _site_root(domain: str) -> str:
@@ -93,6 +101,92 @@ def _extract_title_near(href_index: int, html: str) -> str:
     plain = re.sub(r"Артикул:\s*[A-Za-z0-9\-_.]+", "", plain, flags=re.I)
     plain = re.sub(r"Добавить к сравнению|Купить", "", plain, flags=re.I)
     return plain.strip(" |-")
+
+
+_PREVIEW_PRODUCT_NAME_RE = re.compile(
+    r'itemprop="name"\s+href="(?P<url>[^"]+)"[^>]*>\s*(?P<name>[^<]+?)\s*</a>',
+    re.I | re.S,
+)
+
+
+def _parse_preview_product_blocks(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if "preview_product" not in html.lower() and 'itemprop="name"' not in html.lower():
+        return []
+
+    products: list[CompetitorCatalogProduct] = []
+    seen: set[str] = set()
+    for match in _PREVIEW_PRODUCT_NAME_RE.finditer(html):
+        name = re.sub(r"\s+", " ", match.group("name")).strip()
+        if len(name) < 4:
+            continue
+        key = normalize_name(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        url = _absolute_url(domain, match.group("url"), page_url)
+        chunk = html[match.start() : match.start() + 2500]
+        articul_match = _ARTICUL_RE.search(chunk)
+        prices = extract_prices_from_text(chunk)
+        label = price_on_request_label(chunk) if not prices else None
+        products.append(
+            CompetitorCatalogProduct(
+                domain=domain,
+                site_label=site_label,
+                name=name[:300],
+                price=prices[0] if prices else None,
+                url=url or None,
+                articul=articul_match.group(1) if articul_match else None,
+                price_label=label,
+            )
+        )
+    return products
+
+
+def _parse_product_detail_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    path = urlparse(page_url).path.lower()
+    if "/products/" not in path or path.rstrip("/").count("/") < 3:
+        return []
+
+    title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not title_match:
+        title_match = re.search(
+            r'itemprop="name"[^>]*>\s*(?P<name>[^<]+?)\s*</',
+            html,
+            re.I | re.S,
+        )
+    if not title_match:
+        return []
+
+    name = re.sub(r"\s+", " ", title_match.group("name")).strip()
+    if len(name) < 4:
+        return []
+
+    articul_match = _ARTICUL_RE.search(html[:120_000])
+    prices = extract_prices_from_text(html[:120_000])
+    price_label = price_on_request_label(html[:120_000]) if not prices else None
+    return [
+        CompetitorCatalogProduct(
+            domain=domain,
+            site_label=site_label,
+            name=name[:300],
+            price=prices[0] if prices else None,
+            url=page_url.split("#")[0],
+            articul=articul_match.group(1) if articul_match else None,
+            price_label=price_label,
+        )
+    ]
 
 
 def _parse_shop2_products(
@@ -152,13 +246,46 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if shop2_products:
         return shop2_products
 
+    preview_products = _parse_preview_product_blocks(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if preview_products and "/products/" in urlparse(page_url).path.lower():
+        path_parts = [part for part in urlparse(page_url).path.split("/") if part]
+        if len(path_parts) >= 3:
+            detail_products = _parse_product_detail_page(
+                html,
+                domain=domain,
+                site_label=site_label,
+                page_url=page_url,
+            )
+            if detail_products:
+                return detail_products
+
+    if preview_products:
+        return preview_products
+
+    detail_products = _parse_product_detail_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if detail_products:
+        return detail_products
+
     products: list[CompetitorCatalogProduct] = []
     seen: set[str] = set()
 
     for match in _HREF_RE.finditer(html):
         href = match.group(1)
         lower = href.lower()
-        if not any(token in lower for token in ("/product/", "/tovar/", "/goods/", "/item/", "/magazin/")):
+        if not any(
+            token in lower
+            for token in ("/products/", "/product/", "/tovar/", "/goods/", "/item/", "/magazin/")
+        ):
             continue
         if "/folder/" in lower or "/search" in lower or "/cart" in lower:
             continue
@@ -390,7 +517,8 @@ def products_to_rag_text(
             "[product] "
             f"domain={product.domain} | site={product.site_label} | "
             f"name={product.name} | price={product.price or ''} | "
-            f"url={product.url or ''} | articul={product.articul or ''}"
+            f"url={product.url or ''} | articul={product.articul or ''} | "
+            f"price_label={product.price_label or ''}"
         )
     return "\n".join(lines)
 
@@ -643,6 +771,7 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
             price=_parse_price(match.group("price")),
             url=(match.group("url").strip() or None),
             articul=(match.group("articul").strip() or None),
+            price_label=(match.group("price_label") or "").strip() or None,
         )
 
     domain = ""
@@ -668,6 +797,10 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
     if "articul=" in text:
         articul_raw = text.split("articul=", 1)[1].split("|", 1)[0].strip()
         articul = articul_raw or None
+    price_label = None
+    if "price_label=" in text:
+        price_label_raw = text.split("price_label=", 1)[1].split("|", 1)[0].strip()
+        price_label = price_label_raw or None
     return CompetitorCatalogProduct(
         domain=domain or "unknown",
         site_label=competitor_label_for_url(url) or domain or "Конкурент",
@@ -675,6 +808,7 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
         price=price,
         url=url,
         articul=articul,
+        price_label=price_label,
     )
 
 
@@ -743,6 +877,7 @@ def _score_catalog_products(
                 matched_name=product.name,
                 price=product.price,
                 cost=product.price,
+                price_label=product.price_label,
                 match_score=round(score, 1),
                 url=product.url,
                 notes=(

@@ -40,6 +40,7 @@ class CompetitorProductStore:
                     price=row.get("price"),
                     url=row.get("url") or None,
                     articul=row.get("articul") or None,
+                    price_label=row.get("price_label") or None,
                 )
                 if product.name.strip():
                     self._products.append(product)
@@ -131,6 +132,7 @@ class CompetitorProductStore:
                     price=product.price,
                     url=product.url,
                     articul=product.articul,
+                    price_label=product.price_label,
                 )
             )
             added += 1

@@ -21,6 +21,7 @@ class CompetitorSearchHit:
     url: str
     name: str
     price: float | None = None
+    price_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,7 +120,6 @@ _COMPETITOR_SEARCH_PROFILES: dict[str, CompetitorSearchProfile] = {
         ),
         result_item_pattern=(
             r'itemprop="name"\s+href="(?P<url>[^"]+)"[^>]*>\s*(?P<name>[^<]+?)\s*</a>'
-            r'.*?itemprop="lowPrice"\s+content="(?P<price>\d+)"'
         ),
         result_section_markers=("preview_product", "найдено товаров", "itemListElement"),
     ),
@@ -258,7 +258,9 @@ def parse_competitor_search_results(
     *,
     limit: int = 5,
 ) -> list[CompetitorSearchHit]:
-    if page_text and 'class="product-top"' in page_text:
+    if page_text and (
+        'class="product-top"' in page_text or "preview_product" in page_text.lower()
+    ):
         from src.services.competitor_catalog_service import parse_catalog_html
 
         products = parse_catalog_html(
@@ -280,6 +282,7 @@ def parse_competitor_search_results(
                     url=product.url,
                     name=product.name,
                     price=product.price,
+                    price_label=product.price_label,
                 )
             )
             if len(hits) >= limit:
@@ -315,7 +318,13 @@ def parse_competitor_search_results(
 
             prices = extract_prices_from_text(str(price_raw))
             price = prices[0] if prices else None
-        hits.append(CompetitorSearchHit(url=absolute, name=name, price=price))
+        chunk = focused[match.start() : match.start() + 2500]
+        from src.services.web_search_service import price_on_request_label
+
+        label = price_on_request_label(chunk) if price is None else None
+        hits.append(
+            CompetitorSearchHit(url=absolute, name=name, price=price, price_label=label)
+        )
         if len(hits) >= limit:
             break
 

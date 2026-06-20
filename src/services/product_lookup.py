@@ -401,13 +401,15 @@ class ProductLookupService:
                 if base_price is not None
                 else None
             )
+            price_display = quote.price_label or self._format_money(base_price)
             items.append(
                 {
                     "label": quote.label or "Конкурент",
                     "name": quote.matched_name or query,
                     "match_score": round(float(quote.match_score or 0), 1),
-                    "price": self._format_money(base_price),
-                    "price_kp": self._format_money(price_kp),
+                    "price": price_display,
+                    "price_kp": self._format_money(price_kp) if price_kp is not None else None,
+                    "price_label": quote.price_label,
                     "url": quote.url,
                     "notes": quote.notes or "",
                     "has_price": base_price is not None,
@@ -1400,6 +1402,8 @@ def _format_competitors_source_lines(competitors: dict[str, object]) -> list[str
         )
         if item.get("price"):
             lines.append(f"    — цена: {item['price']}")
+        elif item.get("price_label"):
+            lines.append(f"    — цена: {item['price_label']}")
         elif item.get("has_price") is False:
             lines.append("    — цена не указана")
         if item.get("price_kp"):

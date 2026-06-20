@@ -10,6 +10,15 @@ function isAllowedTzFile(name) {
 const fmtMoney = (v) =>
   v == null ? "—" : `${Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2 })} ₽`;
 
+const fmtCompetitorPrice = (item) => {
+  if (item?.price_label) return item.price_label;
+  if (typeof item?.price === "string" && item.price && Number.isNaN(Number(item.price))) {
+    return item.price;
+  }
+  const value = item?.price ?? item?.cost;
+  return value == null ? "—" : fmtMoney(value);
+};
+
 const fmtQty = (value, unit = "шт.") => {
   if (value == null) return "—";
   const qty = Number(value);
@@ -1443,8 +1452,8 @@ function renderCompetitorsBlock(competitors) {
     competitors || {},
     (item) => [
       item.label ? `Источник: ${escapeHtml(item.label)}` : null,
-      item.price
-        ? `Цена: ${item.price}`
+      item.price || item.price_label
+        ? `Цена: ${escapeHtml(item.price || item.price_label)}`
         : item.has_price === false
           ? "Цена не указана на сайте"
           : null,
@@ -1972,12 +1981,11 @@ function renderCompetitorSearchResults(data) {
 
   const rows = data.items
     .map((item) => {
-      const price = item.price ?? item.cost;
       return `
         <div class="competitor-result-item">
           <div class="competitor-result-item__head">
             <strong>${escapeHtml(formatCompetitorSiteLabel(item.label))}</strong>
-            <span class="competitor-result-item__price">${fmtMoney(price)}</span>
+            <span class="competitor-result-item__price">${escapeHtml(fmtCompetitorPrice(item))}</span>
           </div>
           <div>${escapeHtml(item.matched_name || "—")}</div>
           <div class="muted">${item.match_score ? `${Math.round(item.match_score)}% совпадение` : ""}</div>

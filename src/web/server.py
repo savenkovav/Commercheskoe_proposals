@@ -193,6 +193,7 @@ def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
         "matched_name": quote.matched_name,
         "price": quote.price,
         "cost": quote.cost,
+        "price_label": quote.price_label,
         "supplier": quote.supplier,
         "purchase_date": quote.purchase_date,
         "match_score": round(quote.match_score, 1),
