@@ -664,13 +664,18 @@ def _kp_chat_response(chat_result: dict[str, Any], session_id: str) -> dict[str,
 
 @app.get("/api/status")
 def api_status() -> dict[str, Any]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
     processor = get_processor()
     price_entries = processor.price_manager.list_entries()
     rag_docs_stats = _doc_rag_index_service().stats()
+    competitor_catalog = get_competitor_product_store().stats()
     return {
         "catalog_count": len(processor.catalog),
         "registry_count": len(processor.registry),
         "price_items_count": len(processor.price_lists),
+        "competitor_products_count": competitor_catalog["products"],
+        "competitor_sites_count": competitor_catalog["sites"],
         "price_files_count": len(price_entries),
         "price_files": [
             {
@@ -1001,6 +1006,8 @@ def api_competitors_add(body: CompetitorSiteAddRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     rag = _index_competitor_rag(entry, analysis)
+    from src.services.competitor_product_store import get_competitor_product_store
+
     return {
         "entry": _competitor_site_to_dict(
             site_id=entry.id,
@@ -1016,6 +1023,7 @@ def api_competitors_add(body: CompetitorSiteAddRequest) -> dict[str, Any]:
         ),
         "analysis": analysis,
         "rag": rag,
+        "catalog_products": get_competitor_product_store().stats(),
     }
 
 
@@ -1040,6 +1048,7 @@ def api_competitors_remove(site_id: str) -> dict[str, Any]:
     return {
         "removed_id": entry.id,
         "removed_domain": entry.domain,
+        "catalog_products": get_competitor_product_store().stats(),
     }
 
 

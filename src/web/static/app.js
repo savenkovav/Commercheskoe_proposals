@@ -187,11 +187,24 @@ function refreshAiStatusUi() {
   }
 }
 
+function fmtCount(v) {
+  if (v == null || Number.isNaN(Number(v))) return "0";
+  return Number(v).toLocaleString("ru-RU");
+}
+
+function applyCompetitorCatalogStats(stats) {
+  if (!stats || cachedStatus == null) return;
+  cachedStatus.competitor_products_count = stats.products ?? 0;
+  cachedStatus.competitor_sites_count = stats.sites ?? 0;
+  renderHeaderStats(cachedStatus);
+}
+
 function renderHeaderStats(status) {
   const aiOn = getEffectiveAiEnabled(status);
   $("#headerStats").innerHTML = `
-    <span class="stat-pill">Каталог: <strong>${status.catalog_count}</strong></span>
-    <span class="stat-pill">Прайсы: <strong>${status.price_items_count}</strong></span>
+    <span class="stat-pill">Каталог: <strong>${fmtCount(status.catalog_count)}</strong></span>
+    <span class="stat-pill">Прайсы: <strong>${fmtCount(status.price_items_count)}</strong></span>
+    <span class="stat-pill" title="Проиндексированные товары на сайтах конкурентов">Товаров на сайтах: <strong>${fmtCount(status.competitor_products_count)}</strong></span>
     <span class="stat-pill">AI: <strong>${aiStatusText(aiOn)}</strong></span>
   `;
 }
@@ -1905,6 +1918,9 @@ function renderCompetitorSection(title, rows) {
 async function loadCompetitors() {
   try {
     const data = await api("/api/competitors");
+    if (data.catalog_products) {
+      applyCompetitorCatalogStats(data.catalog_products);
+    }
     const container = $("#competitorsList");
     container.innerHTML = [
       renderCompetitorSection("Добавленные сайты", data.custom || []),
@@ -1963,6 +1979,9 @@ async function addCompetitorSite() {
     });
     renderCompetitorAnalysis(data.analysis);
     showToast(`Сайт добавлен${ragUploadMessage(data.rag)}`);
+    if (data.catalog_products) {
+      applyCompetitorCatalogStats(data.catalog_products);
+    }
     $("#competitorUrl").value = "";
     $("#competitorLabel").value = "";
     $("#competitorSearchUrl").value = "";
@@ -1978,10 +1997,14 @@ async function addCompetitorSite() {
 async function removeCompetitorSite(siteId) {
   if (!confirm("Удалить сайт конкурента из базы?")) return;
   try {
-    await api(`/api/competitors/${siteId}`, { method: "DELETE" });
+    const data = await api(`/api/competitors/${siteId}`, { method: "DELETE" });
     showToast("Сайт удалён");
+    if (data.catalog_products) {
+      applyCompetitorCatalogStats(data.catalog_products);
+    } else {
+      loadStatus();
+    }
     loadCompetitors();
-    loadStatus();
   } catch (e) {
     showToast(e.message, true);
   }
