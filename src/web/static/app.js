@@ -195,6 +195,13 @@ function fmtCount(v) {
     .replace(/ /g, "\u202f");
 }
 
+/** Без разделителя тысяч — для компактного pill в шапке (5981, не «5 981»). */
+function fmtCountPlain(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0";
+  return String(Math.trunc(n));
+}
+
 function competitorStatsTitle(status) {
   const byDomain = status?.competitor_products_by_domain;
   if (!byDomain || typeof byDomain !== "object") {
@@ -218,19 +225,19 @@ function renderHeaderStats(status) {
   const aiOn = getEffectiveAiEnabled(status);
   const competitorCount = Number(status.competitor_products_count);
   const competitorLabel = Number.isFinite(competitorCount)
-    ? fmtCount(competitorCount)
+    ? fmtCountPlain(competitorCount)
     : "0";
   $("#headerStats").innerHTML = `
     <span class="stat-pill">Каталог: <strong>${fmtCount(status.catalog_count)}</strong></span>
     <span class="stat-pill">Прайсы: <strong>${fmtCount(status.price_items_count)}</strong></span>
-    <span class="stat-pill stat-pill--count" title="${escapeHtml(competitorStatsTitle(status))}"><span class="stat-pill__text">На сайтах: <strong class="stat-pill__value">${competitorLabel}</strong></span></span>
+    <span class="stat-pill stat-pill--sites" title="${escapeHtml(competitorStatsTitle(status))}">На сайтах:<span class="stat-pill__num">${competitorLabel}</span></span>
     <span class="stat-pill">AI: <strong>${aiStatusText(aiOn)}</strong></span>
   `;
 }
 
 async function loadInitialStatus() {
   try {
-    const status = await api("/api/status");
+    const status = await api(`/api/status?t=${Date.now()}`);
     cachedStatus = status;
     renderHeaderStats(status);
     setMarkupInput(status.markup_percent ?? 30);
@@ -241,7 +248,7 @@ async function loadInitialStatus() {
 
 async function loadStatus() {
   try {
-    const status = await api("/api/status");
+    const status = await api(`/api/status?t=${Date.now()}`);
     cachedStatus = status;
     renderHeaderStats(status);
     setMarkupInput(status.markup_percent ?? 30);

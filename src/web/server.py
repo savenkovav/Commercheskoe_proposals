@@ -669,7 +669,9 @@ def api_status() -> dict[str, Any]:
     processor = get_processor()
     price_entries = processor.price_manager.list_entries()
     rag_docs_stats = _doc_rag_index_service().stats()
-    competitor_catalog = get_competitor_product_store().stats()
+    competitor_store = get_competitor_product_store()
+    competitor_store.reload()
+    competitor_catalog = competitor_store.stats()
     return {
         "catalog_count": len(processor.catalog),
         "registry_count": len(processor.registry),
@@ -980,7 +982,9 @@ def api_competitors_list() -> dict[str, Any]:
 
     payload = _list_competitor_sites_payload()
     payload["rag_docs"] = _doc_rag_index_service().stats()
-    payload["catalog_products"] = get_competitor_product_store().stats()
+    store = get_competitor_product_store()
+    store.reload()
+    payload["catalog_products"] = store.stats()
     return payload
 
 
