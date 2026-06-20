@@ -1069,23 +1069,29 @@ def api_competitors_reindex(body: CompetitorReindexRequest) -> dict[str, Any]:
 
     index = _doc_rag_index_service()
 
-    if body.domains:
-        results: list[dict[str, Any]] = []
-        for site in competitor_sites_with_search():
-            if site.domain.lower() not in {d.lower() for d in body.domains}:
-                continue
-            results.append(
-                index_competitor_site_catalog(site, index, force=body.force)
-                | {"domain": site.domain, "label": site.label}
-            )
-        sync_unified_competitor_rag(index)
-        return {
-            "sites": results,
-            "catalog_products": get_competitor_product_store().stats(),
-            "rag_docs": index.stats(),
-        }
+    try:
+        if body.domains:
+            results: list[dict[str, Any]] = []
+            for site in competitor_sites_with_search():
+                if site.domain.lower() not in {d.lower() for d in body.domains}:
+                    continue
+                results.append(
+                    index_competitor_site_catalog(site, index, force=body.force)
+                    | {"domain": site.domain, "label": site.label}
+                )
+            sync_unified_competitor_rag(index)
+            store = get_competitor_product_store()
+            store.reload()
+            return {
+                "sites": results,
+                "catalog_products": store.stats(),
+                "rag_docs": index.stats(),
+            }
 
-    return reindex_all_competitor_sites(index, force=True)
+        return reindex_all_competitor_sites(index, force=True)
+    except Exception as exc:
+        logger.exception("Competitor reindex failed domains=%s", body.domains)
+        raise HTTPException(status_code=500, detail=f"Ошибка индексации: {exc}") from exc
 
 
 @app.post("/api/competitors/pages/index")

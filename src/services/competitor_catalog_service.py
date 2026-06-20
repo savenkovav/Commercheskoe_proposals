@@ -1144,9 +1144,10 @@ def fetch_catalog_products(
     max_pages: int = 6,
     extra_urls: list[str] | None = None,
 ) -> list[CompetitorCatalogProduct]:
-    if domain.lower().removeprefix("www.") == "stronikum.ru":
+    normalized_domain = site.domain.lower().removeprefix("www.")
+    if normalized_domain == "stronikum.ru":
         return fetch_stronikum_catalog(site)
-    if site.domain.lower().removeprefix("www.") == "labkabinet.ru":
+    if normalized_domain == "labkabinet.ru":
         return fetch_labkabinet_catalog(site)
 
     dedup_urls = resolve_catalog_urls(site, extra_urls=extra_urls)
