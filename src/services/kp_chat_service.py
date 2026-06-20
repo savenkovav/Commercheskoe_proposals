@@ -35,6 +35,18 @@ PARSED_MESSAGE = (
     "подобраны цены из интернета (−5% от найденной стоимости)."
 )
 
+TASK1_DONE_MESSAGE = (
+    "ТЗ обработано: {count} поз.\n"
+    "Выполнена Задача 1 — поиск и идентификация товаров, расчёт себестоимости "
+    "и маржинальности при заданной наценке ({markup}%)."
+)
+
+TASK12_DONE_MESSAGE = (
+    "ТЗ обработано: {count} поз.\n"
+    "Выполнены Задачи 1+2 — поиск, себестоимость, анализ конкурентных цен "
+    "и рекомендация продажной цены (мин. доходность 15%)."
+)
+
 
 class KpChatService:
     def __init__(self, processor: ProposalProcessor) -> None:
@@ -59,9 +71,11 @@ class KpChatService:
         parsed_only: bool = False,
         auto_searched: bool = False,
         rag_index: RagIndex | None = None,
+        task_mode: str = "task1",
     ) -> str:
         from src.services.kp_session import new_session_id
 
+        normalized_mode = task_mode if task_mode in ("task1", "task1_task2") else "task1"
         preferences = KpPreferences(
             search_kit_component_links=SEARCH_KIT_COMPONENT_LINKS,
         )
@@ -73,7 +87,7 @@ class KpChatService:
             output_path=output_path or (OUTPUT_DIR / "pending.xlsx"),
             use_ai=use_ai,
             preferences=preferences,
-            task_mode="task1",
+            task_mode=normalized_mode,
             stage="parsed" if parsed_only else "searched",
             search_completed=not parsed_only,
             tz_filename=tz_filename,
@@ -82,7 +96,13 @@ class KpChatService:
         )
         session.session_id = new_session_id()
         if auto_searched or not parsed_only:
-            greeting = PARSED_MESSAGE.format(count=len(tz_items))
+            if normalized_mode == "task1_task2":
+                greeting = TASK12_DONE_MESSAGE.format(count=len(tz_items))
+            else:
+                greeting = TASK1_DONE_MESSAGE.format(
+                    count=len(tz_items),
+                    markup=get_markup_percent(),
+                )
         elif parsed_only:
             greeting = (
                 "ТЗ разобрано: {count} позиций.\n"
@@ -222,7 +242,7 @@ class KpChatService:
         generate_excel = bool(patch.get("generate_excel"))
 
         if run_local or numbers_to_reprocess or (preferences_changed and session.search_completed):
-            include_web = True
+            include_web = session.task_mode == "task1_task2" or run_web
             if not numbers_to_reprocess and session.tz_items:
                 numbers_to_reprocess = {item.number for item in session.tz_items}
             self._run_search(

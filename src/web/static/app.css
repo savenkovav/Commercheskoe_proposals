@@ -212,6 +212,60 @@ body {
   margin-top: 10px;
 }
 
+.actions--tasks {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.actions--tasks .btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.logistics-stub {
+  position: relative;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 18px 16px;
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.logistics-stub__badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+  border-radius: 999px;
+  padding: 4px 10px;
+  margin-bottom: 12px;
+}
+
+.logistics-stub__list {
+  margin: 0 0 12px;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.logistics-stub__note {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.results-summary {
+  margin-bottom: 16px;
+}
+
+.results-summary .summary-metrics {
+  margin-bottom: 0;
+}
+
+
 .input--compact {
   width: 13.5ch;
   min-width: 13.5ch;

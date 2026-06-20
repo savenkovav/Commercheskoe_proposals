@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <title>КП-Ассистент</title>
-  <link rel="stylesheet" href="/app.css?v=20260620e">
+  <link rel="stylesheet" href="/app.css?v=20260620f">
 </head>
 <body>
   <div class="layout">
@@ -33,7 +33,7 @@
         <div class="grid-2">
           <div class="card">
             <h2>Загрузить ТЗ</h2>
-            <p class="muted">Файл: .docx, .pdf, .xlsx, .xls — только разбор позиций, без автопоиска</p>
+            <p class="muted">Файл: .docx, .pdf, .xlsx, .xls или текст в чате — наименования, модели и характеристики</p>
             <label class="upload-zone" id="uploadZone">
               <input type="file" id="tzFile" accept=".docx,.pdf,.xlsx,.xls" hidden>
               <span class="upload-zone__icon">📄</span>
@@ -57,17 +57,28 @@
               >
               <button class="btn btn--secondary" type="button" id="btnApplyMarkup">Применить</button>
             </div>
-            <div class="actions">
-              <button class="btn btn--primary" id="btnProcess" disabled>Расчитать КП</button>
+            <div class="actions actions--tasks">
+              <button class="btn btn--primary" id="btnProcessTask1" disabled title="Поиск и идентификация товара, расчёт себестоимости и маржинальности">
+                Задача 1 — поиск и маржа
+              </button>
+              <button class="btn btn--secondary" id="btnProcessTask12" disabled title="Задача 1 плюс анализ конкурентных цен и рекомендация продажной цены">
+                Задача 1 + 2 — с конкурентами
+              </button>
             </div>
           </div>
 
-          <div class="card card--summary" id="summaryCard">
-            <h2>Сводка</h2>
-            <div class="empty-state" id="summaryEmpty">
-              Напишите название в чате или загрузите ТЗ — сводка появится после поиска.
+          <div class="card card--logistics" id="logisticsCard">
+            <h2>Логистика</h2>
+            <p class="muted">Модуль логистики — калькулятор доставки от поставщика до склада и заказчика</p>
+            <div class="logistics-stub">
+              <div class="logistics-stub__badge">Скоро</div>
+              <ul class="logistics-stub__list">
+                <li>Местонахождение поставщика (настраиваемые данные)</li>
+                <li>Вес и объём товара (справочник или запрос у пользователя)</li>
+                <li>Тарифы ТК или фиксированные ставки</li>
+              </ul>
+              <p class="logistics-stub__note">Калькулятор будет учитывать логистику в себестоимости позиций КП.</p>
             </div>
-            <div class="summary hidden" id="summaryBlock"></div>
           </div>
         </div>
 
@@ -76,6 +87,7 @@
             <h2>Детализация позиций</h2>
             <a class="btn btn--primary" id="downloadBtn" href="#" download>Скачать Excel</a>
           </div>
+          <div class="results-summary hidden" id="resultsSummary"></div>
           <div class="table-wrap">
             <table class="data-table" id="resultsTable">
               <thead>
@@ -98,7 +110,7 @@
         <div class="card" id="kpChatCard">
           <div class="chat-header">
             <h2>Диалог с КП-Ассистентом</h2>
-            <p class="muted">Напишите название товара — результат сразу. Для расчёта КП по ТЗ загрузите файл выше.</p>
+            <p class="muted">Напишите название товара — результат сразу. Для КП по ТЗ загрузите файл и выберите задачу.</p>
             <div class="assistant-mode" id="assistantMode">
               <span class="assistant-mode__label">Задача:</span>
               <span class="assistant-mode__value" id="taskModeLabel">не выбрана</span>
@@ -289,6 +301,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260620d"></script>
+  <script src="/app.js?v=20260620f"></script>
 </body>
 </html>

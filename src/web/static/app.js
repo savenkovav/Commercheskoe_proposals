@@ -865,17 +865,13 @@ function renderProcessResult(data) {
   updateAssistantMode(data);
   const s = data.summary;
   const parsedOnly = !data.search_completed;
+  const summaryEl = $("#resultsSummary");
 
-  if (parsedOnly) {
-    $("#summaryEmpty").classList.remove("hidden");
-    $("#summaryBlock").classList.add("hidden");
-    $("#summaryEmpty").textContent = `ТЗ разобрано: ${s.total_items} позиций. Запустите поиск через чат.`;
+  if (parsedOnly || !summaryEl) {
+    summaryEl?.classList.add("hidden");
   } else {
-    $("#summaryEmpty").classList.add("hidden");
-    $("#summaryBlock").classList.remove("hidden");
-  }
-
-  if (!parsedOnly) $("#summaryBlock").innerHTML = `
+    summaryEl.classList.remove("hidden");
+    summaryEl.innerHTML = `
     <div class="summary-metrics">
       <div class="metric"><div class="metric__label">Позиций</div><div class="metric__value">${s.total_items}</div></div>
       <div class="metric metric--success"><div class="metric__label">Точных</div><div class="metric__value">${s.exact_count}</div></div>
@@ -885,8 +881,9 @@ function renderProcessResult(data) {
       <div class="metric"><div class="metric__label">Цена без наценки</div><div class="metric__value">${fmtMoney(s.total_base_price)}</div></div>
       <div class="metric"><div class="metric__label">Цена КП</div><div class="metric__value">${fmtMoney(s.total_price)}</div></div>
     </div>
-    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}</p>
+    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}${data.web_used ? " · конкуренты" : ""}</p>
   `;
+  }
 
   $("#resultsCard").classList.remove("hidden");
   const tbody = $("#resultsTable tbody");
@@ -967,7 +964,7 @@ function renderProcessResult(data) {
   }
 }
 
-async function processUpload() {
+async function processUpload(taskMode) {
   const fileInput = $("#tzFile");
   if (!fileInput.files.length) return;
 
@@ -977,19 +974,29 @@ async function processUpload() {
     return;
   }
 
-  showOverlay("Читаю ТЗ и ищу в каталогах...");
+  const withCompetitors = taskMode === "task1_task2";
+  showOverlay(
+    withCompetitors
+      ? "Читаю ТЗ, ищу в каталогах и анализирую конкурентов..."
+      : "Читаю ТЗ и ищу в каталогах и прайсах...",
+  );
   const form = new FormData();
   form.append("file", file);
   form.append("use_ai", $("#useAiUpload").checked);
-  form.append("parse_only", "true");
+  form.append("task_mode", taskMode);
 
   try {
     const data = await api("/api/process/upload", { method: "POST", body: form });
     renderProcessResult(data);
-    showToast(data.search_completed ? "ТЗ обработано, цены подобраны" : "ТЗ загружено в чат");
+    const modeLabel = taskModeLabel(data.task_mode);
+    showToast(
+      data.search_completed
+        ? `ТЗ обработано (${modeLabel})`
+        : "ТЗ загружено в чат",
+    );
     fileInput.value = "";
     $("#fileName").textContent = "";
-    $("#btnProcess").disabled = true;
+    setUploadButtonsEnabled(false);
   } catch (e) {
     showToast(e.message, true);
   } finally {
@@ -997,10 +1004,17 @@ async function processUpload() {
   }
 }
 
+function setUploadButtonsEnabled(enabled) {
+  const disabled = !enabled;
+  $("#btnProcessTask1")?.toggleAttribute("disabled", disabled);
+  $("#btnProcessTask12")?.toggleAttribute("disabled", disabled);
+}
+
 function initUpload() {
   const zone = $("#uploadZone");
   const input = $("#tzFile");
-  const btn = $("#btnProcess");
+  const btnTask1 = $("#btnProcessTask1");
+  const btnTask12 = $("#btnProcessTask12");
 
   zone.addEventListener("dragover", (e) => {
     e.preventDefault();
@@ -1021,10 +1035,11 @@ function initUpload() {
   function onFileSelected() {
     const name = input.files[0]?.name || "";
     $("#fileName").textContent = name;
-    btn.disabled = !isAllowedTzFile(name);
+    setUploadButtonsEnabled(isAllowedTzFile(name));
   }
 
-  btn.addEventListener("click", processUpload);
+  btnTask1?.addEventListener("click", () => processUpload("task1"));
+  btnTask12?.addEventListener("click", () => processUpload("task1_task2"));
 }
 
 const CHAT_STORAGE_KEY = "kp_lookup_chat_v1";

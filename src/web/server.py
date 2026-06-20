@@ -500,14 +500,25 @@ def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
     return {"meta": meta, "catalog": catalog, "pages": pages}
 
 
-def _parse_tz_path(
+def _normalize_task_mode(task_mode: str | None, *, parse_only: bool | None = None) -> str:
+    if task_mode in ("task1", "task1_task2"):
+        return task_mode
+    if parse_only is False:
+        return "task1_task2"
+    return "task1"
+
+
+def _process_tz_upload(
     tz_path: Path,
     use_ai: bool,
     *,
+    task_mode: str = "task1",
     filename: str = "",
     tz_items: list | None = None,
     rag_index=None,
 ) -> dict[str, Any]:
+    task_mode = _normalize_task_mode(task_mode)
+    include_web = task_mode == "task1_task2"
     processor = get_processor()
     start = time.perf_counter()
     parsed_items = tz_items if tz_items is not None else processor.parse_tz_file(tz_path)
@@ -523,13 +534,13 @@ def _parse_tz_path(
         parsed_items,
         use_ai=use_ai,
         preferences=prefs,
-        include_web=True,
+        include_web=include_web,
     )
     summary = processor._build_summary(results, time.perf_counter() - start)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = OUTPUT_DIR / f"KP_{timestamp}.xlsx"
-    processor.excel.generate(results, summary, output_path)
+    processor.excel.generate(results, summary, output_path, preferences=prefs)
 
     session_id = _kp_chat_service().create_session(
         parsed_items,
@@ -541,19 +552,23 @@ def _parse_tz_path(
         parsed_only=False,
         auto_searched=True,
         rag_index=rag_index,
+        task_mode=task_mode,
     )
     session = _kp_chat_service().store.get(session_id)
     welcome = session.chat_history[-1].text if session and session.chat_history else ""
     payload = {
         "session_id": session_id,
         "stage": "exported",
-        "task_mode": "task1",
+        "task_mode": task_mode,
         "search_completed": True,
         "welcome_reply": welcome,
         "summary": _summary_to_dict(summary, output_path.name),
         "items": [_match_result_to_dict(r) for r in results],
         "ai_used": use_ai and processor.ai.enabled,
-        "web_used": any(r.source == MatchSource.WEB for r in results),
+        "web_used": include_web and any(
+            r.source == MatchSource.WEB or (r.competitors and len(r.competitors) > 0)
+            for r in results
+        ),
         "rag": {
             "enabled": True,
             "chunks": len(rag_index.chunks),
@@ -568,9 +583,11 @@ def _process_tz_path(
     tz_path: Path,
     use_ai: bool,
     *,
-    parse_only: bool = True,
+    task_mode: str = "task1",
+    parse_only: bool | None = None,
     filename: str = "",
 ) -> dict[str, Any]:
+    normalized_mode = _normalize_task_mode(task_mode, parse_only=parse_only)
     processor = get_processor()
     parsed_items = processor.parse_tz_file(tz_path)
     rag_service = TZRagService(processor.ai)
@@ -579,45 +596,14 @@ def _process_tz_path(
         parsed_items,
         filename=filename or tz_path.name,
     )
-    if parse_only:
-        return _parse_tz_path(
-            tz_path,
-            use_ai,
-            filename=filename,
-            tz_items=parsed_items,
-            rag_index=rag_index,
-        )
-    output_path, summary, results, tz_items = processor.process_tz_file(
+    return _process_tz_upload(
         tz_path,
-        use_ai=use_ai,
-    )
-    session_id = _kp_chat_service().create_session(
-        tz_items,
-        results,
-        summary,
-        output_path,
-        use_ai=use_ai,
-        tz_filename=filename or tz_path.name,
-        parsed_only=False,
+        use_ai,
+        task_mode=normalized_mode,
+        filename=filename,
+        tz_items=parsed_items,
         rag_index=rag_index,
     )
-    payload = {
-        "session_id": session_id,
-        "stage": "searched",
-        "task_mode": "task1_task2",
-        "search_completed": True,
-        "summary": _summary_to_dict(summary, output_path.name),
-        "items": [_match_result_to_dict(r) for r in results],
-        "ai_used": use_ai and processor.ai.enabled,
-        "web_used": USE_AI_INTERNET_SEARCH and use_ai and processor.ai.enabled,
-        "rag": {
-            "enabled": True,
-            "chunks": len(rag_index.chunks),
-            "vectorized": bool(rag_index.vectors),
-        },
-    }
-    _attach_download_info(payload, output_path)
-    return payload
 
 
 def _lookup_result_to_dict(result: ProductLookupResult) -> dict[str, Any]:
@@ -722,11 +708,20 @@ def api_set_markup(body: MarkupUpdate) -> dict[str, float]:
 
 
 @app.post("/api/process/demo")
-def api_process_demo(use_ai: bool = True, parse_only: bool = True) -> dict[str, Any]:
+def api_process_demo(
+    use_ai: bool = True,
+    task_mode: str = "task1",
+    parse_only: bool | None = None,
+) -> dict[str, Any]:
     if not DEMO_TZ_PATH.exists():
         raise HTTPException(status_code=404, detail="Демо-файл data/sample_tz.docx не найден")
     try:
-        return _process_tz_path(DEMO_TZ_PATH, use_ai=use_ai, parse_only=parse_only)
+        return _process_tz_path(
+            DEMO_TZ_PATH,
+            use_ai=use_ai,
+            task_mode=task_mode,
+            parse_only=parse_only,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -841,7 +836,8 @@ def api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
 async def api_process_upload(
     file: UploadFile = File(...),
     use_ai: bool = Form(default=True),
-    parse_only: bool = Form(default=True),
+    task_mode: str = Form(default="task1"),
+    parse_only: bool | None = Form(default=None),
 ) -> dict[str, Any]:
     try:
         content = await file.read()
@@ -856,6 +852,7 @@ async def api_process_upload(
             return _process_tz_path(
                 tz_path,
                 use_ai=use_ai,
+                task_mode=task_mode,
                 parse_only=parse_only,
                 filename=filename,
             )
