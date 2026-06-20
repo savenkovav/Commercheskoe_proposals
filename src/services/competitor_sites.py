@@ -158,6 +158,10 @@ _SKIP_PATH_MARKERS = (
     "/icons/",
     "/images/icons/",
     "/favicon",
+    "/templates/",
+    "/local/",
+    "/fonts/",
+    "/include/",
     "/wp-content/",
     "/wp-includes/",
     ".jpg",
@@ -167,15 +171,17 @@ _SKIP_PATH_MARKERS = (
     ".webp",
     ".svg",
     ".ico",
-    ".pdf",
-    ".css",
-    ".js",
+    ".otf",
     ".woff",
     ".woff2",
     ".ttf",
+    ".eot",
     ".map",
     ".xml",
     ".zip",
+    ".pdf",
+    ".css",
+    ".js",
 )
 
 _PRODUCT_PATH_MARKERS = (
@@ -305,6 +311,8 @@ def parse_competitor_search_results(
         for product in products:
             if not product.url:
                 continue
+            if not is_competitor_product_page_url(product.url):
+                continue
             if product.url in seen:
                 continue
             seen.add(product.url)
@@ -335,6 +343,8 @@ def parse_competitor_search_results(
         url = match.group("url")
         absolute = resolve_competitor_absolute_url(site.domain, url)
         if not absolute:
+            continue
+        if not is_competitor_product_page_url(absolute):
             continue
 
         if absolute in seen:
@@ -432,20 +442,59 @@ def is_competitor_asset_url(url: str) -> bool:
     path = urlparse(lower).path
     if any(marker in lower for marker in _SKIP_PATH_MARKERS):
         return True
-    return bool(re.search(r"\.(?:svg|ico|webp|gif|woff2?|ttf|eot|map|xml|zip)(?:\?|$)", path))
+    return bool(
+        re.search(
+            r"\.(?:svg|ico|webp|gif|woff2?|ttf|eot|otf|map|xml|zip|pdf|css|js)(?:\?|$)",
+            path,
+            re.I,
+        )
+    )
+
+
+def is_competitor_product_page_url(url: str) -> bool:
+    if not url or is_competitor_asset_url(url):
+        return False
+
+    path = urlparse(url).path.lower().rstrip("/")
+    if not path:
+        return False
+
+    if any(
+        marker in path
+        for marker in (
+            "/catalog/product/",
+            "/magazin/product/",
+            "/product/",
+            "/tovar/",
+            "/goods/",
+            "/item/",
+            "/card/",
+        )
+    ):
+        return True
+
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+        return False
+    last = segments[-1]
+
+    if last.isdigit() and len(last) >= 4:
+        return True
+
+    if path.endswith(".html") and len(last) >= 10:
+        return True
+
+    slug_like = len(last) >= 12 and ("_" in last or "-" in last)
+    if slug_like and "/products/" in path and len(segments) >= 4:
+        return True
+    if slug_like and "/catalog/" in path and len(segments) >= 3:
+        return True
+
+    return False
 
 
 def _looks_like_product_path(path: str) -> bool:
-    lower = path.lower()
-    if any(marker in lower for marker in _SKIP_PATH_MARKERS):
-        return False
-    if any(marker in lower for marker in _PRODUCT_PATH_MARKERS):
-        return True
-    if re.search(r"/\d{3,}(?:/|$|\?|#)", lower):
-        return True
-    if re.search(r"/[a-z0-9-]{8,}(?:/|$|\?|#)", lower):
-        return True
-    return False
+    return is_competitor_product_page_url(f"https://example.com{path}")
 
 
 def extract_competitor_product_urls(

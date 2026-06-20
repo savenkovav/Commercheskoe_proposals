@@ -12,6 +12,7 @@ from src.services.competitor_sites import (
     CompetitorSite,
     competitor_label_for_url,
     competitor_sites_with_search,
+    is_competitor_product_page_url,
 )
 from src.services.data_loader import normalize_name
 from src.services.fuzzy_scoring import name_match_score
@@ -955,6 +956,47 @@ def _iter_catalog_products(doc_rag_index) -> list[CompetitorCatalogProduct]:
     return products
 
 
+def enrich_catalog_product_price(
+    product: CompetitorCatalogProduct,
+) -> CompetitorCatalogProduct:
+    if product.price is not None or product.price_label:
+        return product
+    if not product.url or not is_competitor_product_page_url(product.url):
+        return product
+
+    fetched = fetch_catalog_page(
+        product.url,
+        domain=product.domain,
+        site_label=product.site_label,
+    )
+    if not fetched:
+        return product
+
+    for item in fetched:
+        if normalize_name(item.name) == normalize_name(product.name):
+            return CompetitorCatalogProduct(
+                domain=product.domain,
+                site_label=product.site_label,
+                name=product.name,
+                price=item.price if item.price is not None else product.price,
+                url=product.url,
+                articul=item.articul or product.articul,
+                price_label=item.price_label or product.price_label,
+            )
+    if fetched[0].price is not None or fetched[0].price_label:
+        item = fetched[0]
+        return CompetitorCatalogProduct(
+            domain=product.domain,
+            site_label=product.site_label,
+            name=product.name,
+            price=item.price,
+            url=product.url,
+            articul=item.articul or product.articul,
+            price_label=item.price_label,
+        )
+    return product
+
+
 def _score_catalog_products(
     query: str,
     products: list[CompetitorCatalogProduct],
@@ -969,6 +1011,8 @@ def _score_catalog_products(
     seen: set[str] = set()
 
     for product in products:
+        if product.url and not is_competitor_product_page_url(product.url):
+            continue
         key = normalize_name(product.name)
         if key in seen:
             continue
@@ -980,6 +1024,8 @@ def _score_catalog_products(
         if score < COMPETITOR_SEARCH_FALLBACK_THRESHOLD and not token_match:
             continue
         seen.add(key)
+        if product.price is None and not product.price_label and product.url:
+            product = enrich_catalog_product_price(product)
         scored.append((max(score, 96.0 if token_match else score), product))
 
     scored.sort(key=lambda item: item[0], reverse=True)

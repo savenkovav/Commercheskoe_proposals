@@ -36,6 +36,7 @@ from src.services.competitor_sites import (
     competitor_sites_with_search,
     extract_competitor_product_urls,
     is_competitor_asset_url,
+    is_competitor_product_page_url,
     is_competitor_url,
     iter_competitor_domain_batches,
     parse_competitor_search_results,
@@ -362,6 +363,41 @@ def _pick_best_price(prices: list[float]) -> float | None:
     return min(prices)
 
 
+def _quote_has_display_price(quote: PriceQuote) -> bool:
+    return (
+        quote.price is not None
+        or quote.cost is not None
+        or bool(quote.price_label)
+    )
+
+
+def merge_competitor_quotes(
+    quotes: list[PriceQuote],
+    new_quotes: list[PriceQuote],
+    *,
+    seen_urls: set[str] | None = None,
+) -> None:
+    for quote in new_quotes:
+        if quote.url and not is_competitor_product_page_url(quote.url):
+            continue
+        if quote.url:
+            replaced = False
+            for index, existing in enumerate(quotes):
+                if existing.url != quote.url:
+                    continue
+                if _quote_has_display_price(quote) and not _quote_has_display_price(existing):
+                    quotes[index] = quote
+                replaced = True
+                break
+            if replaced:
+                continue
+            if any(existing.url == quote.url for existing in quotes):
+                continue
+            if seen_urls is not None:
+                seen_urls.add(quote.url)
+        quotes.append(quote)
+
+
 class WebSearchService:
     def search_offers(
         self,
@@ -423,22 +459,7 @@ class WebSearchService:
         seen_urls: set[str] = set()
 
         def _extend(new_quotes: list[PriceQuote]) -> None:
-            for quote in new_quotes:
-                if quote.url and any(existing.url == quote.url for existing in quotes):
-                    continue
-                if quote.url:
-                    seen_urls.add(quote.url)
-                quotes.append(quote)
-
-        if not (deadline and deadline.expired()):
-            _extend(
-                self._search_competitor_via_rag(
-                    query,
-                    limit=max_results,
-                )
-            )
-        if has_priced_competitor_quote(quotes):
-            return self._finalize_competitor_quotes(quotes, max_results)
+            merge_competitor_quotes(quotes, new_quotes, seen_urls=seen_urls)
 
         if COMPETITOR_NATIVE_SEARCH_ENABLED and not (deadline and deadline.expired()):
             _extend(
@@ -448,6 +469,16 @@ class WebSearchService:
                     limit=max_results,
                     seen_urls=seen_urls,
                     deadline=deadline,
+                )
+            )
+        if has_priced_competitor_quote(quotes):
+            return self._finalize_competitor_quotes(quotes, max_results)
+
+        if not (deadline and deadline.expired()):
+            _extend(
+                self._search_competitor_via_rag(
+                    query,
+                    limit=max_results,
                 )
             )
         if has_priced_competitor_quote(quotes):
@@ -549,21 +580,32 @@ class WebSearchService:
         quotes: list[PriceQuote],
         limit: int,
     ) -> list[PriceQuote]:
-        priced = [
+        valid = [
             quote
             for quote in quotes
+            if not quote.url or is_competitor_product_page_url(quote.url)
+        ]
+        priced = [
+            quote
+            for quote in valid
             if quote.price is not None or quote.cost is not None
         ]
         unpriced = [
             quote
-            for quote in quotes
-            if quote.price is None and quote.cost is None
+            for quote in valid
+            if quote.price is None and quote.cost is None and quote.price_label
+        ]
+        empty = [
+            quote
+            for quote in valid
+            if quote.price is None and quote.cost is None and not quote.price_label
         ]
         priced.sort(
             key=lambda item: item.price if item.price is not None else item.cost or 0
         )
         unpriced.sort(key=lambda item: -(item.match_score or 0))
-        merged = priced + unpriced
+        empty.sort(key=lambda item: -(item.match_score or 0))
+        merged = priced + unpriced + empty
         return merged[:limit]
 
     def _search_competitor_via_ddg(
@@ -836,6 +878,8 @@ class WebSearchService:
         notes: str | None = None,
     ) -> PriceQuote | None:
         if _is_blocked_url(url) or _is_search_listing_url(url):
+            return None
+        if not is_competitor_product_page_url(url):
             return None
         if not is_exact_title_match(query, title, threshold=threshold, snippet=page_text[:500]):
             return None
