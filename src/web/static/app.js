@@ -1957,6 +1957,169 @@ async function removeCompetitorSite(siteId) {
   }
 }
 
+let competitorChatMessages = [];
+let competitorChatLoading = false;
+
+function formatCompetitorSiteLabel(label) {
+  if (!label) return "—";
+  return label.replace(/^Конкурент:\s*/i, "").trim() || label;
+}
+
+function renderCompetitorSearchResults(data) {
+  if (!data.items?.length) {
+    return `<p>По запросу «${escapeHtml(data.query)}» на сайтах конкурентов ничего не найдено.</p>`;
+  }
+
+  const rows = data.items
+    .map((item) => {
+      const price = item.price ?? item.cost;
+      return `
+        <div class="competitor-result-item">
+          <div class="competitor-result-item__head">
+            <strong>${escapeHtml(formatCompetitorSiteLabel(item.label))}</strong>
+            <span class="competitor-result-item__price">${fmtMoney(price)}</span>
+          </div>
+          <div>${escapeHtml(item.matched_name || "—")}</div>
+          <div class="muted">${item.match_score ? `${Math.round(item.match_score)}% совпадение` : ""}</div>
+          ${
+            item.url
+              ? `<div><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.url)}</a></div>`
+              : `<div class="muted">${escapeHtml(item.notes || "")}</div>`
+          }
+        </div>`;
+    })
+    .join("");
+
+  return `
+    <p>Запрос: «${escapeHtml(data.query)}» · найдено: ${data.count} · сайтов: ${data.sites_searched} · ${data.processing_seconds} сек</p>
+    <div class="competitor-result-list">${rows}</div>`;
+}
+
+function renderCompetitorChatMessages() {
+  const box = $("#competitorChatMessages");
+  if (!box) return;
+
+  if (!competitorChatMessages.length) {
+    box.innerHTML = `
+      <div class="chat-welcome">
+        <p>Напишите название товара — найду предложения на сайтах конкурентов из списка выше.</p>
+      </div>`;
+    return;
+  }
+
+  box.innerHTML = competitorChatMessages
+    .map((msg) => {
+      if (msg.role === "user") {
+        return `
+          <div class="chat-msg chat-msg--user">
+            <div class="chat-msg__bubble">${escapeHtml(msg.text)}</div>
+            <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+          </div>`;
+      }
+      if (msg.role === "error") {
+        return `
+          <div class="chat-msg chat-msg--error">
+            <div class="chat-msg__bubble">${escapeHtml(msg.text)}</div>
+            <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+          </div>`;
+      }
+      return `
+        <div class="chat-msg chat-msg--assistant">
+          <div class="chat-msg__bubble chat-result">${msg.html}</div>
+          <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
+        </div>`;
+    })
+    .join("");
+
+  if (competitorChatLoading) {
+    box.insertAdjacentHTML(
+      "beforeend",
+      `<div class="chat-msg chat-msg--assistant">
+        <div class="chat-msg__bubble">
+          <span class="chat-msg__typing"><span></span><span></span><span></span></span>
+          Ищу на сайтах конкурентов...
+        </div>
+      </div>`,
+    );
+  }
+
+  requestAnimationFrame(() => {
+    box.scrollTop = box.scrollHeight;
+  });
+}
+
+function updateCompetitorChatFormState() {
+  const input = $("#competitorChatInput");
+  const sendBtn = $("#btnCompetitorChatSend");
+  const enabled = !competitorChatLoading;
+  if (input) input.disabled = !enabled;
+  if (sendBtn) sendBtn.disabled = !enabled;
+  document.querySelectorAll("[data-competitor-hint]").forEach((btn) => {
+    btn.disabled = !enabled;
+  });
+}
+
+async function sendCompetitorChatMessage(text) {
+  const query = text.trim();
+  if (!query || competitorChatLoading) return;
+
+  competitorChatMessages.push({ role: "user", text: query, ts: Date.now() });
+  competitorChatLoading = true;
+  updateCompetitorChatFormState();
+  renderCompetitorChatMessages();
+
+  try {
+    const data = await api("/api/competitors/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, limit: 12 }),
+    });
+    competitorChatMessages.push({
+      role: "assistant",
+      html: renderCompetitorSearchResults(data),
+      ts: Date.now(),
+    });
+    showToast(data.count ? `Найдено: ${data.count}` : "Ничего не найдено");
+  } catch (e) {
+    competitorChatMessages.push({ role: "error", text: e.message, ts: Date.now() });
+    showToast(e.message, true);
+  } finally {
+    competitorChatLoading = false;
+    updateCompetitorChatFormState();
+    renderCompetitorChatMessages();
+  }
+}
+
+function initCompetitorChat() {
+  const form = $("#competitorChatForm");
+  if (!form) return;
+
+  updateCompetitorChatFormState();
+  renderCompetitorChatMessages();
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = $("#competitorChatInput");
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    sendCompetitorChatMessage(text);
+  });
+
+  $("#competitorChatInput")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  document.querySelectorAll("[data-competitor-hint]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      sendCompetitorChatMessage(btn.dataset.competitorHint);
+    });
+  });
+}
+
 function initAiToggle() {
   $("#useAiUpload").addEventListener("change", refreshAiStatusUi);
 }
@@ -1975,5 +2138,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btnUploadStock").addEventListener("click", uploadStock);
   $("#btnAnalyzeCompetitor").addEventListener("click", analyzeCompetitorSite);
   $("#btnAddCompetitor").addEventListener("click", addCompetitorSite);
+  initCompetitorChat();
   loadInitialStatus();
 });

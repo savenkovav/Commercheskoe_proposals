@@ -350,6 +350,47 @@ body {
   color: #7dd3fc;
 }
 
+.competitor-chat-card {
+  margin-top: 16px;
+}
+
+.competitor-chat-messages {
+  min-height: 220px;
+  max-height: 420px;
+}
+
+.competitor-chat-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.competitor-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.competitor-result-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.competitor-result-item__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.competitor-result-item__price {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .lookup-form {
   display: flex;
   gap: 10px;

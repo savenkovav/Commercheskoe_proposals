@@ -137,6 +137,11 @@ class CompetitorSiteAddRequest(BaseModel):
     search_url: str | None = Field(default=None, max_length=500)
 
 
+class CompetitorSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    limit: int = Field(default=10, ge=1, le=30)
+
+
 def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
     return {
         "source": quote.source,
@@ -952,6 +957,36 @@ def api_competitors_remove(site_id: str) -> dict[str, Any]:
     return {
         "removed_id": entry.id,
         "removed_domain": entry.domain,
+    }
+
+
+@app.post("/api/competitors/search")
+def api_competitors_search(body: CompetitorSearchRequest) -> dict[str, Any]:
+    started = time.perf_counter()
+    processor = get_processor()
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Введите название товара")
+
+    quotes = processor.tz_matcher.web_search.search_competitor_offers(
+        query,
+        limit=body.limit,
+    )
+    items = [_price_quote_to_dict(quote) for quote in quotes]
+    sites_searched = len({quote.label for quote in quotes if quote.label})
+    logger.info(
+        "Competitor search query=%r results=%s sites=%s %.0fms",
+        query[:120],
+        len(items),
+        sites_searched,
+        (time.perf_counter() - started) * 1000,
+    )
+    return {
+        "query": query,
+        "items": items,
+        "count": len(items),
+        "sites_searched": sites_searched or len(_list_competitor_sites_payload()["items"]),
+        "processing_seconds": round(time.perf_counter() - started, 2),
     }
 
 
