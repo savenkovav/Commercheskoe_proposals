@@ -17,6 +17,7 @@ from src.services.product_lookup import (
     resolve_freeform_product_lookup,
 )
 from src.services.proposal_processor import ProposalProcessor
+from src.services.tz_rag_service import RagIndex, TZRagService
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class KpChatService:
             processor.ai,
             processor.tz_matcher.web_search,
         )
+        self.rag = TZRagService(processor.ai)
 
     def create_session(
         self,
@@ -56,6 +58,7 @@ class KpChatService:
         tz_filename: str = "",
         parsed_only: bool = False,
         auto_searched: bool = False,
+        rag_index: RagIndex | None = None,
     ) -> str:
         from src.services.kp_session import new_session_id
 
@@ -74,6 +77,8 @@ class KpChatService:
             stage="parsed" if parsed_only else "searched",
             search_completed=not parsed_only,
             tz_filename=tz_filename,
+            rag_chunks=(rag_index.chunks if rag_index else []),
+            rag_vectors=(rag_index.vectors if rag_index else []),
         )
         session.session_id = new_session_id()
         if auto_searched or not parsed_only:
@@ -146,6 +151,13 @@ class KpChatService:
 
         items_summary = self._items_summary(session.results, session.tz_items)
         if self.processor.ai.enabled:
+            rag_context = self.rag.retrieve_context(
+                text,
+                RagIndex(
+                    chunks=session.rag_chunks,
+                    vectors=session.rag_vectors,
+                ),
+            )
             patch = self.processor.ai.interpret_assistant_message(
                 user_message=text,
                 items_summary=items_summary,
@@ -158,6 +170,7 @@ class KpChatService:
                 task_mode=session.task_mode,
                 stage=session.stage,
                 search_completed=session.search_completed,
+                rag_context=rag_context,
             )
         else:
             patch = detect_assistant_intent(

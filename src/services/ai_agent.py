@@ -242,6 +242,7 @@ class AIAgent:
         task_mode: str,
         stage: str,
         search_completed: bool,
+        rag_context: str = "",
     ) -> dict:
         if not self.enabled or not self.client:
             from src.services.assistant_intent import detect_assistant_intent
@@ -271,6 +272,8 @@ class AIAgent:
 Поиск уже выполнялся: {"да" if search_completed else "нет"}
 Наценка: {markup_percent}%
 Настройки: {prefs_text}
+RAG-контекст ТЗ (релевантные фрагменты документа):
+{rag_context or "—"}
 Позиции: {items_text}
 История:
 {history_text or "—"}

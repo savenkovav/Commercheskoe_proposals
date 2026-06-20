@@ -44,6 +44,20 @@ def parse_tz(path: Path) -> list[TZItem]:
     )
 
 
+def extract_tz_document_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        return _extract_docx_text(path)
+    if suffix == ".pdf":
+        return _extract_pdf_document_text(path)
+    if suffix in {".xlsx", ".xls"}:
+        return _extract_excel_text(path)
+    raise ValueError(
+        f"Неподдерживаемый формат ТЗ: {suffix}. "
+        f"Допустимые форматы: {SUPPORTED_TZ_LABEL}"
+    )
+
+
 def detect_tz_suffix(content: bytes, content_type: str | None = None) -> str | None:
     if content.startswith(b"%PDF"):
         return ".pdf"
@@ -195,6 +209,18 @@ def _parse_tz_docx(path: Path) -> list[TZItem]:
     return _parse_tz_tables(tables)
 
 
+def _extract_docx_text(path: Path) -> str:
+    doc = Document(str(path))
+    chunks: list[str] = []
+    chunks.extend(p.text.strip() for p in doc.paragraphs if p.text.strip())
+    for table in doc.tables:
+        for row in table.rows:
+            values = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if values:
+                chunks.append(" | ".join(values))
+    return "\n".join(chunks)
+
+
 def _parse_tz_excel(path: Path) -> list[TZItem]:
     suffix = path.suffix.lower()
     sheets: list[list[list[str]]] = []
@@ -222,6 +248,31 @@ def _parse_tz_excel(path: Path) -> list[TZItem]:
     tables = [_table_from_sheet_rows(sheet) for sheet in sheets]
     tables = [table for table in tables if table]
     return _parse_tz_tables(tables)
+
+
+def _extract_excel_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    lines: list[str] = []
+    if suffix == ".xlsx":
+        wb = load_workbook(path, read_only=True, data_only=True)
+        for ws in wb.worksheets:
+            lines.append(f"# Лист: {ws.title}")
+            for row in ws.iter_rows(values_only=True):
+                values = [_cell_str(cell) for cell in row if _cell_str(cell)]
+                if values:
+                    lines.append(" | ".join(values))
+        wb.close()
+    else:
+        wb = xlrd.open_workbook(str(path))
+        for sheet_name in wb.sheet_names():
+            ws = wb.sheet_by_name(sheet_name)
+            lines.append(f"# Лист: {sheet_name}")
+            for row_idx in range(ws.nrows):
+                values = [_cell_str(cell) for cell in ws.row_values(row_idx)]
+                values = [value for value in values if value]
+                if values:
+                    lines.append(" | ".join(values))
+    return "\n".join(lines)
 
 
 def _table_from_sheet_rows(sheet_rows: list[list[str]]) -> list[list[str]] | None:
@@ -252,6 +303,15 @@ def _parse_tz_pdf(path: Path) -> list[TZItem]:
         "Убедитесь, что есть колонка «Наименование». "
         "Для сканов установите Tesseract и включите TZ_PDF_OCR_ENABLED=true."
     )
+
+
+def _extract_pdf_document_text(path: Path) -> str:
+    text = _extract_pdf_text(path)
+    if text.strip():
+        return text
+    if TZ_PDF_OCR_ENABLED:
+        return _ocr_pdf(path)
+    return ""
 
 
 def _parse_pdf_with_pdfplumber(path: Path) -> list[TZItem]:

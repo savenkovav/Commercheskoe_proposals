@@ -31,6 +31,8 @@ class KpSession:
     stage: str = "intake"
     search_completed: bool = False
     tz_filename: str = ""
+    rag_chunks: list[dict[str, str | int | float]] = field(default_factory=list)
+    rag_vectors: list[list[float]] = field(default_factory=list)
 
 
 class KpSessionStore:

@@ -186,3 +186,14 @@ TZ_PDF_OCR_ENABLED = os.getenv("TZ_PDF_OCR_ENABLED", "true").lower() in {
 }
 TZ_OCR_LANG = os.getenv("TZ_OCR_LANG", "rus+eng")
 TESSERACT_CMD = os.getenv("TESSERACT_CMD", "").strip()
+
+RAG_ENABLED = os.getenv("RAG_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small").strip()
+RAG_CHUNK_SIZE = max(300, int(os.getenv("RAG_CHUNK_SIZE", "1200")))
+RAG_CHUNK_OVERLAP = max(0, int(os.getenv("RAG_CHUNK_OVERLAP", "150")))
+RAG_TOP_K = max(1, int(os.getenv("RAG_TOP_K", "5")))

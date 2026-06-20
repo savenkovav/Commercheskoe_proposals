@@ -32,6 +32,8 @@ from src.services.meilisearch_service import meilisearch_health
 from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
 from src.services.web_quote_priority import resolve_price_source_url
 from src.services.tz_parser import resolve_tz_upload_filename
+from src.services.tz_parser import extract_tz_document_text
+from src.services.tz_rag_service import TZRagService
 from src.services.price_list_manager import get_price_list_manager
 from src.services.product_lookup import (
     LookupField,
@@ -271,13 +273,27 @@ def _kp_chat_service() -> KpChatService:
     return KpChatService(get_processor())
 
 
-def _parse_tz_path(tz_path: Path, use_ai: bool, *, filename: str = "") -> dict[str, Any]:
+def _parse_tz_path(
+    tz_path: Path,
+    use_ai: bool,
+    *,
+    filename: str = "",
+    tz_items: list | None = None,
+    rag_index=None,
+) -> dict[str, Any]:
     processor = get_processor()
     start = time.perf_counter()
-    tz_items = processor.parse_tz_file(tz_path)
+    parsed_items = tz_items if tz_items is not None else processor.parse_tz_file(tz_path)
+    if rag_index is None:
+        rag_service = TZRagService(processor.ai)
+        rag_index = rag_service.build_index(
+            extract_tz_document_text(tz_path),
+            parsed_items,
+            filename=filename or tz_path.name,
+        )
     prefs = KpPreferences()
     results = processor.search_tz_items(
-        tz_items,
+        parsed_items,
         use_ai=use_ai,
         preferences=prefs,
         include_web=True,
@@ -289,7 +305,7 @@ def _parse_tz_path(tz_path: Path, use_ai: bool, *, filename: str = "") -> dict[s
     processor.excel.generate(results, summary, output_path)
 
     session_id = _kp_chat_service().create_session(
-        tz_items,
+        parsed_items,
         results,
         summary,
         output_path,
@@ -297,6 +313,7 @@ def _parse_tz_path(tz_path: Path, use_ai: bool, *, filename: str = "") -> dict[s
         tz_filename=filename or tz_path.name,
         parsed_only=False,
         auto_searched=True,
+        rag_index=rag_index,
     )
     session = _kp_chat_service().store.get(session_id)
     welcome = session.chat_history[-1].text if session and session.chat_history else ""
@@ -310,6 +327,11 @@ def _parse_tz_path(tz_path: Path, use_ai: bool, *, filename: str = "") -> dict[s
         "items": [_match_result_to_dict(r) for r in results],
         "ai_used": use_ai and processor.ai.enabled,
         "web_used": any(r.source == MatchSource.WEB for r in results),
+        "rag": {
+            "enabled": True,
+            "chunks": len(rag_index.chunks),
+            "vectorized": bool(rag_index.vectors),
+        },
     }
     _attach_download_info(payload, output_path)
     return payload
@@ -322,10 +344,22 @@ def _process_tz_path(
     parse_only: bool = True,
     filename: str = "",
 ) -> dict[str, Any]:
-    if parse_only:
-        return _parse_tz_path(tz_path, use_ai, filename=filename)
-
     processor = get_processor()
+    parsed_items = processor.parse_tz_file(tz_path)
+    rag_service = TZRagService(processor.ai)
+    rag_index = rag_service.build_index(
+        extract_tz_document_text(tz_path),
+        parsed_items,
+        filename=filename or tz_path.name,
+    )
+    if parse_only:
+        return _parse_tz_path(
+            tz_path,
+            use_ai,
+            filename=filename,
+            tz_items=parsed_items,
+            rag_index=rag_index,
+        )
     output_path, summary, results, tz_items = processor.process_tz_file(
         tz_path,
         use_ai=use_ai,
@@ -338,6 +372,7 @@ def _process_tz_path(
         use_ai=use_ai,
         tz_filename=filename or tz_path.name,
         parsed_only=False,
+        rag_index=rag_index,
     )
     payload = {
         "session_id": session_id,
@@ -348,6 +383,11 @@ def _process_tz_path(
         "items": [_match_result_to_dict(r) for r in results],
         "ai_used": use_ai and processor.ai.enabled,
         "web_used": USE_AI_INTERNET_SEARCH and use_ai and processor.ai.enabled,
+        "rag": {
+            "enabled": True,
+            "chunks": len(rag_index.chunks),
+            "vectorized": bool(rag_index.vectors),
+        },
     }
     _attach_download_info(payload, output_path)
     return payload
