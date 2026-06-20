@@ -46,6 +46,25 @@ const escapeHtml = (value) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 
+function shortenUrlForDisplay(url, maxLen = 56) {
+  if (!url) return "";
+  if (url.length <= maxLen) return url;
+  try {
+    const parsed = new URL(url);
+    const segment = parsed.pathname.split("/").filter(Boolean).pop() || "";
+    const compact = segment ? `${parsed.hostname}/…/${segment}` : parsed.hostname;
+    return compact.length <= maxLen ? compact : `${compact.slice(0, maxLen - 1)}…`;
+  } catch {
+    return `${url.slice(0, maxLen - 1)}…`;
+  }
+}
+
+function renderChatLink(url, label) {
+  if (!url) return "";
+  const text = label || shortenUrlForDisplay(url);
+  return `<a class="chat-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
+}
+
 const statusBadge = (status, notes = "") => {
   if (notes && notes.includes("Ожидает поиска")) {
     return `<span class="badge badge--pending">Ожидает</span>`;
@@ -1495,7 +1514,7 @@ function renderAiInsightBlock(ai) {
     html += priceSource ? escapeHtml(priceSource) : "оценка AI";
 
     if (ai.product_url) {
-      html += ` — <a href="${escapeHtml(ai.product_url)}" target="_blank" rel="noopener noreferrer">открыть товар</a>`;
+      html += ` — ${renderChatLink(ai.product_url, "открыть товар")}`;
     } else if (hasSearch) {
       html += ` · Поиск: ${renderSearchLinks(ai.search_links)}`;
     }
@@ -1530,9 +1549,7 @@ function renderCompetitorsBlock(competitors) {
           ? "Цена не указана на сайте"
           : null,
       item.price_kp ? `Цена КП (−5%): ${item.price_kp}` : null,
-      item.url
-        ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.url)}</a>`
-        : null,
+      item.url ? renderChatLink(item.url, "Открыть на сайте") : null,
       item.notes ? escapeHtml(item.notes) : null,
     ],
     "На сайтах конкурентов не найдено",
@@ -2066,15 +2083,15 @@ function renderCompetitorSearchResults(data) {
       return `
         <div class="competitor-result-item">
           <div class="competitor-result-item__head">
-            <strong>${escapeHtml(formatCompetitorSiteLabel(item.label))}</strong>
+            <strong class="competitor-result-item__title">${escapeHtml(formatCompetitorSiteLabel(item.label))}</strong>
             <span class="competitor-result-item__price">${escapeHtml(fmtCompetitorPrice(item))}</span>
           </div>
-          <div>${escapeHtml(item.matched_name || "—")}</div>
+          <div class="competitor-result-item__name">${escapeHtml(item.matched_name || "—")}</div>
           ${item.articul ? `<div class="muted">Артикул: ${escapeHtml(item.articul)}</div>` : ""}
           <div class="muted">${item.match_score ? `${Math.round(item.match_score)}% совпадение` : ""}</div>
           ${
             item.url
-              ? `<div><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(item.url)}</a></div>`
+              ? `<div class="chat-link-wrap">${renderChatLink(item.url, "Открыть на сайте")}</div>`
               : `<div class="muted">${escapeHtml(item.notes || "")}</div>`
           }
         </div>`;

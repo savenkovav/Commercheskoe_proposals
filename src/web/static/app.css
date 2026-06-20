@@ -223,6 +223,8 @@ body {
   border-radius: var(--radius);
   padding: 22px;
   box-shadow: var(--shadow);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .card h2 {
@@ -510,11 +512,15 @@ body {
 
 .competitor-chat-card {
   margin-top: 16px;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .competitor-chat-messages {
   min-height: 220px;
   max-height: 420px;
+  overflow-x: hidden;
+  min-width: 0;
 }
 
 .competitor-chat-hints {
@@ -535,18 +541,35 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.02);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .competitor-result-item__head {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   margin-bottom: 6px;
+}
+
+.competitor-result-item__title {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.competitor-result-item__name {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .competitor-result-item__price {
   font-weight: 600;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .lookup-form {
@@ -665,11 +688,13 @@ body {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
   min-height: 320px;
+  min-width: 0;
 }
 
 .chat-welcome {
@@ -684,18 +709,23 @@ body {
 .chat-msg {
   display: flex;
   flex-direction: column;
-  max-width: min(100%, 820px);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chat-msg--user {
   align-self: flex-end;
   align-items: flex-end;
+  max-width: min(100%, 820px);
+  width: auto;
 }
 
 .chat-msg--assistant,
 .chat-msg--error {
   align-self: flex-start;
   align-items: flex-start;
+  width: 100%;
+  max-width: 100%;
 }
 
 .chat-msg__bubble {
@@ -703,6 +733,10 @@ body {
   padding: 12px 14px;
   line-height: 1.5;
   font-size: 0.92rem;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-msg--user .chat-msg__bubble {
@@ -716,6 +750,8 @@ body {
   border: 1px solid var(--border);
   border-bottom-left-radius: 4px;
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .chat-msg--error .chat-msg__bubble {
@@ -780,11 +816,52 @@ body {
   max-width: 100%;
   padding: 12px;
   margin-top: 8px;
+  overflow-x: hidden;
 }
 
 .kp-chat-messages {
   max-height: 360px;
   margin-top: 12px;
+  overflow-x: hidden;
+  min-width: 0;
+}
+
+.chat-link,
+.chat-messages a,
+.chat-result a {
+  color: var(--accent);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chat-link-wrap {
+  margin-top: 4px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.chat-result,
+.chat-msg__bubble.chat-result {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.chat-result .lookup-result__layout {
+  margin-top: 0;
+  grid-template-columns: 1fr;
+  min-width: 0;
+}
+
+.chat-result h3,
+.chat-result p,
+.chat-result .source-block,
+.chat-result .match-variant,
+.chat-result .competitor-result-item {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .assistant-mode {
@@ -849,15 +926,14 @@ body {
   color: var(--muted);
 }
 
-.chat-result .lookup-result__layout {
-  margin-top: 0;
-}
-
 .lookup-result {
   background: var(--surface-2);
   border-radius: var(--radius);
   padding: 18px;
   line-height: 1.6;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .lookup-result__layout {
@@ -991,16 +1067,28 @@ body {
   border-radius: 10px;
   padding: 12px 14px;
   margin-top: 12px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .source-block h4 {
   margin: 0 0 8px;
   font-size: 0.92rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .source-block ul {
   margin: 0;
   padding-left: 18px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.source-block li {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .source-block--warning {
@@ -1283,6 +1371,8 @@ code {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .match-variant--primary {
@@ -1330,10 +1420,14 @@ code {
   padding-left: 18px;
   color: var(--muted);
   font-size: 0.88rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .match-variant__details li {
   margin: 2px 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* ——— Mobile / tablet ——— */
@@ -1484,6 +1578,28 @@ code {
 
   .chat-messages {
     min-height: 240px;
+    padding: 12px 14px;
+  }
+
+  .chat-msg--user {
+    max-width: 100%;
+  }
+
+  .competitor-chat-messages {
+    max-height: min(50vh, 380px);
+  }
+
+  .competitor-result-item__head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .competitor-result-item__price {
+    white-space: normal;
+  }
+
+  .lookup-result {
+    padding: 12px;
   }
 
   .chat-compose {
