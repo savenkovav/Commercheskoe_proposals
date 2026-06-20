@@ -35,6 +35,7 @@ from src.services.competitor_sites import (
     competitor_label_for_url,
     competitor_sites_with_search,
     extract_competitor_product_urls,
+    is_competitor_asset_url,
     is_competitor_url,
     iter_competitor_domain_batches,
     parse_competitor_search_results,
@@ -249,6 +250,8 @@ def _platform_label(url: str) -> str:
 def _is_blocked_url(url: str) -> bool:
     lower = url.lower()
     if not lower.startswith(("http://", "https://")):
+        return True
+    if is_competitor_asset_url(url):
         return True
     host = _host_from_url(url)
     if any(fragment in host or fragment in lower for fragment in _BLOCKED_HOST_FRAGMENTS):

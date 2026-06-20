@@ -142,11 +142,31 @@ _SKIP_PATH_MARKERS = (
     "/blog",
     "/upload",
     "/media/",
+    "/assets/",
+    "/static/",
+    "/frontend/",
+    "/dist/",
+    "/icons/",
+    "/images/icons/",
+    "/favicon",
+    "/wp-content/",
+    "/wp-includes/",
     ".jpg",
+    ".jpeg",
     ".png",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".ico",
     ".pdf",
     ".css",
     ".js",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".map",
+    ".xml",
+    ".zip",
 )
 
 _PRODUCT_PATH_MARKERS = (
@@ -394,6 +414,16 @@ def iter_competitor_domain_batches(batch_size: int) -> list[list[str]]:
     return [domains[index : index + size] for index in range(0, len(domains), size)]
 
 
+def is_competitor_asset_url(url: str) -> bool:
+    if not url:
+        return True
+    lower = url.lower()
+    path = urlparse(lower).path
+    if any(marker in lower for marker in _SKIP_PATH_MARKERS):
+        return True
+    return bool(re.search(r"\.(?:svg|ico|webp|gif|woff2?|ttf|eot|map|xml|zip)(?:\?|$)", path))
+
+
 def _looks_like_product_path(path: str) -> bool:
     lower = path.lower()
     if any(marker in lower for marker in _SKIP_PATH_MARKERS):
@@ -431,6 +461,8 @@ def extract_competitor_product_urls(
 
         parsed = urlparse(absolute)
         if not host_matches_competitor(parsed.netloc, domain):
+            continue
+        if is_competitor_asset_url(absolute):
             continue
         if not _looks_like_product_path(parsed.path):
             continue
