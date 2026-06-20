@@ -1994,6 +1994,7 @@ function renderCompetitorSearchResults(data) {
             <span class="competitor-result-item__price">${escapeHtml(fmtCompetitorPrice(item))}</span>
           </div>
           <div>${escapeHtml(item.matched_name || "—")}</div>
+          ${item.articul ? `<div class="muted">Артикул: ${escapeHtml(item.articul)}</div>` : ""}
           <div class="muted">${item.match_score ? `${Math.round(item.match_score)}% совпадение` : ""}</div>
           ${
             item.url

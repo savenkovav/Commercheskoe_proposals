@@ -54,6 +54,7 @@ class PriceQuote:
     cost: Optional[float] = None
     price_label: Optional[str] = None
     wholesale_price: Optional[float] = None
+    articul: Optional[str] = None
     supplier: Optional[str] = None
     purchase_date: Optional[str] = None
     match_score: float = 0.0

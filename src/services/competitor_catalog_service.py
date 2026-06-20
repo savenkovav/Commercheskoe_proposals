@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from html import unescape
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import httpx
@@ -40,6 +41,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "stronikum.ru": [
         "https://stronikum.ru/prices",
         "https://stronikum.ru/sitemap.xml",
+    ],
+    "labkabinet.ru": [
+        "https://labkabinet.ru/catalog/",
+        "https://labkabinet.ru/sitemap.xml",
     ],
 }
 
@@ -210,6 +215,258 @@ def _parse_stronikum_category_or_search_rows(
                 articul=None,
             )
         )
+    return products
+
+
+def _is_labkabinet_product_path(path: str) -> bool:
+    return bool(re.match(r"^/product/[^/]+/?$", path.rstrip("/"), re.I))
+
+
+def _labkabinet_product_html_slice(html: str) -> str:
+    """Labkabinet puts h1/price/articul late in HTML (~650k+); slice around product block."""
+    for marker in ("<h1", 'itemprop="name"'):
+        idx = html.find(marker)
+        if idx >= 0:
+            return html[max(0, idx - 2_000) : idx + 25_000]
+    if len(html) > 100_000:
+        return html[-100_000:]
+    return html
+
+
+def _parse_labkabinet_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    path = urlparse(page_url.split("#")[0]).path
+    if not _is_labkabinet_product_path(path):
+        return None
+
+    title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not title_match:
+        title_match = re.search(
+            r'itemprop="name"[^>]*content="(?P<name>[^"]+)"',
+            html,
+            re.I,
+        )
+    if not title_match:
+        title_match = re.search(r'itemprop="name"[^>]*>\s*(?P<name>[^<]+?)\s*</', html, re.I)
+    if not title_match:
+        return None
+
+    name = unescape(re.sub(r"\s+", " ", title_match.group("name")).strip())
+    if len(name) < 4:
+        return None
+
+    focused = _focus_product_price_html(html)
+    price = None
+    price_attr = re.search(
+        r'class="price"[^>]*data-value="(\d[\d\s.]*)"',
+        focused,
+        re.I,
+    )
+    if price_attr:
+        price = _parse_price(price_attr.group(1))
+    if price is None:
+        price = _extract_primary_product_price(focused)
+
+    articul = None
+    articul_match = re.search(
+        r'class="block_articule"[^>]*>.*?Артикул:\s*([A-Za-z0-9\-_.]+)',
+        html,
+        re.I | re.S,
+    )
+    if not articul_match:
+        articul_match = _ARTICUL_RE.search(html)
+
+    details = None
+    desc_match = re.search(
+        r'itemprop="description"[^>]*content="(?P<body>[^"]+)"',
+        html,
+        re.I,
+    )
+    if desc_match:
+        details = _strip_html_text(desc_match.group("body"))[:800] or None
+    if not details:
+        desc_match = re.search(
+            r'itemprop="description"[^>]*>(?P<body>.*?)</div>',
+            html,
+            re.I | re.S,
+        )
+        if desc_match:
+            details = _strip_html_text(desc_match.group("body"))[:800] or None
+
+    price_label = price_on_request_label(focused) if price is None else None
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=page_url.split("#")[0],
+        articul=articul_match.group(1) if articul_match else None,
+        price_label=price_label,
+        details=details,
+    )
+
+
+def _parse_labkabinet_catalog_items(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if "item-title" not in html and "price_value" not in html:
+        return []
+
+    products: list[CompetitorCatalogProduct] = []
+    seen: set[str] = set()
+    pattern = re.compile(
+        r'href="(?P<url>/product/[^"]+)".*?'
+        r'class="item-title"[^>]*>\s*(?P<name>[^<]+?)\s*</.*?'
+        r'class="price_value">(?P<price>[^<]+)</span>',
+        re.I | re.S,
+    )
+    for match in pattern.finditer(html):
+        name = re.sub(r"\s+", " ", match.group("name")).strip()
+        if len(name) < 4:
+            continue
+        key = normalize_name(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        url = _absolute_url(domain, match.group("url"), page_url)
+        if not url or not _is_labkabinet_product_path(urlparse(url).path):
+            continue
+        chunk = html[match.start() : match.start() + 2500]
+        articul_match = _ARTICUL_RE.search(chunk)
+        products.append(
+            CompetitorCatalogProduct(
+                domain=domain,
+                site_label=site_label,
+                name=name[:300],
+                price=_parse_price(match.group("price")),
+                url=url,
+                articul=articul_match.group(1) if articul_match else None,
+            )
+        )
+    return products
+
+
+def _parse_labkabinet_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if domain.lower().removeprefix("www.") != "labkabinet.ru":
+        return []
+
+    product = _parse_labkabinet_product_html(
+        _labkabinet_product_html_slice(html),
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if product:
+        return [product]
+
+    return _parse_labkabinet_catalog_items(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+
+
+def _discover_labkabinet_product_urls() -> list[str]:
+    index_url = "https://labkabinet.ru/sitemap.xml"
+    product_re = re.compile(
+        r"<loc>(https://labkabinet\.ru/product/[^<]+)</loc>",
+        re.I,
+    )
+    sitemap_link_re = re.compile(
+        r"<loc>(https://labkabinet\.ru/sitemap[^<]*\.xml)</loc>",
+        re.I,
+    )
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    try:
+        with httpx.Client(
+            timeout=WEB_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            index_response = client.get(index_url)
+            index_response.raise_for_status()
+            sitemap_urls = sitemap_link_re.findall(index_response.text)
+            if not sitemap_urls:
+                sitemap_urls = ["https://labkabinet.ru/sitemap-iblock-2.xml"]
+
+            for sitemap_url in sitemap_urls:
+                try:
+                    response = client.get(sitemap_url)
+                    response.raise_for_status()
+                except Exception:
+                    continue
+                for url in product_re.findall(response.text):
+                    clean = url.split("#")[0].split("?")[0]
+                    if clean in seen:
+                        continue
+                    seen.add(clean)
+                    urls.append(clean)
+    except Exception:
+        logger.exception("Failed to fetch labkabinet sitemap")
+
+    return urls
+
+
+def fetch_labkabinet_catalog(site: CompetitorSite) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_labkabinet_product_urls()
+    if not product_urls:
+        logger.warning("Labkabinet sitemap empty")
+        return []
+
+    products: list[CompetitorCatalogProduct] = []
+    seen_names: set[str] = set()
+    total = len(product_urls)
+    logger.info("Labkabinet: indexing %s products from sitemap", total)
+
+    with httpx.Client(
+        timeout=WEB_SEARCH_TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+    ) as client:
+        for index, product_url in enumerate(product_urls, start=1):
+            try:
+                response = client.get(product_url)
+                response.raise_for_status()
+            except Exception:
+                logger.debug("Labkabinet product fetch failed %s", product_url, exc_info=True)
+                continue
+
+            product = _parse_labkabinet_product_html(
+                _labkabinet_product_html_slice(response.text),
+                domain=site.domain,
+                site_label=site.label,
+                page_url=str(response.url),
+            )
+            if not product:
+                continue
+            key = normalize_name(product.name)
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            products.append(product)
+
+            if index % 500 == 0 or index == total:
+                logger.info("Labkabinet indexed %s/%s products", index, total)
+
+    logger.info("Labkabinet catalog complete: %s products", len(products))
     return products
 
 
@@ -490,10 +747,12 @@ def _parse_n72_product_previews(
 
 
 def _is_product_detail_path(path: str) -> bool:
-    lower = path.lower()
+    lower = path.lower().rstrip("/")
     if "/catalog/product/" in lower:
         return True
-    return "/products/" in lower and lower.rstrip("/").count("/") >= 3
+    if re.match(r"^/product/[^/]+$", lower):
+        return True
+    return "/products/" in lower and lower.count("/") >= 3
 
 
 def _parse_preview_product_blocks(
@@ -639,6 +898,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     )
     if stronikum_products:
         return stronikum_products
+
+    labkabinet_products = _parse_labkabinet_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if labkabinet_products:
+        return labkabinet_products
 
     shop2_products = _parse_shop2_products(
         html,
@@ -855,8 +1123,10 @@ def fetch_catalog_products(
     max_pages: int = 6,
     extra_urls: list[str] | None = None,
 ) -> list[CompetitorCatalogProduct]:
-    if site.domain.lower().removeprefix("www.") == "stronikum.ru":
+    if domain.lower().removeprefix("www.") == "stronikum.ru":
         return fetch_stronikum_catalog(site)
+    if site.domain.lower().removeprefix("www.") == "labkabinet.ru":
+        return fetch_labkabinet_catalog(site)
 
     dedup_urls = resolve_catalog_urls(site, extra_urls=extra_urls)
 
@@ -1364,6 +1634,7 @@ def _score_catalog_products(
                 cost=product.price,
                 price_label=product.price_label,
                 wholesale_price=product.wholesale_price,
+                articul=product.articul,
                 match_score=round(score, 1),
                 url=product.url,
                 notes=(

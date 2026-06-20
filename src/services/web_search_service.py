@@ -355,6 +355,27 @@ def extract_prices_from_text(text: str) -> list[float]:
     return prices
 
 
+def _extract_articul_from_page(page_text: str) -> str | None:
+    if not page_text:
+        return None
+    snippets: list[str] = []
+    if len(page_text) > 200_000:
+        snippets.append(page_text[-200_000:])
+    snippets.append(page_text[:200_000])
+    for snippet in snippets:
+        match = re.search(
+            r'class="block_articule"[^>]*>.*?Артикул:\s*([A-Za-z0-9\-_.]+)',
+            snippet,
+            re.I | re.S,
+        )
+        if match:
+            return match.group(1)
+        match = re.search(r"Артикул:\s*(?:<span>)?([A-Za-z0-9\-_.]+)", snippet, re.I)
+        if match:
+            return match.group(1)
+    return None
+
+
 def _pick_best_price(prices: list[float]) -> float | None:
     if not prices:
         return None
@@ -400,6 +421,23 @@ def merge_competitor_quotes(
                         cost=existing.cost,
                         price_label=existing.price_label,
                         wholesale_price=quote.wholesale_price,
+                        articul=existing.articul or quote.articul,
+                        supplier=existing.supplier,
+                        purchase_date=existing.purchase_date,
+                        match_score=existing.match_score,
+                        url=existing.url,
+                        notes=existing.notes,
+                    )
+                elif quote.articul and not existing.articul:
+                    quotes[index] = PriceQuote(
+                        source=existing.source,
+                        label=existing.label,
+                        matched_name=existing.matched_name,
+                        price=existing.price,
+                        cost=existing.cost,
+                        price_label=existing.price_label,
+                        wholesale_price=existing.wholesale_price,
+                        articul=quote.articul,
                         supplier=existing.supplier,
                         purchase_date=existing.purchase_date,
                         match_score=existing.match_score,
@@ -874,6 +912,23 @@ class WebSearchService:
                     prefetched_wholesale_price = modal.wholesale_price
                 elif hit.wholesale_price is not None:
                     prefetched_wholesale_price = hit.wholesale_price
+        elif (
+            site.domain.lower().removeprefix("www.") == "labkabinet.ru"
+            and hit.url
+        ):
+            from src.services.competitor_catalog_service import fetch_catalog_page
+
+            catalog_products = fetch_catalog_page(
+                hit.url,
+                domain=site.domain,
+                site_label=site.label,
+            )
+            if catalog_products:
+                catalog = catalog_products[0]
+                if catalog.price is not None:
+                    prefetched_price = catalog.price
+                if catalog.articul:
+                    page_text = f'class="block_articule"><span>Артикул: {catalog.articul}</span>'
         elif hit.url and prefetched_price is None and prefetched_price_label is None:
             page_text, prefetched_price = self._fetch_page_price(
                 hit.url,
@@ -954,6 +1009,26 @@ class WebSearchService:
             else:
                 note = notes or "Конкурент | совпадение названия, цена не указана"
 
+        articul = _extract_articul_from_page(page_text)
+        domain = urlparse(url).netloc.lower().removeprefix("www.") if url else ""
+        needs_catalog_fetch = (
+            url
+            and (
+                not articul
+                or (domain == "labkabinet.ru" and price is None)
+            )
+        )
+        if needs_catalog_fetch:
+            from src.services.competitor_catalog_service import fetch_catalog_page
+
+            fetched = fetch_catalog_page(url, domain=site.domain, site_label=site.label)
+            if fetched:
+                if fetched[0].articul:
+                    articul = fetched[0].articul
+                if price is None and fetched[0].price is not None:
+                    price = fetched[0].price
+                    note = "Конкурент | цена со страницы товара"
+
         competitor_label = site.label or competitor_label_for_url(url) or site.domain
         return PriceQuote(
             source="web",
@@ -963,6 +1038,7 @@ class WebSearchService:
             cost=price,
             price_label=price_label,
             wholesale_price=prefetched_wholesale_price,
+            articul=articul,
             match_score=match_score,
             url=url,
             notes=note,

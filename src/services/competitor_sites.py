@@ -47,11 +47,7 @@ COMPETITOR_SITES: tuple[CompetitorSite, ...] = (
         "Строникум",
         "https://stronikum.ru/search?q={query}",
     ),
-    CompetitorSite(
-        "labkabinet.ru",
-        "Labkabinet",
-        "https://labkabinet.ru/search?q={query}",
-    ),
+    CompetitorSite("labkabinet.ru", "Labkabinet", "https://labkabinet.ru/search/?q={query}"),
     CompetitorSite(
         "vrtorg.ru",
         "ВнешРегионТорг",
@@ -132,6 +128,15 @@ _COMPETITOR_SEARCH_PROFILES: dict[str, CompetitorSearchProfile] = {
             r'class="price_value">(?P<price>[^<]+)</span>'
         ),
         result_section_markers=("n72r-product-preview", "catalog/product", "list_item"),
+    ),
+    "labkabinet.ru": CompetitorSearchProfile(
+        search_url="https://labkabinet.ru/search/?q={query}",
+        result_item_pattern=(
+            r'href="(?P<url>/product/[^"]+)".*?'
+            r'class="item-title"[^>]*>\s*(?P<name>[^<]+?)\s*</.*?'
+            r'class="price_value">(?P<price>[^<]+)</span>'
+        ),
+        result_section_markers=("catalog_block", "item-title", "price_value", "search-page"),
     ),
     "stronikum.ru": CompetitorSearchProfile(
         search_url="https://stronikum.ru/search?q={query}",
