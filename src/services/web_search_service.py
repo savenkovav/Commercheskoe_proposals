@@ -159,6 +159,9 @@ _PRICE_PATTERNS = (
         r'(?:"price"|"lowPrice"|"highPrice")\s*:\s*"?(\d[\d\s]{0,9})"?',
         re.I,
     ),
+    re.compile(r'itemprop="price"[^>]*content="(\d[\d\s.]{0,12})"', re.I),
+    re.compile(r'class="price_value"[^>]*>\s*([^<]+)\s*</span>', re.I),
+    re.compile(r'class="price"[^>]*data-value="(\d[\d\s.]{0,12})"', re.I),
     re.compile(r'data-price=["\'](\d[\d\s]{0,9})["\']', re.I),
     re.compile(
         rf"{_RUBLE_AMOUNT}\s*(?:₽|руб\.?|rub)(?:\s|$|[^\w])",
@@ -356,8 +359,7 @@ def _pick_best_price(prices: list[float]) -> float | None:
         return None
     if len(prices) == 1:
         return prices[0]
-    prices_sorted = sorted(prices)
-    return prices_sorted[len(prices_sorted) // 2]
+    return min(prices)
 
 
 class WebSearchService:
@@ -788,22 +790,34 @@ class WebSearchService:
     ) -> PriceQuote | None:
         if _is_blocked_url(hit.url) or _is_search_listing_url(hit.url):
             return None
+        page_text = ""
+        prefetched_price = hit.price
+        prefetched_price_label = hit.price_label
+        if hit.url and prefetched_price is None and prefetched_price_label is None:
+            page_text, prefetched_price = self._fetch_page_price(
+                hit.url,
+                max_chars=120_000,
+            )
         return self._quote_from_competitor_page(
             query,
             hit.url,
             site,
             threshold=threshold,
             title=hit.name or query,
-            page_text="",
-            prefetched_price=hit.price,
-            prefetched_price_label=hit.price_label,
+            page_text=page_text,
+            prefetched_price=prefetched_price,
+            prefetched_price_label=prefetched_price_label,
             notes=(
                 "Конкурент | цена в выдаче поиска"
                 if hit.price is not None
                 else (
-                    f"Конкурент | {hit.price_label}"
-                    if hit.price_label
-                    else "Конкурент | совпадение в выдаче поиска, цена не указана"
+                    "Конкурент | цена со страницы товара"
+                    if prefetched_price is not None and page_text
+                    else (
+                        f"Конкурент | {hit.price_label}"
+                        if hit.price_label
+                        else "Конкурент | совпадение в выдаче поиска, цена не указана"
+                    )
                 )
             ),
         )
@@ -1355,4 +1369,9 @@ class WebSearchService:
             return "", None
 
         prices = extract_prices_from_text(text)
+        related_idx = text.find("Покупают вместе")
+        if related_idx > 0:
+            main_prices = extract_prices_from_text(text[:related_idx])
+            if main_prices:
+                prices = main_prices
         return text, _pick_best_price(prices)

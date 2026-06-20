@@ -33,11 +33,20 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "xn----7sbbumkojddmeoc1a7r.xn--p1acf": [
         "https://xn----7sbbumkojddmeoc1a7r.xn--p1acf/products/",
     ],
+    "n-72.ru": [
+        "https://n-72.ru/catalog/",
+    ],
 }
 
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
-_ARTICUL_RE = re.compile(r"Артикул:\s*(?:<span>)?([A-Za-z0-9\-_.]+)", re.I)
+_ARTICUL_RE = re.compile(r"Артикул:\s*(?:<span>)?([^\s<]+)", re.I)
+_N72_PREVIEW_RE = re.compile(
+    r'href="(?P<url>/catalog/product/[^"]+)".*?'
+    r'class="n72r-product-preview__title">(?P<name>[^<]+)</a>.*?'
+    r'class="price_value">(?P<price>[^<]+)</span>',
+    re.I | re.S,
+)
 _PRODUCT_LINE_RE = re.compile(
     r"^\[product\]\s*domain=(?P<domain>[^|]+)\s*\|\s*site=(?P<site>[^|]+)\s*\|"
     r"\s*name=(?P<name>[^|]+)\s*\|\s*price=(?P<price>[^|]*)\s*\|"
@@ -109,6 +118,80 @@ _PREVIEW_PRODUCT_NAME_RE = re.compile(
 )
 
 
+def _focus_product_price_html(html: str) -> str:
+    for marker in (
+        "js_price_wrapper",
+        "offers_price",
+        "price_value_block",
+        'itemprop="price"',
+        "<h1",
+    ):
+        idx = html.find(marker)
+        if idx >= 0:
+            return html[idx : idx + 12_000]
+    related_idx = html.find("Покупают вместе")
+    if related_idx > 0:
+        return html[:related_idx]
+    return html[:120_000]
+
+
+def _extract_primary_product_price(html: str) -> float | None:
+    focused = _focus_product_price_html(html)
+    prices = extract_prices_from_text(focused)
+    if prices:
+        return min(prices)
+    return None
+
+
+def _parse_n72_product_previews(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if "n72r-product-preview" not in html:
+        return []
+
+    products: list[CompetitorCatalogProduct] = []
+    seen: set[str] = set()
+    for match in _N72_PREVIEW_RE.finditer(html):
+        name = re.sub(r"\s+", " ", match.group("name")).strip()
+        if len(name) < 4:
+            continue
+        key = normalize_name(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        url = _absolute_url(domain, match.group("url"), page_url)
+        chunk = html[match.start() : match.start() + 3000]
+        articul_match = re.search(
+            r'data-value="([A-Za-z0-9\-_.]+)"[^>]*>\s*<span>\s*Артикул:',
+            chunk,
+            re.I | re.S,
+        )
+        if not articul_match:
+            articul_match = _ARTICUL_RE.search(chunk)
+        products.append(
+            CompetitorCatalogProduct(
+                domain=domain,
+                site_label=site_label,
+                name=name[:300],
+                price=_parse_price(match.group("price")),
+                url=url or None,
+                articul=articul_match.group(1) if articul_match else None,
+            )
+        )
+    return products
+
+
+def _is_product_detail_path(path: str) -> bool:
+    lower = path.lower()
+    if "/catalog/product/" in lower:
+        return True
+    return "/products/" in lower and lower.rstrip("/").count("/") >= 3
+
+
 def _parse_preview_product_blocks(
     html: str,
     *,
@@ -156,7 +239,7 @@ def _parse_product_detail_page(
     page_url: str,
 ) -> list[CompetitorCatalogProduct]:
     path = urlparse(page_url).path.lower()
-    if "/products/" not in path or path.rstrip("/").count("/") < 3:
+    if not _is_product_detail_path(path):
         return []
 
     title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
@@ -173,15 +256,22 @@ def _parse_product_detail_page(
     if len(name) < 4:
         return []
 
-    articul_match = _ARTICUL_RE.search(html[:120_000])
-    prices = extract_prices_from_text(html[:120_000])
-    price_label = price_on_request_label(html[:120_000]) if not prices else None
+    focused = _focus_product_price_html(html)
+    articul_match = re.search(
+        r'data-value="([A-Za-z0-9\-_.]+)"[^>]*>\s*<span>\s*Артикул:',
+        html[:120_000],
+        re.I | re.S,
+    )
+    if not articul_match:
+        articul_match = _ARTICUL_RE.search(html[:120_000])
+    price = _extract_primary_product_price(focused)
+    price_label = price_on_request_label(focused) if price is None else None
     return [
         CompetitorCatalogProduct(
             domain=domain,
             site_label=site_label,
             name=name[:300],
-            price=prices[0] if prices else None,
+            price=price,
             url=page_url.split("#")[0],
             articul=articul_match.group(1) if articul_match else None,
             price_label=price_label,
@@ -246,13 +336,31 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if shop2_products:
         return shop2_products
 
+    n72_products = _parse_n72_product_previews(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if n72_products:
+        if _is_product_detail_path(urlparse(page_url).path.lower()):
+            detail_products = _parse_product_detail_page(
+                html,
+                domain=domain,
+                site_label=site_label,
+                page_url=page_url,
+            )
+            if detail_products:
+                return detail_products
+        return n72_products
+
     preview_products = _parse_preview_product_blocks(
         html,
         domain=domain,
         site_label=site_label,
         page_url=page_url,
     )
-    if preview_products and "/products/" in urlparse(page_url).path.lower():
+    if preview_products and _is_product_detail_path(urlparse(page_url).path.lower()):
         path_parts = [part for part in urlparse(page_url).path.split("/") if part]
         if len(path_parts) >= 3:
             detail_products = _parse_product_detail_page(
@@ -284,7 +392,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
         lower = href.lower()
         if not any(
             token in lower
-            for token in ("/products/", "/product/", "/tovar/", "/goods/", "/item/", "/magazin/")
+            for token in (
+                "/products/",
+                "/product/",
+                "/catalog/product/",
+                "/tovar/",
+                "/goods/",
+                "/item/",
+                "/magazin/",
+            )
         ):
             continue
         if "/folder/" in lower or "/search" in lower or "/cart" in lower:

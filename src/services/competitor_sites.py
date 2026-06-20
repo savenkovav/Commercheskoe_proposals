@@ -40,7 +40,7 @@ COMPETITOR_SITES: tuple[CompetitorSite, ...] = (
         "Punktum",
         "https://xn----7sbbumkojddmeoc1a7r.xn--p1acf/search/search_do/?search_string={query}",
     ),
-    CompetitorSite("n-72.ru", "Новация", "https://n-72.ru/search/?q={query}"),
+    CompetitorSite("n-72.ru", "Новация", "https://n-72.ru/catalog/?q={query}&s="),
     CompetitorSite(
         "stronikum.ru",
         "Строникум",
@@ -122,6 +122,15 @@ _COMPETITOR_SEARCH_PROFILES: dict[str, CompetitorSearchProfile] = {
             r'itemprop="name"\s+href="(?P<url>[^"]+)"[^>]*>\s*(?P<name>[^<]+?)\s*</a>'
         ),
         result_section_markers=("preview_product", "найдено товаров", "itemListElement"),
+    ),
+    "n-72.ru": CompetitorSearchProfile(
+        search_url="https://n-72.ru/catalog/?q={query}&s=",
+        result_item_pattern=(
+            r'href="(?P<url>/catalog/product/[^"]+)".*?'
+            r'class="n72r-product-preview__title">(?P<name>[^<]+)</a>.*?'
+            r'class="price_value">(?P<price>[^<]+)</span>'
+        ),
+        result_section_markers=("n72r-product-preview", "catalog/product", "list_item"),
     ),
 }
 
@@ -279,7 +288,9 @@ def parse_competitor_search_results(
     limit: int = 5,
 ) -> list[CompetitorSearchHit]:
     if page_text and (
-        'class="product-top"' in page_text or "preview_product" in page_text.lower()
+        'class="product-top"' in page_text
+        or "preview_product" in page_text.lower()
+        or "n72r-product-preview" in page_text
     ):
         from src.services.competitor_catalog_service import parse_catalog_html
 
