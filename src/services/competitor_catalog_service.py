@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from html import unescape
 from urllib.parse import quote_plus, urljoin, urlparse
@@ -474,7 +475,7 @@ def fetch_labkabinet_catalog(
             seen_names.add(key)
             products.append(product)
 
-            if store and checkpoint_every > 0 and (
+            if store and checkpoint_every > 0 and products and (
                 index % checkpoint_every == 0 or index == total
             ):
                 saved = store.replace_site_products(
@@ -668,11 +669,26 @@ def fetch_vrtorg_catalog(
         headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
     ) as client:
         for index, product_url in enumerate(product_urls, start=1):
-            try:
-                response = client.get(product_url)
-                response.raise_for_status()
-            except Exception:
-                logger.debug("Vrtorg product fetch failed %s", product_url, exc_info=True)
+            response = None
+            for attempt in range(3):
+                try:
+                    response = client.get(product_url)
+                    if response.status_code in {429, 502, 503, 504} and attempt < 2:
+                        time.sleep(0.6 * (attempt + 1))
+                        continue
+                    response.raise_for_status()
+                    break
+                except Exception:
+                    if attempt >= 2:
+                        logger.debug(
+                            "Vrtorg product fetch failed %s",
+                            product_url,
+                            exc_info=True,
+                        )
+                        response = None
+                    else:
+                        time.sleep(0.6 * (attempt + 1))
+            if response is None:
                 continue
 
             product = _parse_vrtorg_product_html(
@@ -689,7 +705,7 @@ def fetch_vrtorg_catalog(
             seen_names.add(key)
             products.append(product)
 
-            if store and checkpoint_every > 0 and (
+            if store and checkpoint_every > 0 and products and (
                 index % checkpoint_every == 0 or index == total
             ):
                 saved = store.replace_site_products(
@@ -1586,11 +1602,23 @@ def index_competitor_site_catalog(
         )
 
     products = fetch_catalog_products(site, extra_urls=extra_urls)
-    store_count = store.replace_site_products(
-        site.domain,
-        products,
-        site_label=site.label,
-    )
+    existing_products = store.products_for_domain(site.domain)
+    if not products and existing_products:
+        logger.warning(
+            "Catalog fetch returned 0 products for %s — keeping %s existing entries",
+            site.domain,
+            len(existing_products),
+        )
+        products = existing_products
+        store_count = len(existing_products)
+    elif products:
+        store_count = store.replace_site_products(
+            site.domain,
+            products,
+            site_label=site.label,
+        )
+    else:
+        store_count = 0
     for page_url in resolve_catalog_urls(site, extra_urls=extra_urls)[:12]:
         store.record_indexed_page(
             page_url,
