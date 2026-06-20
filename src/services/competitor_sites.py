@@ -22,6 +22,7 @@ class CompetitorSearchHit:
     name: str
     price: float | None = None
     price_label: str | None = None
+    wholesale_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ COMPETITOR_SITES: tuple[CompetitorSite, ...] = (
     CompetitorSite(
         "stronikum.ru",
         "Строникум",
-        "https://stronikum.ru/search/?search={query}",
+        "https://stronikum.ru/search?q={query}",
     ),
     CompetitorSite(
         "labkabinet.ru",
@@ -131,6 +132,14 @@ _COMPETITOR_SEARCH_PROFILES: dict[str, CompetitorSearchProfile] = {
             r'class="price_value">(?P<price>[^<]+)</span>'
         ),
         result_section_markers=("n72r-product-preview", "catalog/product", "list_item"),
+    ),
+    "stronikum.ru": CompetitorSearchProfile(
+        search_url="https://stronikum.ru/search?q={query}",
+        result_item_pattern=(
+            r'href="(?P<url>/\d+_[^/]+/\d+_[^"]+)">(?P<name>[^<]+)</a>.*?'
+            r'<td[^>]*>(?P<price>\d[\d\s]*)</td>'
+        ),
+        result_section_markers=("price-products", "Поиск:", "table-striped"),
     ),
 }
 
@@ -297,6 +306,8 @@ def parse_competitor_search_results(
         'class="product-top"' in page_text
         or "preview_product" in page_text.lower()
         or "n72r-product-preview" in page_text
+        or 'class="product-row"' in page_text
+        or "price-products" in page_text
     ):
         from src.services.competitor_catalog_service import parse_catalog_html
 
@@ -322,6 +333,7 @@ def parse_competitor_search_results(
                     name=product.name,
                     price=product.price,
                     price_label=product.price_label,
+                    wholesale_price=product.wholesale_price,
                 )
             )
             if len(hits) >= limit:
@@ -363,8 +375,15 @@ def parse_competitor_search_results(
         from src.services.web_search_service import price_on_request_label
 
         label = price_on_request_label(chunk) if price is None else None
+        is_stronikum = site.domain.lower().removeprefix("www.") == "stronikum.ru"
         hits.append(
-            CompetitorSearchHit(url=absolute, name=name, price=price, price_label=label)
+            CompetitorSearchHit(
+                url=absolute,
+                name=name,
+                price=None if is_stronikum else price,
+                wholesale_price=price if is_stronikum else None,
+                price_label=label,
+            )
         )
         if len(hits) >= limit:
             break
@@ -488,6 +507,14 @@ def is_competitor_product_page_url(url: str) -> bool:
     if slug_like and "/products/" in path and len(segments) >= 4:
         return True
     if slug_like and "/catalog/" in path and len(segments) >= 3:
+        return True
+
+    # stronikum.ru: /1061_Fizika/15145_Komplekt_...
+    if (
+        len(segments) == 2
+        and re.match(r"\d+_", segments[0])
+        and re.match(r"\d+_", segments[1])
+    ):
         return True
 
     return False

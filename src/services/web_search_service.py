@@ -387,6 +387,25 @@ def merge_competitor_quotes(
                     continue
                 if _quote_has_display_price(quote) and not _quote_has_display_price(existing):
                     quotes[index] = quote
+                elif (
+                    quote.wholesale_price is not None
+                    and existing.wholesale_price is None
+                    and _quote_has_display_price(existing)
+                ):
+                    quotes[index] = PriceQuote(
+                        source=existing.source,
+                        label=existing.label,
+                        matched_name=existing.matched_name,
+                        price=existing.price,
+                        cost=existing.cost,
+                        price_label=existing.price_label,
+                        wholesale_price=quote.wholesale_price,
+                        supplier=existing.supplier,
+                        purchase_date=existing.purchase_date,
+                        match_score=existing.match_score,
+                        url=existing.url,
+                        notes=existing.notes,
+                    )
                 replaced = True
                 break
             if replaced:
@@ -834,8 +853,28 @@ class WebSearchService:
             return None
         page_text = ""
         prefetched_price = hit.price
+        prefetched_wholesale_price = hit.wholesale_price
         prefetched_price_label = hit.price_label
-        if hit.url and prefetched_price is None and prefetched_price_label is None:
+        if (
+            site.domain.lower().removeprefix("www.") == "stronikum.ru"
+            and hit.url
+        ):
+            from src.services.competitor_catalog_service import fetch_catalog_page
+
+            modal_products = fetch_catalog_page(
+                f"{hit.url.rstrip('/')}.modal",
+                domain=site.domain,
+                site_label=site.label,
+            )
+            if modal_products:
+                modal = modal_products[0]
+                if modal.price is not None:
+                    prefetched_price = modal.price
+                if modal.wholesale_price is not None:
+                    prefetched_wholesale_price = modal.wholesale_price
+                elif hit.wholesale_price is not None:
+                    prefetched_wholesale_price = hit.wholesale_price
+        elif hit.url and prefetched_price is None and prefetched_price_label is None:
             page_text, prefetched_price = self._fetch_page_price(
                 hit.url,
                 max_chars=120_000,
@@ -848,6 +887,7 @@ class WebSearchService:
             title=hit.name or query,
             page_text=page_text,
             prefetched_price=prefetched_price,
+            prefetched_wholesale_price=prefetched_wholesale_price,
             prefetched_price_label=prefetched_price_label,
             notes=(
                 "Конкурент | цена в выдаче поиска"
@@ -875,6 +915,7 @@ class WebSearchService:
         page_text: str,
         prefetched_price: float | None,
         prefetched_price_label: str | None = None,
+        prefetched_wholesale_price: float | None = None,
         notes: str | None = None,
     ) -> PriceQuote | None:
         if _is_blocked_url(url) or _is_search_listing_url(url):
@@ -921,6 +962,7 @@ class WebSearchService:
             price=price,
             cost=price,
             price_label=price_label,
+            wholesale_price=prefetched_wholesale_price,
             match_score=match_score,
             url=url,
             notes=note,

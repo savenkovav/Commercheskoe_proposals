@@ -37,6 +37,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "n-72.ru": [
         "https://n-72.ru/catalog/",
     ],
+    "stronikum.ru": [
+        "https://stronikum.ru/prices",
+        "https://stronikum.ru/sitemap.xml",
+    ],
 }
 
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
@@ -51,7 +55,9 @@ _N72_PREVIEW_RE = re.compile(
 _PRODUCT_LINE_RE = re.compile(
     r"^\[product\]\s*domain=(?P<domain>[^|]+)\s*\|\s*site=(?P<site>[^|]+)\s*\|"
     r"\s*name=(?P<name>[^|]+)\s*\|\s*price=(?P<price>[^|]*)\s*\|"
-    r"\s*url=(?P<url>[^|]*)\s*\|\s*articul=(?P<articul>[^|]*)(?:\s*\|\s*price_label=(?P<price_label>[^|]*))?",
+    r"\s*url=(?P<url>[^|]*)\s*\|\s*articul=(?P<articul>[^|]*)(?:\s*\|\s*price_label=(?P<price_label>[^|]*))?"
+    r"(?:\s*\|\s*wholesale_price=(?P<wholesale_price>[^|]*))?"
+    r"(?:\s*\|\s*details=(?P<details>.*))?",
     re.I,
 )
 
@@ -65,6 +71,303 @@ class CompetitorCatalogProduct:
     url: str | None
     articul: str | None = None
     price_label: str | None = None
+    details: str | None = None
+    wholesale_price: float | None = None
+
+
+_STRONIKUM_PRODUCT_PATH_RE = re.compile(r"^/\d+_[^/]+/\d+_", re.I)
+_STRONIKUM_SITEMAP_PRODUCT_RE = re.compile(
+    r"<loc>(https://stronikum\.ru/\d+_[^/]+/\d+_[^<]+)</loc>",
+    re.I,
+)
+_STRONIKUM_CATEGORY_ROW_RE = re.compile(
+    r'href="(?P<url>(?:/\d+_[^/]+/)?\d+_[^"]+)"[^>]*>(?P<name>[^<]+)</a>.*?'
+    r'<td[^>]*(?:align="right")?[^>]*>(?P<price>\d[\d\s]*)\s*(?:р\.|</td>)',
+    re.I | re.S,
+)
+
+
+def _strip_html_text(html: str) -> str:
+    return re.sub(r"\s+", " ", _TAG_RE.sub(" ", html)).strip()
+
+
+def _canonical_stronikum_product_url(url: str) -> str:
+    clean = url.split("#")[0].split("?")[0]
+    if clean.endswith(".modal"):
+        clean = clean[:-6]
+    return clean
+
+
+def _is_stronikum_product_path(path: str) -> bool:
+    return bool(_STRONIKUM_PRODUCT_PATH_RE.match(path.rstrip("/")))
+
+
+def _parse_stronikum_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    canonical_url = _canonical_stronikum_product_url(page_url)
+    path = urlparse(canonical_url).path
+    if not _is_stronikum_product_path(path):
+        return None
+
+    name_match = re.search(
+        r'<h1[^>]*itemprop="name"[^>]*>(?P<name>[^<]+)',
+        html,
+        re.I | re.S,
+    )
+    if not name_match:
+        name_match = re.search(r'itemprop="name">(?P<name>[^<]+)', html, re.I)
+    if not name_match:
+        return None
+
+    name = re.sub(r"\s+", " ", name_match.group("name")).strip()
+    if len(name) < 4:
+        return None
+
+    articul = None
+    articul_match = re.search(
+        r'class="product-code"[^>]*>.*?Артикул:\s*(\d+)',
+        html,
+        re.I | re.S,
+    )
+    if articul_match:
+        articul = articul_match.group(1)
+    else:
+        body_match = re.search(r'class="product-body"[^>]*id="(\d+)"', html, re.I)
+        if body_match:
+            articul = body_match.group(1)
+
+    price = None
+    retail_match = re.search(r"Цена:\s*(\d[\d\s]*)\s*RUB", html, re.I)
+    if retail_match:
+        price = _parse_price(retail_match.group(1))
+
+    wholesale_price = None
+    wholesale_match = re.search(
+        r'itemprop="offers"[^>]*>.*?itemprop="price">(\d+)',
+        html,
+        re.I | re.S,
+    )
+    if wholesale_match:
+        wholesale_price = float(wholesale_match.group(1))
+
+    details = None
+    desc_match = re.search(
+        r'itemprop="description"[^>]*>(?P<body>.*?)</div>',
+        html,
+        re.I | re.S,
+    )
+    if desc_match:
+        details = _strip_html_text(desc_match.group("body"))[:800] or None
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=canonical_url,
+        articul=articul,
+        details=details,
+        wholesale_price=wholesale_price,
+    )
+
+
+def _parse_stronikum_category_or_search_rows(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if 'class="product-row"' not in html and "price-products" not in html:
+        return []
+
+    products: list[CompetitorCatalogProduct] = []
+    seen: set[str] = set()
+    for match in _STRONIKUM_CATEGORY_ROW_RE.finditer(html):
+        name = re.sub(r"\s+", " ", match.group("name")).strip()
+        if len(name) < 4:
+            continue
+        key = normalize_name(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        url = _absolute_url(domain, match.group("url"), page_url)
+        if not url or not _is_stronikum_product_path(urlparse(url).path):
+            continue
+        products.append(
+            CompetitorCatalogProduct(
+                domain=domain,
+                site_label=site_label,
+                name=name[:300],
+                price=None,
+                wholesale_price=_parse_price(match.group("price")),
+                url=_canonical_stronikum_product_url(url),
+                articul=None,
+            )
+        )
+    return products
+
+
+def _parse_stronikum_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if domain.lower().removeprefix("www.") != "stronikum.ru":
+        return []
+
+    product = _parse_stronikum_product_html(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if product:
+        return [product]
+
+    return _parse_stronikum_category_or_search_rows(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+
+
+def _discover_stronikum_product_urls() -> list[str]:
+    sitemap_url = "https://stronikum.ru/sitemap.xml"
+    try:
+        with httpx.Client(
+            timeout=WEB_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            response = client.get(sitemap_url)
+            response.raise_for_status()
+            urls = _STRONIKUM_SITEMAP_PRODUCT_RE.findall(response.text)
+            dedup: list[str] = []
+            seen: set[str] = set()
+            for url in urls:
+                clean = _canonical_stronikum_product_url(url)
+                if clean in seen:
+                    continue
+                seen.add(clean)
+                dedup.append(clean)
+            return dedup
+    except Exception:
+        logger.exception("Failed to fetch stronikum sitemap")
+        return []
+
+
+def _discover_stronikum_category_urls() -> list[str]:
+    menu_url = "https://stronikum.ru/prices"
+    category_re = re.compile(r'href="(/(\d+_[^"/]+))"', re.I)
+    try:
+        with httpx.Client(
+            timeout=WEB_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            response = client.get(menu_url)
+            response.raise_for_status()
+            urls: list[str] = []
+            seen: set[str] = set()
+            for match in category_re.finditer(response.text):
+                path = match.group(1)
+                if "/" in path.strip("/"):
+                    continue
+                absolute = f"https://stronikum.ru{path}"
+                if absolute in seen:
+                    continue
+                seen.add(absolute)
+                urls.append(absolute)
+            return urls
+    except Exception:
+        logger.exception("Failed to discover stronikum categories")
+        return []
+
+
+def fetch_stronikum_catalog(site: CompetitorSite) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_stronikum_product_urls()
+    if not product_urls:
+        logger.warning("Stronikum sitemap empty, falling back to category crawl")
+        category_urls = _discover_stronikum_category_urls()
+        products: list[CompetitorCatalogProduct] = []
+        seen_names: set[str] = set()
+        with httpx.Client(
+            timeout=WEB_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            for category_url in category_urls:
+                try:
+                    response = client.get(category_url)
+                    response.raise_for_status()
+                except Exception:
+                    continue
+                for item in _parse_stronikum_category_or_search_rows(
+                    response.text[:700_000],
+                    domain=site.domain,
+                    site_label=site.label,
+                    page_url=str(response.url),
+                ):
+                    key = normalize_name(item.name)
+                    if key in seen_names:
+                        continue
+                    seen_names.add(key)
+                    products.append(item)
+        return products
+
+    products: list[CompetitorCatalogProduct] = []
+    seen_names: set[str] = set()
+    total = len(product_urls)
+    logger.info("Stronikum: indexing %s products from sitemap", total)
+
+    with httpx.Client(
+        timeout=WEB_SEARCH_TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+    ) as client:
+        for index, product_url in enumerate(product_urls, start=1):
+            modal_url = f"{product_url}.modal"
+            html = ""
+            final_url = product_url
+            try:
+                response = client.get(modal_url)
+                if response.status_code >= 400:
+                    response = client.get(product_url)
+                response.raise_for_status()
+                html = response.text[:200_000]
+                final_url = str(response.url)
+            except Exception:
+                logger.debug("Stronikum product fetch failed %s", product_url, exc_info=True)
+                continue
+
+            product = _parse_stronikum_product_html(
+                html,
+                domain=site.domain,
+                site_label=site.label,
+                page_url=final_url,
+            )
+            if not product:
+                continue
+            key = normalize_name(product.name)
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            products.append(product)
+
+            if index % 250 == 0 or index == total:
+                logger.info("Stronikum indexed %s/%s products", index, total)
+
+    logger.info("Stronikum catalog complete: %s products", len(products))
+    return products
 
 
 def _site_root(domain: str) -> str:
@@ -328,6 +631,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if not html.strip():
         return []
 
+    stronikum_products = _parse_stronikum_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if stronikum_products:
+        return stronikum_products
+
     shop2_products = _parse_shop2_products(
         html,
         domain=domain,
@@ -543,6 +855,9 @@ def fetch_catalog_products(
     max_pages: int = 6,
     extra_urls: list[str] | None = None,
 ) -> list[CompetitorCatalogProduct]:
+    if site.domain.lower().removeprefix("www.") == "stronikum.ru":
+        return fetch_stronikum_catalog(site)
+
     dedup_urls = resolve_catalog_urls(site, extra_urls=extra_urls)
 
     products: list[CompetitorCatalogProduct] = []
@@ -635,7 +950,9 @@ def products_to_rag_text(
             f"domain={product.domain} | site={product.site_label} | "
             f"name={product.name} | price={product.price or ''} | "
             f"url={product.url or ''} | articul={product.articul or ''} | "
-            f"price_label={product.price_label or ''}"
+            f"price_label={product.price_label or ''} | "
+            f"wholesale_price={product.wholesale_price or ''} | "
+            f"details={product.details or ''}"
         )
     return "\n".join(lines)
 
@@ -889,6 +1206,8 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
             url=(match.group("url").strip() or None),
             articul=(match.group("articul").strip() or None),
             price_label=(match.group("price_label") or "").strip() or None,
+            details=(match.group("details") or "").strip() or None,
+            wholesale_price=_parse_price(match.group("wholesale_price")),
         )
 
     domain = ""
@@ -982,6 +1301,8 @@ def enrich_catalog_product_price(
                 url=product.url,
                 articul=item.articul or product.articul,
                 price_label=item.price_label or product.price_label,
+                details=item.details or product.details,
+                wholesale_price=item.wholesale_price or product.wholesale_price,
             )
     if fetched[0].price is not None or fetched[0].price_label:
         item = fetched[0]
@@ -993,6 +1314,8 @@ def enrich_catalog_product_price(
             url=product.url,
             articul=item.articul or product.articul,
             price_label=item.price_label,
+            details=item.details or product.details,
+            wholesale_price=item.wholesale_price or product.wholesale_price,
         )
     return product
 
@@ -1040,6 +1363,7 @@ def _score_catalog_products(
                 price=product.price,
                 cost=product.price,
                 price_label=product.price_label,
+                wholesale_price=product.wholesale_price,
                 match_score=round(score, 1),
                 url=product.url,
                 notes=(

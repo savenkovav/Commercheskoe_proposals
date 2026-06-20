@@ -48,7 +48,7 @@ _CATALOG_PATHS: dict[str, str] = {
     "epp24.ru": "/catalog/",
     "vrtorg.ru": "/catalog/",
     "labkabinet.ru": "/catalog/",
-    "stronikum.ru": "/catalog/",
+    "stronikum.ru": "/prices",
     "n-72.ru": "/catalog/",
     "td-school.ru": "/",
     "xn--54-vlc3b6bza.xn--p1ai": "/",

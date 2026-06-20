@@ -15,8 +15,14 @@ const fmtCompetitorPrice = (item) => {
   if (typeof item?.price === "string" && item.price && Number.isNaN(Number(item.price))) {
     return item.price;
   }
-  const value = item?.price ?? item?.cost;
-  return value == null ? "—" : fmtMoney(value);
+  const retail = item?.price ?? item?.cost;
+  const wholesale = item?.wholesale_price;
+  if (retail != null && wholesale != null && Number(wholesale) !== Number(retail)) {
+    return `${fmtMoney(retail)} · опт ${fmtMoney(wholesale)}`;
+  }
+  if (retail != null) return fmtMoney(retail);
+  if (wholesale != null) return `опт ${fmtMoney(wholesale)}`;
+  return "—";
 };
 
 const fmtQty = (value, unit = "шт.") => {
