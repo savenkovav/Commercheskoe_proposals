@@ -1073,6 +1073,22 @@ def api_competitors_list() -> dict[str, Any]:
     return payload
 
 
+@app.get("/api/competitors/catalog/db")
+def api_competitors_catalog_db(domain: str | None = None) -> dict[str, Any]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    store = get_competitor_product_store()
+    if domain:
+        normalized = domain.lower().removeprefix("www.").strip()
+        if not normalized:
+            raise HTTPException(status_code=400, detail="Укажите domain")
+        report = store.catalog_db_report(domain=normalized)
+        if not report["sites"]:
+            raise HTTPException(status_code=404, detail=f"Каталог для {normalized} не найден")
+        return report
+    return store.catalog_db_report()
+
+
 @app.post("/api/competitors/analyze")
 def api_competitors_analyze(body: CompetitorSiteAnalyzeRequest) -> dict[str, Any]:
     manager = get_competitor_site_manager()

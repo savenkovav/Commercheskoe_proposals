@@ -213,9 +213,15 @@ RAG_DOCS_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 COMPETITOR_SITES_REGISTRY_PATH = PROJECT_ROOT / os.getenv(
     "COMPETITOR_SITES_REGISTRY_PATH", "data/competitor_sites_registry.json"
 )
+COMPETITOR_CATALOG_DB_PATH = PROJECT_ROOT / os.getenv(
+    "COMPETITOR_CATALOG_DB_PATH", "data/competitor_catalog.db"
+)
 COMPETITOR_PRODUCTS_PATH = PROJECT_ROOT / os.getenv(
     "COMPETITOR_PRODUCTS_PATH", "data/competitor_products.json"
 )
+COMPETITOR_PRODUCTS_JSON_EXPORT = os.getenv(
+    "COMPETITOR_PRODUCTS_JSON_EXPORT", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 COMPETITOR_CATALOG_URLS_PATH = PROJECT_ROOT / os.getenv(
     "COMPETITOR_CATALOG_URLS_PATH", "data/competitor_catalog_urls.json"
 )

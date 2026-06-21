@@ -5,24 +5,30 @@ import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 from rapidfuzz import fuzz, process
 
-from src.config import COMPETITOR_PRODUCTS_PATH, COMPETITOR_SEARCH_FALLBACK_THRESHOLD
+from src.config import (
+    COMPETITOR_PRODUCTS_JSON_EXPORT,
+    COMPETITOR_PRODUCTS_PATH,
+    COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
+)
+from src.services.competitor_catalog_db import (
+    CompetitorCatalogDatabase,
+    competitor_product_url_key,
+    get_competitor_catalog_db,
+)
 from src.services.competitor_catalog_service import CompetitorCatalogProduct
 from src.services.data_loader import normalize_name
 
 logger = logging.getLogger(__name__)
 
-
-def competitor_product_url_key(url: str) -> str:
-    normalized = url.rstrip("/").split("#")[0]
-    parsed = urlparse(normalized)
-    query = parse_qs(parsed.query)
-    if query.get("page") or parsed.path.lower().endswith("index.php"):
-        return normalized
-    return normalized.split("?")[0]
+__all__ = [
+    "CompetitorProductStore",
+    "competitor_product_url_key",
+    "get_competitor_product_store",
+    "merge_competitor_product_fields",
+]
 
 
 def merge_competitor_product_fields(
@@ -49,95 +55,64 @@ def merge_competitor_product_fields(
 
 
 class CompetitorProductStore:
-    def __init__(self, path: Path = COMPETITOR_PRODUCTS_PATH) -> None:
-        self.path = path
-        self._products: list[CompetitorCatalogProduct] = []
-        self._pages: list[dict[str, str | int]] = []
-        self._site_labels: dict[str, str] = {}
-        self._loaded = False
-        self._file_mtime: float = 0.0
+    """Фасад над SQLite-каталогом с fuzzy-поиском по товарам."""
 
-    def _disk_mtime(self) -> float:
-        if not self.path.exists():
-            return 0.0
-        return self.path.stat().st_mtime
+    def __init__(
+        self,
+        db: CompetitorCatalogDatabase | None = None,
+        *,
+        json_path: Path = COMPETITOR_PRODUCTS_PATH,
+    ) -> None:
+        self._db = db or get_competitor_catalog_db()
+        self.path = json_path
+        self._products: list[CompetitorCatalogProduct] = []
+        self._loaded = False
 
     def reload(self) -> None:
         self._loaded = False
         self._products = []
-        self._pages = []
-        self._site_labels = {}
-        self._file_mtime = 0.0
         self.ensure_loaded()
 
     def ensure_loaded(self) -> None:
-        mtime = self._disk_mtime()
-        if self._loaded and mtime == self._file_mtime:
+        if self._loaded:
             return
+        self._products = self._db.iter_products()
         self._loaded = True
-        self._file_mtime = mtime
+
+    def _invalidate_cache(self) -> None:
+        self._loaded = False
         self._products = []
-        self._pages = []
-        self._site_labels = {}
-        if not self.path.exists():
-            return
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            rows = payload.get("products", [])
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                product = CompetitorCatalogProduct(
-                    domain=str(row.get("domain", "")),
-                    site_label=str(row.get("site_label", "")),
-                    name=str(row.get("name", "")),
-                    price=row.get("price"),
-                    url=row.get("url") or None,
-                    articul=row.get("articul") or None,
-                    price_label=row.get("price_label") or None,
-                    details=row.get("details") or None,
-                    wholesale_price=row.get("wholesale_price"),
-                    image_url=row.get("image_url") or None,
-                )
-                if product.name.strip():
-                    self._products.append(product)
-                    if product.domain and product.site_label:
-                        self._site_labels[product.domain] = product.site_label
-            page_rows = payload.get("pages", [])
-            if isinstance(page_rows, list):
-                self._pages = [row for row in page_rows if isinstance(row, dict)]
-        except Exception:
-            logger.exception("Failed to load competitor product store")
 
     def save(self) -> None:
+        """Опциональный JSON-снимок для резервного копирования и отладки."""
+        if not COMPETITOR_PRODUCTS_JSON_EXPORT:
+            return
+        products = self._db.iter_products()
+        sites = self._db.list_sites()
+        pages_payload = self._db.list_indexed_pages()
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "pages": self._pages,
-            "products": [asdict(product) for product in self._products],
+            "storage": "sqlite",
+            "db_path": str(self._db.db_path),
+            "sites": sites,
+            "pages": pages_payload,
+            "products": [asdict(product) for product in products],
         }
         self.path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        self._file_mtime = self._disk_mtime()
 
     def has_site(self, domain: str) -> bool:
-        self.ensure_loaded()
-        return any(product.domain == domain for product in self._products)
+        return self._db.has_site(domain)
 
     def site_domains(self) -> set[str]:
-        self.ensure_loaded()
-        return {product.domain for product in self._products if product.domain}
+        return self._db.site_domains()
 
     def products_for_domain(self, domain: str) -> list[CompetitorCatalogProduct]:
-        self.ensure_loaded()
-        normalized = domain.lower().removeprefix("www.")
-        return [
-            product
-            for product in self._products
-            if product.domain.lower().removeprefix("www.") == normalized
-        ]
+        return self._db.products_for_domain(domain)
 
     def replace_site_products(
         self,
@@ -146,18 +121,11 @@ class CompetitorProductStore:
         *,
         site_label: str = "",
     ) -> int:
-        self.ensure_loaded()
-        normalized = domain.lower().removeprefix("www.")
-        self._products = [
-            product
-            for product in self._products
-            if product.domain.lower().removeprefix("www.") != normalized
-        ]
-        added, _updated = self.merge_products(products, domain=domain, site_label=site_label)
-        if site_label:
-            self._site_labels[normalized] = site_label
-        self.save()
-        return added
+        inserted = self._db.replace_site_products(domain, products, site_label=site_label)
+        self._invalidate_cache()
+        if COMPETITOR_PRODUCTS_JSON_EXPORT:
+            self.save()
+        return inserted
 
     def merge_products(
         self,
@@ -166,81 +134,15 @@ class CompetitorProductStore:
         domain: str,
         site_label: str = "",
     ) -> tuple[int, int]:
-        self.ensure_loaded()
-        normalized_domain = domain.lower().removeprefix("www.")
-        label = site_label or self._site_labels.get(normalized_domain, domain)
-        index_by_key: dict[str, int] = {}
-        url_by_key: dict[str, int] = {}
-        for index, product in enumerate(self._products):
-            if product.domain.lower().removeprefix("www.") != normalized_domain:
-                continue
-            name_key = normalize_name(product.name)
-            if name_key:
-                index_by_key[name_key] = index
-            if product.url:
-                url_by_key[competitor_product_url_key(product.url)] = index
-
-        added = 0
-        updated = 0
-        for product in products:
-            if not product.name.strip():
-                continue
-            name_key = normalize_name(product.name)
-            url_key = ""
-            if product.url:
-                url_key = competitor_product_url_key(product.url)
-
-            existing_index = index_by_key.get(name_key)
-            if existing_index is None and url_key:
-                existing_index = url_by_key.get(url_key)
-
-            if existing_index is not None:
-                existing = self._products[existing_index]
-                merged, changed = merge_competitor_product_fields(existing, product)
-                if changed:
-                    self._products[existing_index] = CompetitorCatalogProduct(
-                        domain=normalized_domain,
-                        site_label=merged.site_label or label,
-                        name=merged.name,
-                        price=merged.price,
-                        url=merged.url,
-                        articul=merged.articul,
-                        price_label=merged.price_label,
-                        details=merged.details,
-                        wholesale_price=merged.wholesale_price,
-                        image_url=merged.image_url,
-                    )
-                    updated += 1
-                    if name_key:
-                        index_by_key[name_key] = existing_index
-                    if merged.url:
-                        url_by_key[competitor_product_url_key(merged.url)] = existing_index
-                continue
-
-            new_product = CompetitorCatalogProduct(
-                domain=normalized_domain,
-                site_label=product.site_label or label,
-                name=product.name,
-                price=product.price,
-                url=product.url,
-                articul=product.articul,
-                price_label=product.price_label,
-                details=product.details,
-                wholesale_price=product.wholesale_price,
-                image_url=product.image_url,
-            )
-            self._products.append(new_product)
-            new_index = len(self._products) - 1
-            if name_key:
-                index_by_key[name_key] = new_index
-            if url_key:
-                url_by_key[url_key] = new_index
-            added += 1
-
-        if label:
-            self._site_labels[normalized_domain] = label
+        added, updated = self._db.merge_products(
+            products,
+            domain=domain,
+            site_label=site_label,
+        )
+        self._invalidate_cache()
         if added or updated:
-            self.save()
+            if COMPETITOR_PRODUCTS_JSON_EXPORT:
+                self.save()
         return added, updated
 
     def record_indexed_page(
@@ -251,36 +153,23 @@ class CompetitorProductStore:
         site_label: str,
         products_count: int,
     ) -> None:
-        self.ensure_loaded()
-        normalized_url = page_url.strip().split("#")[0]
-        row = {
-            "url": normalized_url,
-            "domain": domain,
-            "label": site_label,
-            "products_count": products_count,
-            "indexed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._pages = [item for item in self._pages if item.get("url") != normalized_url]
-        self._pages.append(row)
-        self.save()
+        self._db.record_indexed_page(
+            page_url,
+            domain=domain,
+            site_label=site_label,
+            products_count=products_count,
+        )
+        if COMPETITOR_PRODUCTS_JSON_EXPORT:
+            self.save()
 
     def remove_domain(self, domain: str) -> None:
-        self.ensure_loaded()
-        normalized = domain.lower().removeprefix("www.")
-        self._products = [
-            product
-            for product in self._products
-            if product.domain.lower().removeprefix("www.") != normalized
-        ]
-        self._pages = [
-            page for page in self._pages if str(page.get("domain", "")).lower() != normalized
-        ]
-        self._site_labels.pop(normalized, None)
-        self.save()
+        self._db.remove_domain(domain)
+        self._invalidate_cache()
+        if COMPETITOR_PRODUCTS_JSON_EXPORT:
+            self.save()
 
     def iter_products(self) -> list[CompetitorCatalogProduct]:
-        self.ensure_loaded()
-        return list(self._products)
+        return self._db.iter_products()
 
     def search_products(
         self,
@@ -328,22 +217,13 @@ class CompetitorProductStore:
         return results[:limit]
 
     def stats(self) -> dict[str, int | dict[str, int]]:
-        self.ensure_loaded()
-        by_domain: dict[str, int] = {}
-        images_by_domain: dict[str, int] = {}
-        for product in self._products:
-            domain = product.domain.lower().removeprefix("www.")
-            if domain:
-                by_domain[domain] = by_domain.get(domain, 0) + 1
-                if product.image_url:
-                    images_by_domain[domain] = images_by_domain.get(domain, 0) + 1
-        return {
-            "products": len(self._products),
-            "sites": len(self.site_domains()),
-            "pages": len(self._pages),
-            "by_domain": by_domain,
-            "images_by_domain": images_by_domain,
-        }
+        return self._db.stats()
+
+    def list_sites(self) -> list[dict[str, str | int | None]]:
+        return self._db.list_sites()
+
+    def catalog_db_report(self, *, domain: str | None = None) -> dict[str, object]:
+        return self._db.catalog_db_report(domain=domain)
 
 
 _store: CompetitorProductStore | None = None
