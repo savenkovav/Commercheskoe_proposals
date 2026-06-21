@@ -9,12 +9,15 @@ from openpyxl.utils import get_column_letter
 
 from src.config import (
     COMPANY_ADDRESS,
+    COMPANY_DIRECTOR,
     COMPANY_INN,
     COMPANY_KPP,
     COMPANY_NAME,
     COMPANY_OGRN,
     DELIVERY_DAYS,
     DELIVERY_TERMS,
+    KP_SHEET_NAME,
+    KP_VAT_LABEL,
     PAYMENT_TERMS,
     WEB_PRICE_DISCOUNT_PERCENT,
 )
@@ -115,40 +118,59 @@ class ExcelGenerator:
         output_path: Path,
         request_number: str = "б/н",
         preferences: KpPreferences | None = None,
+        *,
+        task_mode: str = "task1",
+        with_margin: bool | None = None,
+        template_mode: bool = False,
     ) -> Path:
+        include_links = task_mode == "task1_task2"
+        show_margin = with_margin if with_margin is not None else True
         wb = Workbook()
 
-        self._build_kp_sheet(wb.active, results, request_number)
-        self._build_kp_specs_links_sheet(
-            wb.create_sheet("Характеристики и ссылки"),
+        self._build_main_kp_sheet(
+            wb.active,
             results,
-            preferences,
+            request_number,
+            include_links=include_links,
+            with_margin=show_margin,
         )
-        self._build_detail_sheet(
-            wb.create_sheet("Детализация"), results, summary, preferences
-        )
-        self._build_kit_sheet(wb.create_sheet("Состав комплектов"), results)
-        self._build_comparison_sheet(wb.create_sheet("Сравнение"), results)
-        self._build_summary_sheet(wb.create_sheet("Сводка"), results, summary)
-        self._build_margin_sheet(
-            wb.create_sheet("Маржинальность"),
-            results,
-            preferences,
-        )
+        if include_links and not template_mode:
+            self._build_kp_specs_links_sheet(
+                wb.create_sheet("Характеристики и ссылки"),
+                results,
+                preferences,
+            )
+        if show_margin and not template_mode:
+            self._build_detail_sheet(
+                wb.create_sheet("Детализация"), results, summary, preferences
+            )
+            self._build_kit_sheet(wb.create_sheet("Состав комплектов"), results)
+            self._build_comparison_sheet(wb.create_sheet("Сравнение"), results)
+            self._build_summary_sheet(wb.create_sheet("Сводка"), results, summary)
+            self._build_margin_sheet(
+                wb.create_sheet("Маржинальность"),
+                results,
+                preferences,
+            )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         wb.save(output_path)
         return output_path
 
-    def _build_kp_sheet(
+    def _build_main_kp_sheet(
         self,
         ws,
         results: list[MatchResult],
         request_number: str,
+        *,
+        include_links: bool,
+        with_margin: bool,
     ) -> None:
-        ws.title = "КП"
+        ws.title = KP_SHEET_NAME
         today = datetime.now().strftime("%d.%m.%Y")
-        last_col = 6
+        last_col = 11 if include_links and with_margin else (10 if with_margin else 6)
+        header_row = 6
+        first_data_row = header_row + 1
 
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
         ws["A1"] = "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ"
@@ -159,82 +181,190 @@ class ExcelGenerator:
         ws["A2"] = f"на запрос {request_number} от {today} г."
         ws["A2"].alignment = Alignment(horizontal="center")
 
+        legal_parts = [COMPANY_NAME]
+        if COMPANY_INN:
+            legal_parts.append(f"ИНН {COMPANY_INN}")
+        if COMPANY_KPP:
+            legal_parts.append(f"КПП {COMPANY_KPP}")
+        if COMPANY_OGRN:
+            legal_parts.append(f"ОГРН {COMPANY_OGRN}")
         ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=last_col)
-        ws["A3"] = (
-            f"{COMPANY_NAME}. ИНН {COMPANY_INN}. КПП {COMPANY_KPP}. ОГРН {COMPANY_OGRN}"
-        )
+        ws["A3"] = ". ".join(legal_parts)
 
-        ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=last_col)
-        ws["A4"] = COMPANY_ADDRESS
+        if COMPANY_ADDRESS:
+            ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=last_col)
+            ws["A4"] = COMPANY_ADDRESS
+
+        if with_margin:
+            markup_cell = ws.cell(row=5, column=8, value=get_markup_percent())
+            markup_cell.font = Font(bold=True)
+            markup_cell.alignment = Alignment(horizontal="center")
 
         headers = [
-            "№",
+            "№ п/п",
             "Наименование товара",
             "Ед. изм.",
             "Количество",
-            "Цена КП",
-            "Стоимость",
+            f"Цена, {KP_VAT_LABEL}",
+            f"Стоимость, {KP_VAT_LABEL}",
         ]
-        header_row = 6
+        if with_margin:
+            headers.extend(["%", "цена пост", "стои пост", "Поставщик"])
+        if include_links and with_margin:
+            headers.append("Ссылка")
+
         for col, header in enumerate(headers, start=1):
             cell = ws.cell(row=header_row, column=col, value=header)
             cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.alignment = Alignment(horizontal="center", wrap_text=True, vertical="center")
             cell.fill = PatternFill("solid", fgColor="D9E1F2")
             cell.border = _thin_border()
 
-        total_price = 0.0
-        for idx, result in enumerate(results, start=1):
-            row = header_row + idx
+        last_data_row = first_data_row - 1
+        for idx, result in enumerate(results, start=first_data_row):
+            last_data_row = idx
             qty = result.tz_item.quantity
-            unit_price = _money(result.unit_price)
-            line_total = _money(result.total_price)
-            total_price += line_total
-
             name = result.tz_item.name
             if result.status == MatchStatus.SIMILAR:
                 name = f"{name} *"
             elif result.status == MatchStatus.NOT_FOUND:
                 name = f"{name} (не подобрано)"
 
-            values = [
-                result.tz_item.number,
-                name,
-                result.tz_item.unit,
-                qty,
-                unit_price if unit_price else "—",
-                line_total if line_total else "—",
-            ]
-            for col, value in enumerate(values, start=1):
-                cell = ws.cell(row=row, column=col, value=value)
-                cell.border = _thin_border()
-                cell.alignment = Alignment(wrap_text=True, vertical="top")
-                if col in (5, 6) and isinstance(value, (int, float)):
-                    cell.number_format = '#,##0.00'
+            ws.cell(row=idx, column=1, value=result.tz_item.number).border = _thin_border()
+            name_cell = ws.cell(row=idx, column=2, value=name)
+            name_cell.border = _thin_border()
+            name_cell.alignment = Alignment(wrap_text=True, vertical="top")
+            ws.cell(row=idx, column=3, value=result.tz_item.unit).border = _thin_border()
+            ws.cell(row=idx, column=4, value=qty).border = _thin_border()
 
-        total_row = header_row + len(results) + 1
-        ws.cell(row=total_row, column=5, value="Всего:").font = Font(bold=True)
-        total_cell = ws.cell(row=total_row, column=6, value=_money(total_price))
-        total_cell.font = Font(bold=True)
-        total_cell.number_format = '#,##0.00'
+            unit_cost = _margin_supplier_unit(result)
+            markup_pct = effective_markup_percent(result)
+            if markup_pct is None:
+                markup_pct = get_markup_percent()
 
-        note_row = total_row + 2
-        ws.merge_cells(
-            start_row=note_row,
-            start_column=1,
-            end_row=note_row,
-            end_column=last_col,
+            if with_margin:
+                ws.cell(row=idx, column=7, value=f"=$H$5").border = _thin_border()
+                cost_cell = ws.cell(row=idx, column=8, value=unit_cost if unit_cost else 0)
+                cost_cell.number_format = "#,##0.00"
+                cost_cell.border = _thin_border()
+
+                price_cell = ws.cell(row=idx, column=5, value=f"=H{idx}+H{idx}*G{idx}%")
+                price_cell.number_format = "#,##0.00"
+                price_cell.border = _thin_border()
+
+                total_cell = ws.cell(row=idx, column=6, value=f"=D{idx}*E{idx}")
+                total_cell.number_format = "#,##0.00"
+                total_cell.border = _thin_border()
+
+                supplier_total = ws.cell(row=idx, column=9, value=f"=D{idx}*H{idx}")
+                supplier_total.number_format = "#,##0.00"
+                supplier_total.border = _thin_border()
+
+                supplier_name = (result.supplier or "").strip() or "—"
+                if not supplier_name or supplier_name == "—":
+                    supplier_name = (result.matched_name or "—")[:80]
+                supplier_cell = ws.cell(row=idx, column=10, value=supplier_name)
+                supplier_cell.border = _thin_border()
+                supplier_cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+                if include_links:
+                    link_url = resolve_price_source_url(
+                        result.comparison,
+                        unit_base_price=result.unit_base_price,
+                    )
+                    if not link_url:
+                        _, link_url = parse_source_detail(result.source_detail or "")
+                    if link_url:
+                        _write_hyperlink(ws, idx, 11, link_url, link_url[:80])
+                    else:
+                        ws.cell(row=idx, column=11, value="—").border = _thin_border()
+            else:
+                unit_price = _money(result.unit_price) if result.unit_price else None
+                line_total = _money(result.total_price) if result.total_price else None
+                price_cell = ws.cell(row=idx, column=5, value=unit_price or "—")
+                price_cell.number_format = "#,##0.00"
+                price_cell.border = _thin_border()
+                total_cell = ws.cell(row=idx, column=6, value=line_total or "—")
+                total_cell.number_format = "#,##0.00"
+                total_cell.border = _thin_border()
+
+        total_row = max(last_data_row + 1, first_data_row)
+        ws.cell(row=total_row, column=1, value="Всего:").font = Font(bold=True)
+        total_price_cell = ws.cell(row=total_row, column=6, value=f"=SUM(F{first_data_row}:F{last_data_row})")
+        total_price_cell.font = Font(bold=True)
+        total_price_cell.number_format = "#,##0.00"
+        total_price_cell.border = _thin_border()
+
+        if with_margin:
+            supplier_sum_cell = ws.cell(
+                row=total_row,
+                column=9,
+                value=f"=SUM(I{first_data_row}:I{last_data_row})",
+            )
+            supplier_sum_cell.font = Font(bold=True)
+            supplier_sum_cell.number_format = "#,##0.00"
+            supplier_sum_cell.border = _thin_border()
+
+        terms_row = total_row + 2
+        ws.cell(row=terms_row, column=2, value=f"Условия оплаты: {PAYMENT_TERMS}")
+        ws.cell(row=terms_row + 1, column=2, value=f"Срок поставки: {DELIVERY_DAYS}")
+        ws.cell(row=terms_row + 2, column=2, value=f"Доставка: {DELIVERY_TERMS}")
+
+        if with_margin:
+            tax_row = terms_row + 1
+            profit_row = terms_row + 2
+            margin_row = terms_row + 3
+            ws.cell(row=tax_row, column=8, value="Налог").font = Font(bold=True)
+            ws.cell(
+                row=tax_row,
+                column=9,
+                value=f"=(F{total_row}-I{total_row})*5%+F{total_row}/1.05*0.05",
+            ).number_format = "#,##0.00"
+            ws.cell(row=profit_row, column=8, value="Прибыль").font = Font(bold=True)
+            ws.cell(
+                row=profit_row,
+                column=9,
+                value=f"=F{total_row}-I{tax_row}-I{total_row}",
+            ).number_format = "#,##0.00"
+            ws.cell(row=margin_row, column=8, value="Маржа").font = Font(bold=True)
+            ws.cell(
+                row=margin_row,
+                column=9,
+                value=f"=I{profit_row}/(I{total_row}+I{tax_row})",
+            ).number_format = "0.00%"
+
+        sign_row = terms_row + (5 if with_margin else 3)
+        ws.cell(row=sign_row, column=1, value=COMPANY_DIRECTOR)
+
+        note_row = sign_row + 1
+        ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=last_col)
+        ws.cell(
+            row=note_row,
+            column=1,
+            value="* — позиции, требующие проверки менеджером",
         )
-        ws[f"A{note_row}"] = "* — позиции, требующие проверки менеджером"
 
-        terms_row = note_row + 2
-        ws[f"A{terms_row}"] = f"Условия оплаты: {PAYMENT_TERMS}"
-        ws[f"A{terms_row + 1}"] = f"Срок поставки: {DELIVERY_DAYS}"
-        ws[f"A{terms_row + 2}"] = f"Доставка: {DELIVERY_TERMS}"
-
-        widths = [6, 42, 10, 12, 16, 16]
+        widths = [6, 42, 10, 12, 18, 18]
+        if with_margin:
+            widths.extend([8, 14, 14, 18])
+        if include_links and with_margin:
+            widths.append(28)
         for col_idx, width in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    def _build_kp_sheet(
+        self,
+        ws,
+        results: list[MatchResult],
+        request_number: str,
+    ) -> None:
+        self._build_main_kp_sheet(
+            ws,
+            results,
+            request_number,
+            include_links=False,
+            with_margin=False,
+        )
 
     def _build_kp_specs_links_sheet(
         self,

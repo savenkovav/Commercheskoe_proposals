@@ -28,6 +28,7 @@ data/registry_photos/
 .vscode/
 *.xlsx
 !data/*.xlsx
+!data/templates/*.xlsx
 *.xls
 !data/*.xls
 *.docx

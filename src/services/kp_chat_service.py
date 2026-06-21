@@ -350,6 +350,8 @@ class KpChatService:
             session.summary,
             session.output_path,
             preferences=session.preferences,
+            task_mode=session.task_mode,
+            with_margin=True,
         )
         session.stage = "exported"
         self.store.save()

@@ -570,7 +570,14 @@ def _process_tz_upload(
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = OUTPUT_DIR / f"KP_{timestamp}.xlsx"
-    processor.excel.generate(results, summary, output_path, preferences=prefs)
+    processor.excel.generate(
+        results,
+        summary,
+        output_path,
+        preferences=prefs,
+        task_mode=task_mode,
+        with_margin=True,
+    )
 
     session_id = _kp_chat_service().create_session(
         parsed_items,
