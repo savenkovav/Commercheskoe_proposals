@@ -31,6 +31,28 @@ logger = logging.getLogger(__name__)
 PDF_FONT_REGULAR_NAME = "KpPdfRegular"
 PDF_FONT_BOLD_NAME = "KpPdfBold"
 
+PAGE_WIDTH = 595
+PAGE_HEIGHT = 842
+MARGIN_X = 42
+MARGIN_RIGHT = 553
+TABLE_BOTTOM_Y = 760
+
+ROW_FONT_SIZE = 9
+HEADER_FONT_SIZE = 9
+LINE_HEIGHT = ROW_FONT_SIZE + 3
+ROW_GAP = 5
+HEADER_GAP_AFTER_LINE = 10
+
+# x0, x1 для колонок таблицы
+TABLE_COLS = {
+    "num": (MARGIN_X, MARGIN_X + 20),
+    "name": (MARGIN_X + 22, MARGIN_X + 246),
+    "unit": (MARGIN_X + 248, MARGIN_X + 276),
+    "qty": (MARGIN_X + 278, MARGIN_X + 316),
+    "price": (MARGIN_X + 318, MARGIN_X + 406),
+    "sum": (MARGIN_X + 408, MARGIN_RIGHT),
+}
+
 
 def resolve_kp_stamp_image() -> Path | None:
     stamp_path = KP_STAMP_PATH
@@ -87,6 +109,94 @@ def _fmt_money(value: float | None) -> str:
     return f"{value:,.2f}".replace(",", " ").replace(".", ",")
 
 
+def _col_width(col_key: str) -> float:
+    x0, x1 = TABLE_COLS[col_key]
+    return x1 - x0 - 2
+
+
+def _wrap_text(text: str, font: fitz.Font, fontsize: float, max_width: float) -> list[str]:
+    normalized = " ".join(str(text).split())
+    if not normalized:
+        return [""]
+
+    lines: list[str] = []
+    for word in normalized.split(" "):
+        if font.text_length(word, fontsize=fontsize) <= max_width:
+            if not lines:
+                lines.append(word)
+            else:
+                candidate = f"{lines[-1]} {word}"
+                if font.text_length(candidate, fontsize=fontsize) <= max_width:
+                    lines[-1] = candidate
+                else:
+                    lines.append(word)
+            continue
+
+        if lines and lines[-1]:
+            lines.append("")
+        chunk = ""
+        for char in word:
+            candidate = f"{chunk}{char}"
+            if font.text_length(candidate, fontsize=fontsize) <= max_width:
+                chunk = candidate
+            else:
+                if chunk:
+                    lines.append(chunk)
+                chunk = char
+        if chunk:
+            if lines and lines[-1] == "":
+                lines[-1] = chunk
+            else:
+                lines.append(chunk)
+
+    return lines or [""]
+
+
+def _draw_wrapped_cell(
+    page: fitz.Page,
+    col_key: str,
+    row_top: float,
+    text: str,
+    *,
+    fontname: str,
+    font: fitz.Font,
+    fontsize: float = ROW_FONT_SIZE,
+) -> int:
+    x0, x1 = TABLE_COLS[col_key]
+    max_width = _col_width(col_key)
+    lines = _wrap_text(text, font, fontsize, max_width)
+    baseline = row_top + fontsize
+    for index, line in enumerate(lines):
+        page.insert_text(
+            fitz.Point(x0, baseline + index * LINE_HEIGHT),
+            line,
+            fontsize=fontsize,
+            fontname=fontname,
+            color=(0, 0, 0),
+        )
+    content_height = len(lines) * LINE_HEIGHT
+    return max(1, len(lines))
+
+
+def _draw_single_cell(
+    page: fitz.Page,
+    col_key: str,
+    row_top: float,
+    text: str,
+    *,
+    fontname: str,
+    fontsize: float = ROW_FONT_SIZE,
+) -> None:
+    x0, _ = TABLE_COLS[col_key]
+    page.insert_text(
+        fitz.Point(x0, row_top + fontsize),
+        text,
+        fontsize=fontsize,
+        fontname=fontname,
+        color=(0, 0, 0),
+    )
+
+
 class PdfGenerator:
     def generate(
         self,
@@ -100,8 +210,7 @@ class PdfGenerator:
         font_bold = fitz.Font(fontfile=str(bold_path))
 
         doc = fitz.open()
-        page = doc.new_page(width=595, height=842)
-        margin_x = 42
+        page = doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
         y = 48
         today = datetime.now().strftime("%d.%m.%Y")
 
@@ -124,9 +233,9 @@ class PdfGenerator:
             nonlocal y, page
             fontname = PDF_FONT_BOLD_NAME if bold else PDF_FONT_REGULAR_NAME
             font_obj = font_bold if bold else font_regular
-            x = margin_x
+            x = MARGIN_X
             if center:
-                x = max(margin_x, (595 - font_obj.text_length(text, fontsize=size)) / 2)
+                x = max(MARGIN_X, (PAGE_WIDTH - font_obj.text_length(text, fontsize=size)) / 2)
             page.insert_text(
                 fitz.Point(x, y),
                 text,
@@ -136,21 +245,45 @@ class PdfGenerator:
             )
             y += size + 6
 
-        def write_at(
-            x: float,
-            text: str,
-            *,
-            size: float = 9,
-            bold: bool = False,
-        ) -> None:
-            fontname = PDF_FONT_BOLD_NAME if bold else PDF_FONT_REGULAR_NAME
-            page.insert_text(
-                fitz.Point(x, y),
-                text,
-                fontsize=size,
-                fontname=fontname,
-                color=(0, 0, 0),
+        def draw_table_header() -> None:
+            nonlocal y, page
+            header_top = y
+            headers = {
+                "num": "№",
+                "name": "Наименование",
+                "unit": "Ед.",
+                "qty": "Кол-во",
+                "price": f"Цена, {KP_VAT_LABEL}",
+                "sum": "Сумма",
+            }
+            max_header_lines = 1
+            for col_key, header in headers.items():
+                line_count = _draw_wrapped_cell(
+                    page,
+                    col_key,
+                    header_top,
+                    header,
+                    fontname=PDF_FONT_BOLD_NAME,
+                    font=font_bold,
+                    fontsize=HEADER_FONT_SIZE,
+                )
+                max_header_lines = max(max_header_lines, line_count)
+
+            header_height = max_header_lines * LINE_HEIGHT + 4
+            separator_y = header_top + header_height + 2
+            page.draw_line(
+                fitz.Point(MARGIN_X, separator_y),
+                fitz.Point(MARGIN_RIGHT, separator_y),
+                width=0.8,
             )
+            y = separator_y + HEADER_GAP_AFTER_LINE
+
+        def start_new_page() -> None:
+            nonlocal page, y
+            page = doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+            ensure_page_fonts(page)
+            y = 48
+            draw_table_header()
 
         write_line("КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ", size=16, bold=True, center=True)
         write_line(f"на запрос {request_number} от {today} г.", size=11, center=True)
@@ -167,13 +300,7 @@ class PdfGenerator:
             write_line(COMPANY_ADDRESS, size=10)
 
         y += 8
-        headers = ["№", "Наименование", "Ед.", "Кол-во", f"Цена, {KP_VAT_LABEL}", "Сумма"]
-        col_x = [margin_x, margin_x + 24, margin_x + 250, margin_x + 280, margin_x + 330, margin_x + 410]
-        header_y = y
-        for idx, header in enumerate(headers):
-            write_at(col_x[idx], header, size=9, bold=True)
-        y += 18
-        page.draw_line(fitz.Point(margin_x, y - 4), fitz.Point(553, y - 4), width=0.8)
+        draw_table_header()
 
         for result in results:
             qty = result.tz_item.quantity
@@ -185,24 +312,67 @@ class PdfGenerator:
 
             unit_price = _money(result.unit_price) if result.unit_price is not None else None
             line_total = _money(result.total_price) if result.total_price is not None else None
-            row_values = [
-                str(result.tz_item.number),
-                name[:90],
-                result.tz_item.unit,
-                str(qty).replace(".", ","),
-                _fmt_money(unit_price),
-                _fmt_money(line_total),
-            ]
-            for idx, value in enumerate(row_values):
-                write_at(col_x[idx], value, size=9)
-            y += 14
-            if y > 760:
-                page = doc.new_page(width=595, height=842)
-                ensure_page_fonts(page)
-                y = 48
 
-        y += 6
-        page.draw_line(fitz.Point(margin_x, y), fitz.Point(553, y), width=0.8)
+            name_lines = _wrap_text(
+                name,
+                font_regular,
+                ROW_FONT_SIZE,
+                _col_width("name"),
+            )
+            row_height = max(ROW_FONT_SIZE + 2, len(name_lines) * LINE_HEIGHT + 2)
+
+            if y + row_height > TABLE_BOTTOM_Y:
+                start_new_page()
+
+            row_top = y
+            _draw_wrapped_cell(
+                page,
+                "name",
+                row_top,
+                name,
+                fontname=PDF_FONT_REGULAR_NAME,
+                font=font_regular,
+            )
+            _draw_single_cell(
+                page,
+                "num",
+                row_top,
+                str(result.tz_item.number),
+                fontname=PDF_FONT_REGULAR_NAME,
+            )
+            _draw_single_cell(
+                page,
+                "unit",
+                row_top,
+                result.tz_item.unit,
+                fontname=PDF_FONT_REGULAR_NAME,
+            )
+            _draw_single_cell(
+                page,
+                "qty",
+                row_top,
+                str(qty).replace(".", ","),
+                fontname=PDF_FONT_REGULAR_NAME,
+            )
+            _draw_single_cell(
+                page,
+                "price",
+                row_top,
+                _fmt_money(unit_price),
+                fontname=PDF_FONT_REGULAR_NAME,
+            )
+            _draw_single_cell(
+                page,
+                "sum",
+                row_top,
+                _fmt_money(line_total),
+                fontname=PDF_FONT_REGULAR_NAME,
+            )
+
+            y = row_top + row_height + ROW_GAP
+
+        y += 4
+        page.draw_line(fitz.Point(MARGIN_X, y), fitz.Point(MARGIN_RIGHT, y), width=0.8)
         y += 12
         write_line(f"Всего: {_fmt_money(summary.total_price)}", size=11, bold=True)
         y += 8
