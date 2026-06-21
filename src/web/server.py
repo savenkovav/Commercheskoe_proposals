@@ -1104,12 +1104,17 @@ def api_competitors_index_status(url: str) -> dict[str, Any]:
 
     store = get_competitor_product_store()
     store.reload()
+    is_builtin = bool(
+        (draft and draft.builtin)
+        or (job and job.get("is_builtin"))
+    )
     return {
         "domain": domain,
         "running": running,
         "phase": phase or None,
         "phase_label": get_index_phase_label(phase if phase else None),
         "index_completed": bool(draft and draft.indexed and not running),
+        "is_builtin": is_builtin,
         "catalog": draft.index_result if draft else None,
         "analysis": analysis,
         "error": job.get("error") if job else None,
@@ -1157,6 +1162,7 @@ def api_competitors_index(body: CompetitorSiteIndexRequest) -> dict[str, Any]:
         "running": result.get("running", False),
         "domain": result.get("domain"),
         "phase": result.get("phase"),
+        "is_builtin": bool(result.get("is_builtin")),
         "index_completed": False,
         "message": result.get("message"),
         "catalog_products": store.stats(),

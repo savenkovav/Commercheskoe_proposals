@@ -73,9 +73,30 @@ class CompetitorSiteDraft:
     price_html_hint: str | None
     articul_html_hint: str | None
     analysis: dict
+    builtin: bool = False
     indexed: bool = False
     index_result: dict | None = None
     indexed_at: str = ""
+
+
+_SEARCH_SKIP_MARKERS = (
+    ".css",
+    ".js",
+    ".min.css",
+    ".min.js",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".woff",
+    ".woff2",
+    "/libs/",
+    "/assets/",
+    "/static/",
+    "/upload/",
+    "/bitrix/cache/",
+)
 
 
 class CompetitorSiteManager:
@@ -238,6 +259,8 @@ class CompetitorSiteManager:
         candidates: list[str] = []
         for href in _HREF_RE.findall(html):
             lower = href.lower()
+            if any(marker in lower for marker in _SEARCH_SKIP_MARKERS):
+                continue
             if not any(hint in lower for hint in _SEARCH_HINTS):
                 continue
             if href.startswith("//"):
@@ -251,7 +274,18 @@ class CompetitorSiteManager:
             parsed = urlparse(absolute)
             if domain not in parsed.netloc.lower():
                 continue
+            path_lower = parsed.path.lower()
+            if any(path_lower.endswith(ext) for ext in (".css", ".js", ".map", ".xml")):
+                continue
             candidates.append(absolute.split("#")[0])
+
+        candidates.sort(
+            key=lambda url: (
+                0 if "/search" in urlparse(url).path.lower() else 1,
+                0 if "{query}" in url else 1,
+                len(url),
+            )
+        )
 
         for candidate in candidates:
             if "{query}" in candidate:
@@ -298,23 +332,26 @@ class CompetitorSiteManager:
         domain = str(analysis["domain"])
         normalized = domain.lower().removeprefix("www.")
 
-        from src.services.competitor_sites import all_competitor_domains
+        from src.services.competitor_sites import get_builtin_competitor_site
 
-        if domain in {entry.domain for entry in self._custom}:
-            raise ValueError(f"Сайт {domain} уже добавлен")
-        if domain in all_competitor_domains(include_custom=False):
-            raise ValueError(f"Сайт {domain} уже есть во встроенном списке")
+        builtin_site = get_builtin_competitor_site(domain)
+        resolved_label = str(analysis.get("label") or label.strip() or domain)
+        resolved_search = analysis.get("search_url")
+        if builtin_site:
+            resolved_label = label.strip() or builtin_site.label
+            resolved_search = builtin_site.search_url or resolved_search
 
         sample_url = self._normalize_optional_url(product_sample_url)
         draft = CompetitorSiteDraft(
             url=str(analysis["url"]),
             domain=domain,
-            label=str(analysis.get("label") or label.strip() or domain),
-            search_url=analysis.get("search_url"),
+            label=resolved_label,
+            search_url=resolved_search,
             product_sample_url=sample_url,
             price_html_hint=(price_html_hint or "").strip() or None,
             articul_html_hint=(articul_html_hint or "").strip() or None,
             analysis=analysis,
+            builtin=bool(builtin_site),
         )
         self._drafts[normalized] = draft
         return draft, analysis
@@ -358,7 +395,10 @@ class CompetitorSiteManager:
         from src.services.competitor_sites import all_competitor_domains
 
         if domain in all_competitor_domains(include_custom=False):
-            raise ValueError(f"Сайт {domain} уже есть во встроенном списке")
+            raise ValueError(
+                f"Сайт {domain} уже есть во встроенном списке — "
+                "добавление не требуется, используйте «Проиндексировать» для обновления каталога"
+            )
 
         entry_id = self._make_id(domain)
         used = {entry.id for entry in self._custom}

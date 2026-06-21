@@ -151,6 +151,12 @@ COMPETITOR_NATIVE_SEARCH_MAX_FETCHES = max(
 COMPETITOR_SEARCH_PARALLEL_WORKERS = max(
     1, int(os.getenv("COMPETITOR_SEARCH_PARALLEL_WORKERS", "14"))
 )
+# Параллельная индексация каталога конкурента (страницы товаров из sitemap)
+COMPETITOR_INDEX_WORKERS = max(1, int(os.getenv("COMPETITOR_INDEX_WORKERS", "12")))
+COMPETITOR_INDEX_MAX_URLS = max(100, int(os.getenv("COMPETITOR_INDEX_MAX_URLS", "8000")))
+COMPETITOR_INDEX_REQUEST_TIMEOUT = float(
+    os.getenv("COMPETITOR_INDEX_REQUEST_TIMEOUT", "6")
+)
 
 MEILISEARCH_ENABLED = os.getenv("MEILISEARCH_ENABLED", "false").lower() in {
     "1",

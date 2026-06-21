@@ -244,6 +244,18 @@ def competitor_sites_with_search() -> tuple[CompetitorSite, ...]:
     return tuple(site for site in _merged_competitor_sites() if site.search_url)
 
 
+def get_builtin_competitor_site(domain: str) -> CompetitorSite | None:
+    normalized = domain.lower().removeprefix("www.")
+    for site in COMPETITOR_SITES:
+        if site.domain.lower().removeprefix("www.") == normalized:
+            return site
+    return None
+
+
+def is_builtin_competitor_domain(domain: str) -> bool:
+    return get_builtin_competitor_site(domain) is not None
+
+
 def competitor_search_profile(domain: str) -> CompetitorSearchProfile | None:
     key = domain.lower().removeprefix("www.")
     return _COMPETITOR_SEARCH_PROFILES.get(key)

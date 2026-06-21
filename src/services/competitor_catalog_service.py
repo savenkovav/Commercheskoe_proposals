@@ -4,13 +4,20 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from html import unescape
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import httpx
 
-from src.config import COMPETITOR_SEARCH_FALLBACK_THRESHOLD, WEB_SEARCH_TIMEOUT
+from src.config import (
+    COMPETITOR_INDEX_MAX_URLS,
+    COMPETITOR_INDEX_REQUEST_TIMEOUT,
+    COMPETITOR_INDEX_WORKERS,
+    COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
+    WEB_SEARCH_TIMEOUT,
+)
 from src.services.competitor_sites import (
     CompetitorSite,
     competitor_label_for_url,
@@ -255,8 +262,9 @@ def _discover_generic_sitemap_product_urls(
     domain: str,
     sample_url: str | None = None,
     *,
-    limit: int = 8000,
+    limit: int | None = None,
 ) -> list[str]:
+    resolved_limit = COMPETITOR_INDEX_MAX_URLS if limit is None else limit
     normalized = domain.lower().removeprefix("www.")
     root = f"https://{normalized}"
     queue = [f"{root}/sitemap.xml", f"{root}/sitemap_index.xml"]
@@ -270,7 +278,7 @@ def _discover_generic_sitemap_product_urls(
             follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
         ) as client:
-            while queue and len(product_urls) < limit:
+            while queue and len(product_urls) < resolved_limit:
                 sitemap_url = queue.pop(0)
                 if sitemap_url in seen_sitemaps:
                     continue
@@ -298,12 +306,48 @@ def _discover_generic_sitemap_product_urls(
                         continue
                     seen_products.add(clean)
                     product_urls.append(clean)
-                    if len(product_urls) >= limit:
+                    if len(product_urls) >= resolved_limit:
                         break
     except Exception:
         logger.exception("Failed to discover sitemap for %s", domain)
 
     return product_urls
+
+
+def _format_index_eta(seconds: float) -> str:
+    if seconds <= 0 or seconds == float("inf"):
+        return ""
+    total = int(seconds)
+    if total < 60:
+        return f", ~{total} сек"
+    minutes = total // 60
+    if minutes < 120:
+        return f", ~{minutes} мин"
+    hours = minutes // 60
+    return f", ~{hours} ч {minutes % 60} мин"
+
+
+def _fetch_single_product_page(
+    site: CompetitorSite,
+    product_url: str,
+) -> list[CompetitorCatalogProduct]:
+    try:
+        with httpx.Client(
+            timeout=COMPETITOR_INDEX_REQUEST_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            response = client.get(product_url)
+            response.raise_for_status()
+            return parse_catalog_html(
+                response.text[:700_000],
+                domain=site.domain,
+                site_label=site.label,
+                page_url=str(response.url),
+            )
+    except Exception:
+        logger.debug("Product fetch failed %s", product_url, exc_info=True)
+        return []
 
 
 def _fetch_products_from_url_list(
@@ -319,65 +363,85 @@ def _fetch_products_from_url_list(
 
     products: list[CompetitorCatalogProduct] = []
     seen_names: set[str] = set()
+    state_lock = threading.Lock()
     total = len(product_urls)
     store = get_competitor_product_store() if checkpoint_every > 0 else None
-    logger.info("%s: indexing %s product URLs", site.domain, total)
-    append_index_log(site.domain, f"Загрузка {total} страниц товаров…")
-    progress_step = max(1, min(50, total // 20 or 1))
+    workers = min(COMPETITOR_INDEX_WORKERS, total)
+    logger.info("%s: indexing %s product URLs with %s workers", site.domain, total, workers)
+    append_index_log(
+        site.domain,
+        f"Загрузка {total} страниц товаров ({workers} параллельных потоков)…",
+    )
 
-    with httpx.Client(
-        timeout=WEB_SEARCH_TIMEOUT,
-        follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
-    ) as client:
-        for index, product_url in enumerate(product_urls, start=1):
-            try:
-                response = client.get(product_url)
-                response.raise_for_status()
-            except Exception:
-                logger.debug("Product fetch failed %s", product_url, exc_info=True)
-                continue
+    started_at = time.time()
+    completed = 0
+    progress_step = max(1, min(25, total // 40 or 1))
 
-            page_products = parse_catalog_html(
-                response.text[:700_000],
-                domain=site.domain,
-                site_label=site.label,
-                page_url=str(response.url),
-            )
-            if not page_products:
-                continue
+    def _report_progress(current_completed: int, current_products: int) -> None:
+        if current_completed != 1 and current_completed % progress_step != 0 and current_completed != total:
+            return
+        elapsed = max(time.time() - started_at, 0.001)
+        rate = current_completed / elapsed
+        remaining = total - current_completed
+        eta = _format_index_eta(remaining / rate if rate > 0 else 0)
+        append_index_log(
+            site.domain,
+            f"  → {current_completed}/{total} URL, товаров: {current_products}{eta}",
+        )
+
+    def _merge_page_products(page_products: list[CompetitorCatalogProduct]) -> None:
+        nonlocal completed
+        with state_lock:
             for item in page_products:
                 key = normalize_name(item.name)
                 if key in seen_names:
                     continue
                 seen_names.add(key)
                 products.append(item)
+            completed += 1
+            current_completed = completed
+            current_products = len(products)
 
-            if index == 1 or index % progress_step == 0 or index == total:
-                append_index_log(
-                    site.domain,
-                    f"  → обработано {index}/{total} URL, товаров: {len(products)}",
-                )
+        _report_progress(current_completed, current_products)
 
-            if store and checkpoint_every > 0 and products and (
-                index % checkpoint_every == 0 or index == total
-            ):
-                saved = store.replace_site_products(
-                    site.domain,
-                    products,
-                    site_label=site.label,
-                )
-                logger.info(
-                    "%s checkpoint %s/%s urls, %s products saved",
-                    site.domain,
-                    index,
-                    total,
-                    saved,
-                )
-            elif index % 500 == 0 or index == total:
-                logger.info("%s indexed %s/%s URLs", site.domain, index, total)
+        if store and checkpoint_every > 0 and current_products and (
+            current_completed % checkpoint_every == 0 or current_completed == total
+        ):
+            with state_lock:
+                snapshot = list(products)
+            saved = store.replace_site_products(
+                site.domain,
+                snapshot,
+                site_label=site.label,
+            )
+            logger.info(
+                "%s checkpoint %s/%s urls, %s products saved",
+                site.domain,
+                current_completed,
+                total,
+                saved,
+            )
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(_fetch_single_product_page, site, product_url)
+            for product_url in product_urls
+        ]
+        for future in as_completed(futures):
+            try:
+                page_products = future.result()
+            except Exception:
+                logger.debug("Product future failed for %s", site.domain, exc_info=True)
+                with state_lock:
+                    completed += 1
+                    current_completed = completed
+                    current_products = len(products)
+                _report_progress(current_completed, current_products)
+                continue
+            _merge_page_products(page_products)
 
     logger.info("%s catalog complete: %s products", site.domain, len(products))
+    append_index_log(site.domain, f"Сбор завершён: {len(products)} товаров")
     return products
 
 
@@ -526,12 +590,9 @@ def start_competitor_site_index_background(
     domain = manager.domain_from_url(normalized_url)
     normalized = domain.lower().removeprefix("www.")
 
-    from src.services.competitor_sites import all_competitor_domains
+    from src.services.competitor_sites import get_builtin_competitor_site
 
-    if domain in {entry.domain for entry in manager.list_custom()}:
-        raise ValueError(f"Сайт {domain} уже добавлен")
-    if domain in all_competitor_domains(include_custom=False):
-        raise ValueError(f"Сайт {domain} уже есть во встроенном списке")
+    is_builtin = get_builtin_competitor_site(domain) is not None
 
     with _reindex_lock:
         job = _reindex_jobs.get(normalized)
@@ -550,6 +611,7 @@ def start_competitor_site_index_background(
             "running": True,
             "phase": "starting",
             "started_at": time.time(),
+            "is_builtin": is_builtin,
         }
 
     def _run() -> None:
@@ -564,6 +626,11 @@ def start_competitor_site_index_background(
                 price_html_hint=price_html_hint,
                 articul_html_hint=articul_html_hint,
             )
+            if draft.builtin:
+                append_index_log(
+                    normalized,
+                    "Встроенный сайт — выполняется обновление каталога товаров",
+                )
             append_index_log(normalized, f"Домен: {draft.domain}")
             title = analysis.get("title")
             if title:
@@ -586,7 +653,10 @@ def start_competitor_site_index_background(
             if draft.articul_html_hint:
                 append_index_log(normalized, "Подсказка HTML для артикула сохранена")
 
-            site = CompetitorSite(
+            from src.services.competitor_sites import get_builtin_competitor_site
+
+            builtin_site = get_builtin_competitor_site(draft.domain) if draft.builtin else None
+            site = builtin_site or CompetitorSite(
                 domain=draft.domain,
                 label=draft.label,
                 search_url=draft.search_url,
@@ -614,6 +684,12 @@ def start_competitor_site_index_background(
                 draft.product_sample_url,
             )
             append_index_log(normalized, f"Найдено товарных URL в sitemap: {len(sitemap_urls)}")
+            if len(sitemap_urls) >= COMPETITOR_INDEX_MAX_URLS:
+                append_index_log(
+                    normalized,
+                    f"Достигнут лимит {COMPETITOR_INDEX_MAX_URLS} URL "
+                    "(увеличьте COMPETITOR_INDEX_MAX_URLS в .env для полного каталога)",
+                )
 
             append_index_log(normalized, "Индексация каталога товаров…")
             _set_index_phase(normalized, "catalog")
@@ -649,6 +725,7 @@ def start_competitor_site_index_background(
                 "result": catalog,
                 "analysis": analysis,
                 "catalog_products": store_stats,
+                "is_builtin": draft.builtin,
             }
         except Exception as exc:
             logger.exception("Competitor site index failed for %s", normalized)
@@ -672,6 +749,7 @@ def start_competitor_site_index_background(
         "running": True,
         "domain": normalized,
         "phase": "starting",
+        "is_builtin": is_builtin,
     }
 
 

@@ -2013,19 +2013,26 @@ function renderCompetitorAnalysis(analysis, catalog) {
 
 let competitorSiteIndexed = false;
 let competitorIndexedDomain = null;
+let competitorSiteBuiltin = false;
 let competitorIndexPollToken = 0;
 let competitorIndexLogSince = 0;
 
 function updateCompetitorAddButton() {
   const btn = $("#btnAddCompetitor");
   const indexBtn = $("#btnIndexCompetitor");
-  if (btn) btn.disabled = !competitorSiteIndexed;
+  if (btn) {
+    btn.disabled = !competitorSiteIndexed || competitorSiteBuiltin;
+    btn.title = competitorSiteBuiltin
+      ? "Встроенный сайт уже в списке — добавление не требуется"
+      : "";
+  }
   if (indexBtn) indexBtn.disabled = Boolean(indexBtn.dataset.indexRunning === "1");
 }
 
 function resetCompetitorIndexState() {
   competitorSiteIndexed = false;
   competitorIndexedDomain = null;
+  competitorSiteBuiltin = false;
   competitorIndexLogSince = 0;
   updateCompetitorAddButton();
 }
@@ -2098,13 +2105,21 @@ async function pollCompetitorIndexProgress(domain, pollToken) {
     if (statusData.index_completed) {
       competitorSiteIndexed = true;
       competitorIndexedDomain = domain;
-      setCompetitorIndexStatus("Индексация завершена", "done");
+      competitorSiteBuiltin = Boolean(statusData.is_builtin);
+      setCompetitorIndexStatus(
+        competitorSiteBuiltin ? "Каталог встроенного сайта обновлён" : "Индексация завершена",
+        "done",
+      );
       if (statusData.analysis || statusData.catalog) {
         renderCompetitorAnalysis(statusData.analysis || { domain }, statusData.catalog);
       }
       updateCompetitorAddButton();
       const count = statusData.catalog?.products ?? statusData.catalog?.store_products ?? 0;
-      showToast(`Индексация завершена: ${count} товаров`);
+      showToast(
+        competitorSiteBuiltin
+          ? `Каталог обновлён: ${count} товаров`
+          : `Индексация завершена: ${count} товаров`,
+      );
       return statusData;
     }
 
@@ -2170,8 +2185,11 @@ async function indexCompetitorSite() {
       throw new Error("Не удалось определить домен сайта");
     }
 
+    competitorSiteBuiltin = Boolean(data.is_builtin);
     competitorIndexedDomain = domain;
-    setCompetitorIndexStatus("Изучаю структуру сайта…");
+    setCompetitorIndexStatus(
+      data.is_builtin ? "Обновление каталога встроенного сайта…" : "Изучаю структуру сайта…",
+    );
     await pollCompetitorIndexProgress(domain, pollToken);
   } catch (e) {
     setCompetitorIndexStatus(e.message || "Ошибка индексации", "error");
@@ -2281,6 +2299,7 @@ async function refreshCompetitorIndexState() {
     const data = await api(`/api/competitors/index/status?url=${encodeURIComponent(url)}`);
     competitorSiteIndexed = Boolean(data.index_completed);
     competitorIndexedDomain = data.domain || null;
+    competitorSiteBuiltin = Boolean(data.is_builtin);
     updateCompetitorAddButton();
     if (data.running) {
       showCompetitorIndexPanel(data.phase_label || "Индексация…");
@@ -2303,7 +2322,10 @@ async function refreshCompetitorIndexState() {
         updateCompetitorAddButton();
       });
     } else if (data.index_completed) {
-      setCompetitorIndexStatus("Индексация завершена", "done");
+      setCompetitorIndexStatus(
+        data.is_builtin ? "Каталог встроенного сайта обновлён" : "Индексация завершена",
+        "done",
+      );
       $("#competitorIndexPanel")?.classList.remove("hidden");
       if (data.analysis || data.catalog) {
         renderCompetitorAnalysis(data.analysis || { domain: data.domain }, data.catalog);
