@@ -171,6 +171,17 @@ class KpSessionCreateRequest(BaseModel):
     use_ai: bool = True
 
 
+class KpSelectionItemRequest(BaseModel):
+    number: int = Field(ge=1)
+    included: bool = True
+    variant: str = Field(default="primary", max_length=64)
+
+
+class KpFormRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=64)
+    selections: list[KpSelectionItemRequest] = Field(default_factory=list)
+
+
 class RagQueryRequest(BaseModel):
     session_id: str = Field(min_length=8, max_length=64)
     query: str = Field(min_length=1, max_length=4000)
@@ -326,7 +337,7 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
     }
 
 
-def _summary_to_dict(summary, filename: str) -> dict[str, Any]:
+def _summary_to_dict(summary, filename: str, *, pdf_filename: str | None = None) -> dict[str, Any]:
     return {
         "total_items": summary.total_items,
         "exact_count": summary.exact_count,
@@ -339,10 +350,18 @@ def _summary_to_dict(summary, filename: str) -> dict[str, Any]:
         "markup_percent": get_markup_percent(),
         "filename": filename,
         "download_url": None,
+        "pdf_filename": pdf_filename,
+        "pdf_download_url": None,
     }
 
 
-def _attach_download_info(payload: dict[str, Any], output_path: Path | None) -> None:
+def _attach_download_info(
+    payload: dict[str, Any],
+    output_path: Path | None,
+    *,
+    pdf_path: Path | None = None,
+) -> None:
+    formed = False
     if (
         output_path
         and output_path.name.startswith("KP_")
@@ -352,14 +371,33 @@ def _attach_download_info(payload: dict[str, Any], output_path: Path | None) -> 
         payload["has_download"] = True
         payload["summary"]["filename"] = output_path.name
         payload["summary"]["download_url"] = f"/api/files/{output_path.name}"
+        formed = True
     else:
         payload["has_download"] = False
         payload["summary"]["download_url"] = None
 
+    if (
+        pdf_path
+        and pdf_path.name.startswith("KP_")
+        and pdf_path.suffix == ".pdf"
+        and pdf_path.exists()
+    ):
+        payload["has_pdf_download"] = True
+        payload["summary"]["pdf_filename"] = pdf_path.name
+        payload["summary"]["pdf_download_url"] = f"/api/files/{pdf_path.name}"
+        formed = True
+    else:
+        payload["has_pdf_download"] = False
+        payload["summary"]["pdf_download_url"] = None
+
+    payload["kp_formed"] = formed
+
 
 def _safe_output_path(filename: str) -> Path:
     safe_name = Path(filename).name
-    if not safe_name.startswith("KP_") or not safe_name.endswith(".xlsx"):
+    if not safe_name.startswith("KP_"):
+        raise HTTPException(status_code=400, detail="Недопустимое имя файла")
+    if not (safe_name.endswith(".xlsx") or safe_name.endswith(".pdf")):
         raise HTTPException(status_code=400, detail="Недопустимое имя файла")
     path = OUTPUT_DIR / safe_name
     if not path.exists() or not path.is_file():
@@ -593,22 +631,11 @@ def _process_tz_upload(
     )
     summary = processor._build_summary(results, time.perf_counter() - start)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = OUTPUT_DIR / f"KP_{timestamp}.xlsx"
-    processor.excel.generate(
-        results,
-        summary,
-        output_path,
-        preferences=prefs,
-        task_mode=task_mode,
-        with_margin=True,
-    )
-
     session_id = _kp_chat_service().create_session(
         parsed_items,
         results,
         summary,
-        output_path,
+        None,
         use_ai=use_ai,
         tz_filename=filename or tz_path.name,
         parsed_only=False,
@@ -620,11 +647,12 @@ def _process_tz_upload(
     welcome = session.chat_history[-1].text if session and session.chat_history else ""
     payload = {
         "session_id": session_id,
-        "stage": "exported",
+        "stage": "searched",
         "task_mode": task_mode,
         "search_completed": True,
+        "kp_formed": False,
         "welcome_reply": welcome,
-        "summary": _summary_to_dict(summary, output_path.name),
+        "summary": _summary_to_dict(summary, "pending.xlsx"),
         "items": [_match_result_to_dict(r) for r in results],
         "ai_used": use_ai and processor.ai.enabled,
         "web_used": include_web and any(
@@ -637,7 +665,7 @@ def _process_tz_upload(
             "vectorized": bool(rag_index.vectors),
         },
     }
-    _attach_download_info(payload, output_path)
+    _attach_download_info(payload, None)
     return payload
 
 
@@ -925,6 +953,65 @@ def api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/api/kp/form")
+def api_kp_form(body: KpFormRequest) -> dict[str, Any]:
+    from src.services.kp_selection import KpSelectionItem, apply_kp_selections
+    from src.services.pdf_generator import PdfGenerator
+
+    store = _kp_chat_service().store
+    session = store.get(body.session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    if not session.search_completed:
+        raise HTTPException(status_code=400, detail="Сначала выполните поиск по ТЗ")
+
+    selections = [
+        KpSelectionItem(number=item.number, included=item.included, variant=item.variant)
+        for item in body.selections
+    ]
+    selected_results = apply_kp_selections(session.results, selections)
+    if not selected_results:
+        raise HTTPException(
+            status_code=400,
+            detail="Выберите хотя бы одну позицию для формирования КП",
+        )
+
+    processor = get_processor()
+    summary = processor._build_summary(
+        selected_results,
+        session.summary.processing_seconds,
+    )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    xlsx_path = OUTPUT_DIR / f"KP_{timestamp}.xlsx"
+    pdf_path = OUTPUT_DIR / f"KP_{timestamp}.pdf"
+    processor.excel.generate(
+        selected_results,
+        summary,
+        xlsx_path,
+        preferences=session.preferences,
+        task_mode=session.task_mode,
+        with_margin=True,
+    )
+    PdfGenerator().generate(selected_results, summary, pdf_path)
+
+    session.summary = summary
+    session.output_path = xlsx_path
+    session.pdf_path = pdf_path
+    session.stage = "exported"
+    store.save()
+
+    payload = {
+        "session_id": session.session_id,
+        "stage": "exported",
+        "task_mode": session.task_mode,
+        "search_completed": True,
+        "summary": _summary_to_dict(summary, xlsx_path.name, pdf_filename=pdf_path.name),
+        "selected_count": len(selected_results),
+    }
+    _attach_download_info(payload, xlsx_path, pdf_path=pdf_path)
+    return payload
+
+
 @app.post("/api/process/upload")
 async def api_process_upload(
     file: UploadFile = File(...),
@@ -959,9 +1046,14 @@ async def api_process_upload(
 @app.get("/api/files/{filename}")
 def api_download_file(filename: str) -> FileResponse:
     path = _safe_output_path(filename)
+    media_type = (
+        "application/pdf"
+        if path.suffix.lower() == ".pdf"
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
     return FileResponse(
         path,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        media_type=media_type,
         filename=path.name,
     )
 

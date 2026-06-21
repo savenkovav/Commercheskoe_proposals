@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <title>КП-Ассистент</title>
-  <link rel="stylesheet" href="/app.css?v=20260620l">
+  <link rel="stylesheet" href="/app.css?v=20260621a">
 </head>
 <body>
   <div class="layout">
@@ -85,13 +85,20 @@
         <div class="card hidden" id="resultsCard">
           <div class="card__head">
             <h2>Детализация позиций</h2>
-            <a class="btn btn--primary" id="downloadBtn" href="#" download>Скачать Excel</a>
+            <div class="card__head-actions">
+              <button class="btn btn--primary" type="button" id="btnFormKp" disabled>Сформировать КП</button>
+              <a class="btn btn--secondary btn--disabled" id="downloadPdfBtn" href="#" download aria-disabled="true">Скачать PDF</a>
+              <a class="btn btn--secondary btn--disabled" id="downloadBtn" href="#" download aria-disabled="true">Скачать Excel</a>
+            </div>
           </div>
           <div class="results-summary hidden" id="resultsSummary"></div>
           <div class="table-wrap">
             <table class="data-table" id="resultsTable">
               <thead>
                 <tr>
+                  <th class="col-select">
+                    <input type="checkbox" id="selectAllKpItems" checked title="Выбрать все позиции">
+                  </th>
                   <th>#</th>
                   <th>Позиция ТЗ</th>
                   <th>Найдено</th>

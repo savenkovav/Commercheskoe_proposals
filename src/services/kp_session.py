@@ -38,6 +38,7 @@ class KpSession:
     results: list[MatchResult]
     summary: ProposalSummary
     output_path: Path
+    pdf_path: Path | None = None
     use_ai: bool
     preferences: KpPreferences = field(default_factory=KpPreferences)
     chat_history: list[ChatTurn] = field(default_factory=list)
@@ -184,6 +185,7 @@ def _decode_session(data: dict[str, Any]) -> KpSession | None:
             results=[_decode_match_result(item) for item in data.get("results") or []],
             summary=_decode_summary(data.get("summary") or {}),
             output_path=Path(str(data.get("output_path") or "output/pending.xlsx")),
+            pdf_path=Path(str(data["pdf_path"])) if data.get("pdf_path") else None,
             use_ai=bool(data.get("use_ai", True)),
             preferences=_decode_preferences(data.get("preferences")),
             chat_history=[_decode_chat_turn(item) for item in data.get("chat_history") or []],

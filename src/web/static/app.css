@@ -243,6 +243,49 @@ body {
 
 .card__head h2 { margin: 0; }
 
+.card__head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn--disabled,
+.btn.btn--disabled,
+a.btn.btn--disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+.col-select {
+  width: 42px;
+  text-align: center;
+}
+
+.kp-select-cell {
+  text-align: center;
+  vertical-align: top;
+}
+
+.kp-variant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.kp-variant {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.92rem;
+}
+
+.kp-variant input {
+  margin-top: 3px;
+}
+
 .muted { color: var(--muted); font-size: 0.9rem; margin: 0 0 16px; }
 
 .upload-zone {

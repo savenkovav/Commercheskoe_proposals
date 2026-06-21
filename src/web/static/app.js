@@ -79,18 +79,219 @@ const taskModeLabel = (mode) => {
   return "не выбрана";
 };
 
-const hasKpDownload = (data) => {
-  const s = data?.summary;
-  if (!s?.download_url) return false;
-  return Boolean(data?.has_download) || (s.filename || "").startsWith("KP_");
-};
+const hasKpDownload = (data) => Boolean(data?.kp_formed && data?.summary?.download_url);
+
+let kpProcessData = null;
+let kpFormed = false;
+let kpExportSummary = null;
+
+function listItemVariants(item) {
+  const variants = [
+    {
+      id: "primary",
+      label: "Основное совпадение",
+      name: item.matched_name || item.name,
+      meta: item.match_score ? `${Math.round(item.match_score)}%` : "",
+    },
+  ];
+  (item.comparison || [])
+    .filter((q) => q.source !== "web" && quoteMeetsMatchThreshold(q))
+    .forEach((q, index) => {
+      variants.push({
+        id: `local:${index}`,
+        label: q.label || "Источник",
+        name: q.matched_name || "—",
+        meta: q.match_score ? `${Math.round(q.match_score)}%` : "",
+      });
+    });
+  collectWebEntries(item).forEach((q, index) => {
+    variants.push({
+      id: `web:${index}`,
+      label: q.label || "Интернет",
+      name: q.matched_name || "—",
+      meta: q.match_score ? `${Math.round(q.match_score)}%` : "",
+    });
+  });
+  return variants;
+}
+
+function renderVariantChoices(item) {
+  const variants = listItemVariants(item);
+  if (variants.length <= 1) return "";
+  return `
+    <div class="kp-variant-list">
+      <strong>Вариант для КП:</strong>
+      ${variants
+        .map(
+          (variant) => `
+        <label class="kp-variant">
+          <input
+            type="checkbox"
+            class="kp-variant-input"
+            data-item="${item.number}"
+            data-variant="${variant.id}"
+            ${variant.id === "primary" ? "checked" : ""}
+          >
+          <span>${escapeHtml(variant.label)}: ${escapeHtml(variant.name)}${
+            variant.meta ? ` · ${escapeHtml(variant.meta)}` : ""
+          }</span>
+        </label>`,
+        )
+        .join("")}
+    </div>`;
+}
+
+function disableDownloadLink(link) {
+  if (!link) return;
+  link.href = "#";
+  link.removeAttribute("download");
+  link.classList.add("btn--disabled");
+  link.setAttribute("aria-disabled", "true");
+}
+
+function enableDownloadLink(link, url, filename) {
+  if (!link || !url) return;
+  link.href = `${url}?t=${Date.now()}`;
+  if (filename) link.download = filename;
+  link.classList.remove("btn--disabled");
+  link.removeAttribute("aria-disabled");
+}
+
+function resetKpFormed() {
+  kpFormed = false;
+  kpExportSummary = null;
+  updateKpExportButtons();
+}
+
+function updateKpExportButtons() {
+  const btnForm = $("#btnFormKp");
+  if (btnForm) {
+    btnForm.toggleAttribute("disabled", !kpProcessData?.search_completed);
+  }
+  if (kpFormed && kpExportSummary) {
+    enableDownloadLink($("#downloadPdfBtn"), kpExportSummary.pdf_download_url, kpExportSummary.pdf_filename);
+    enableDownloadLink($("#downloadBtn"), kpExportSummary.download_url, kpExportSummary.filename);
+  } else {
+    disableDownloadLink($("#downloadPdfBtn"));
+    disableDownloadLink($("#downloadBtn"));
+  }
+}
+
+function getSelectionsFromUI() {
+  if (!kpProcessData?.items?.length) return [];
+  return kpProcessData.items.map((item) => {
+    const includeEl = document.querySelector(`.kp-item-include[data-item="${item.number}"]`);
+    const include = includeEl ? includeEl.checked : true;
+    const checkedVariant = document.querySelector(
+      `.kp-variant-input[data-item="${item.number}"]:checked`,
+    );
+    return {
+      number: item.number,
+      included: include,
+      variant: checkedVariant?.dataset.variant || "primary",
+    };
+  });
+}
+
+function bindKpSelectionHandlers() {
+  const tbody = $("#resultsTable tbody");
+  const selectAll = $("#selectAllKpItems");
+  selectAll?.addEventListener("change", (event) => {
+    $$(".kp-item-include").forEach((checkbox) => {
+      checkbox.checked = event.target.checked;
+    });
+    resetKpFormed();
+  });
+
+  tbody?.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.classList.contains("kp-item-include")) {
+      const boxes = $$(".kp-item-include");
+      if (selectAll) {
+        selectAll.checked = [...boxes].every((box) => box.checked);
+        selectAll.indeterminate = !selectAll.checked && [...boxes].some((box) => box.checked);
+      }
+      resetKpFormed();
+      return;
+    }
+    if (target.classList.contains("kp-variant-input") && target.checked) {
+      const itemNumber = target.dataset.item;
+      $$(".kp-variant-input").forEach((checkbox) => {
+        if (checkbox.dataset.item === itemNumber && checkbox !== target) {
+          checkbox.checked = false;
+        }
+      });
+      resetKpFormed();
+    }
+  });
+
+  tbody?.addEventListener("click", (event) => {
+    if (event.target.closest(".kp-select-cell, .kp-variant-list")) {
+      event.stopPropagation();
+    }
+  });
+}
+
+async function formKpDocument() {
+  if (!kpSessionId) {
+    showToast("Сначала выполните поиск по ТЗ", true);
+    return;
+  }
+  const selections = getSelectionsFromUI();
+  if (!selections.some((item) => item.included)) {
+    showToast("Выберите хотя бы одну позицию", true);
+    return;
+  }
+  showOverlay("Формирую КП (Excel и PDF)...");
+  try {
+    const data = await api("/api/kp/form", {
+      method: "POST",
+      body: JSON.stringify({ session_id: kpSessionId, selections }),
+    });
+    kpFormed = true;
+    kpExportSummary = data.summary;
+    if (kpProcessData) {
+      kpProcessData = { ...kpProcessData, ...data, kp_formed: true, items: kpProcessData.items };
+      if (data.summary) {
+        renderProcessSummary(kpProcessData);
+      }
+    }
+    updateAssistantMode(kpProcessData || data);
+    updateKpExportButtons();
+    showToast(`КП сформировано: ${data.selected_count || 0} поз.`);
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    hideOverlay();
+  }
+}
+
+function renderProcessSummary(data) {
+  const s = data.summary;
+  const summaryEl = $("#resultsSummary");
+  if (!summaryEl || !s) return;
+  summaryEl.classList.remove("hidden");
+  summaryEl.innerHTML = `
+    <div class="summary-metrics">
+      <div class="metric"><div class="metric__label">Позиций</div><div class="metric__value">${s.total_items}</div></div>
+      <div class="metric metric--success"><div class="metric__label">Точных</div><div class="metric__value">${s.exact_count}</div></div>
+      <div class="metric metric--warning"><div class="metric__label">Похожих</div><div class="metric__value">${s.similar_count}</div></div>
+      <div class="metric metric--danger"><div class="metric__label">Не найдено</div><div class="metric__value">${s.not_found_count}</div></div>
+      <div class="metric"><div class="metric__label">Себестоимость</div><div class="metric__value">${fmtMoney(s.total_cost)}</div></div>
+      <div class="metric"><div class="metric__label">Цена без наценки</div><div class="metric__value">${fmtMoney(s.total_base_price)}</div></div>
+      <div class="metric"><div class="metric__label">Цена КП</div><div class="metric__value">${fmtMoney(s.total_price)}</div></div>
+    </div>
+    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}${data.web_used ? " · конкуренты" : ""}${data.kp_formed ? " · КП готово" : ""}</p>
+  `;
+}
 
 const stageLabel = (stage, searchCompleted) => {
   const map = {
     intake: "ожидание ТЗ",
     parsed: "ТЗ разобрано",
-    searched: "поиск выполнен",
-    exported: "Excel готов",
+    searched: "поиск выполнен — выберите позиции",
+    exported: "КП сформировано",
   };
   if (!searchCompleted && stage === "parsed") return "поиск не запускался";
   return map[stage] || stage;
@@ -682,6 +883,7 @@ function renderComparisonTable(item) {
 
   return `
     <div class="compare-block">
+      ${renderVariantChoices(item)}
       ${primaryBlock}
       ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
       ${renderWebComparisonRows(webEntries, item)}
@@ -949,27 +1151,17 @@ function initKpChat() {
 }
 
 function renderProcessResult(data) {
+  kpProcessData = data;
+  kpFormed = Boolean(data.kp_formed);
+  kpExportSummary = kpFormed ? data.summary : null;
   updateAssistantMode(data);
-  const s = data.summary;
   const parsedOnly = !data.search_completed;
   const summaryEl = $("#resultsSummary");
 
   if (parsedOnly || !summaryEl) {
     summaryEl?.classList.add("hidden");
   } else {
-    summaryEl.classList.remove("hidden");
-    summaryEl.innerHTML = `
-    <div class="summary-metrics">
-      <div class="metric"><div class="metric__label">Позиций</div><div class="metric__value">${s.total_items}</div></div>
-      <div class="metric metric--success"><div class="metric__label">Точных</div><div class="metric__value">${s.exact_count}</div></div>
-      <div class="metric metric--warning"><div class="metric__label">Похожих</div><div class="metric__value">${s.similar_count}</div></div>
-      <div class="metric metric--danger"><div class="metric__label">Не найдено</div><div class="metric__value">${s.not_found_count}</div></div>
-      <div class="metric"><div class="metric__label">Себестоимость</div><div class="metric__value">${fmtMoney(s.total_cost)}</div></div>
-      <div class="metric"><div class="metric__label">Цена без наценки</div><div class="metric__value">${fmtMoney(s.total_base_price)}</div></div>
-      <div class="metric"><div class="metric__label">Цена КП</div><div class="metric__value">${fmtMoney(s.total_price)}</div></div>
-    </div>
-    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}${data.web_used ? " · конкуренты" : ""}</p>
-  `;
+    renderProcessSummary(data);
   }
 
   $("#resultsCard").classList.remove("hidden");
@@ -984,6 +1176,9 @@ function renderProcessResult(data) {
         const detailId = `tz-detail-${item.number}`;
         return `
       <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
+        <td class="kp-select-cell">
+          <input type="checkbox" class="kp-item-include" data-item="${item.number}" checked>
+        </td>
         <td>${item.number}</td>
         <td>${escapeHtml(item.name)}${hasDetails ? ' <span class="tz-row__hint">▼</span>' : ""}</td>
         <td>${escapeHtml(item.matched_name || "—")}${
@@ -1007,7 +1202,7 @@ function renderProcessResult(data) {
       </tr>
       ${
         hasDetails
-          ? `<tr class="tz-detail hidden" id="${detailId}"><td colspan="8">${renderComparisonTable(item)}</td></tr>`
+          ? `<tr class="tz-detail hidden" id="${detailId}"><td colspan="9">${renderComparisonTable(item)}</td></tr>`
           : ""
       }`;
       },
@@ -1023,20 +1218,13 @@ function renderProcessResult(data) {
     });
   });
 
-  const btn = $("#downloadBtn");
-  if (btn) {
-    if (hasKpDownload(data)) {
-      const url = `${s.download_url}?t=${Date.now()}`;
-      btn.href = url;
-      btn.download = s.filename;
-      btn.classList.remove("hidden");
-      btn.removeAttribute("aria-disabled");
-    } else {
-      btn.href = "#";
-      btn.classList.add("hidden");
-      btn.setAttribute("aria-disabled", "true");
-    }
+  const selectAll = $("#selectAllKpItems");
+  if (selectAll) {
+    selectAll.checked = true;
+    selectAll.indeterminate = false;
   }
+
+  updateKpExportButtons();
 
   if (data.session_id) {
     if (data.session_id !== kpSessionId) {
@@ -1127,6 +1315,8 @@ function initUpload() {
 
   btnTask1?.addEventListener("click", () => processUpload("task1"));
   btnTask12?.addEventListener("click", () => processUpload("task1_task2"));
+  $("#btnFormKp")?.addEventListener("click", () => formKpDocument());
+  bindKpSelectionHandlers();
 }
 
 const CHAT_STORAGE_KEY = "kp_lookup_chat_v1";
