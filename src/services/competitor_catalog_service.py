@@ -426,6 +426,7 @@ def _fetch_products_from_url_list(
 
     products: list[CompetitorCatalogProduct] = []
     seen_names: set[str] = set()
+    seen_url_keys: set[str] = set()
     state_lock = threading.Lock()
     total = len(product_urls)
     store = get_competitor_product_store() if checkpoint_every > 0 else None
@@ -454,12 +455,16 @@ def _fetch_products_from_url_list(
 
     def _merge_page_products(page_products: list[CompetitorCatalogProduct]) -> None:
         nonlocal completed
+        from src.services.competitor_catalog_db import product_dedup_key
+
         with state_lock:
             for item in page_products:
-                key = normalize_name(item.name)
-                if key in seen_names:
+                name_key = normalize_name(item.name)
+                url_key = product_dedup_key(item)
+                if name_key in seen_names or url_key in seen_url_keys:
                     continue
-                seen_names.add(key)
+                seen_names.add(name_key)
+                seen_url_keys.add(url_key)
                 products.append(item)
             completed += 1
             current_completed = completed

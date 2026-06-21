@@ -26,7 +26,9 @@ def competitor_product_url_key(url: str) -> str:
     query = parse_qs(parsed.query)
     if query.get("page") or parsed.path.lower().endswith("index.php"):
         return normalized
-    return normalized.split("?")[0]
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path.rstrip("/") or "/"
+    return f"{parsed.scheme.lower()}://{host}{path}"
 
 
 def product_dedup_key(product: CompetitorCatalogProduct) -> str:
@@ -35,6 +37,45 @@ def product_dedup_key(product: CompetitorCatalogProduct) -> str:
     if product.articul:
         return f"articul:{product.articul.strip()}"
     return f"name:{normalize_name(product.name)}"
+
+
+def _merge_catalog_products(
+    existing: CompetitorCatalogProduct,
+    incoming: CompetitorCatalogProduct,
+) -> CompetitorCatalogProduct:
+    return CompetitorCatalogProduct(
+        domain=existing.domain,
+        site_label=incoming.site_label or existing.site_label,
+        name=incoming.name or existing.name,
+        price=incoming.price if incoming.price is not None else existing.price,
+        url=incoming.url or existing.url,
+        articul=incoming.articul or existing.articul,
+        price_label=incoming.price_label or existing.price_label,
+        details=incoming.details or existing.details,
+        wholesale_price=(
+            incoming.wholesale_price
+            if incoming.wholesale_price is not None
+            else existing.wholesale_price
+        ),
+        image_url=incoming.image_url or existing.image_url,
+        description=incoming.description or existing.description,
+    )
+
+
+def _dedupe_catalog_products(
+    products: list[CompetitorCatalogProduct],
+) -> list[CompetitorCatalogProduct]:
+    deduped: dict[str, CompetitorCatalogProduct] = {}
+    for product in products:
+        if not product.name.strip():
+            continue
+        key = product_dedup_key(product)
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = product
+        else:
+            deduped[key] = _merge_catalog_products(existing, product)
+    return list(deduped.values())
 
 
 def _utc_now() -> str:
@@ -286,10 +327,9 @@ class CompetitorCatalogDatabase:
                     "DELETE FROM competitor_products WHERE domain = ?",
                     (normalized,),
                 )
+                unique_products = _dedupe_catalog_products(products)
                 inserted = 0
-                for product in products:
-                    if not product.name.strip():
-                        continue
+                for product in unique_products:
                     url_key = product_dedup_key(product)
                     conn.execute(
                         """
