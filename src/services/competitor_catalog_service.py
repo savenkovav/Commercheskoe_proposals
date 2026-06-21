@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from html import unescape
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
 import httpx
 
@@ -40,7 +40,10 @@ _SITEMAP_CATALOG_MIN_PRODUCTS: dict[str, int] = {
     "vrtorg.ru": 500,
     "labkabinet.ru": 1000,
     "stronikum.ru": 100,
+    "td-school.ru": 100,
 }
+
+_TD_SCHOOL_DEFAULT_SAMPLE_URL = "https://td-school.ru/index.php?page=100"
 
 _reindex_jobs: dict[str, dict[str, object]] = {}
 _reindex_lock = threading.Lock()
@@ -173,6 +176,16 @@ def _extract_text_by_hint(html: str, hint: str) -> str | None:
 
     for token_type, token_value in _hint_attr_tokens(hint):
         if token_type == "class":
+            open_match = re.search(
+                rf'<[^>]+class="[^"]*\b{re.escape(token_value)}\b[^"]*"[^>]*>',
+                html,
+                re.I,
+            )
+            if open_match:
+                chunk = html[open_match.start() : open_match.start() + 1200]
+                text = _strip_html_text(chunk)
+                if text:
+                    return text
             pattern = rf'class="[^"]*\b{re.escape(token_value)}\b[^"]*"[^>]*>(?P<body>.*?)</'
             match = re.search(pattern, html, re.I | re.S)
             if match:
@@ -246,11 +259,46 @@ def _infer_product_path_prefix(sample_url: str) -> str | None:
     return None
 
 
+def _is_query_param_product_url(url: str) -> bool:
+    parsed = urlparse(url)
+    page_values = parse_qs(parsed.query).get("page", [])
+    if not page_values:
+        return False
+    page_id = page_values[0].strip()
+    return page_id.isdigit() and int(page_id) > 0
+
+
+def _is_product_page_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    if _is_product_detail_path(path):
+        return True
+    if _is_query_param_product_url(url):
+        return True
+    if is_competitor_product_page_url(url):
+        return True
+    return False
+
+
+def _canonical_td_school_product_url(domain: str, page_id: str) -> str:
+    normalized = domain.lower().removeprefix("www.")
+    return f"https://{normalized}/index.php?page={page_id}"
+
+
+_TD_SCHOOL_PRODUCT_HREF_RE = re.compile(
+    r'href=["\']([^"\']*?(?:index\.php\?page=(\d+)|[?&]page=(\d+))[^"\']*)["\']',
+    re.I,
+)
+
+
 def _url_matches_product_pattern(url: str, sample_url: str | None) -> bool:
+    if _is_query_param_product_url(url):
+        return True
     if is_competitor_product_page_url(url):
         return True
     if not sample_url:
         return False
+    if _is_query_param_product_url(sample_url):
+        return _is_query_param_product_url(url)
     prefix = _infer_product_path_prefix(sample_url)
     if not prefix:
         return False
@@ -776,6 +824,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "vrtorg.ru": [
         "https://vrtorg.ru/catalog/",
         "https://vrtorg.ru/sitemap.xml",
+    ],
+    "td-school.ru": [
+        "https://td-school.ru/",
+        "https://td-school.ru/index.php",
     ],
 }
 
@@ -1801,6 +1853,264 @@ def _parse_preview_product_blocks(
     return products
 
 
+def _parse_td_school_price(html: str) -> float | None:
+    price_match = re.search(r'class="price"[^>]*>(?P<body>.*?</div>)', html, re.I | re.S)
+    if not price_match:
+        return None
+    body = re.sub(r"<span[^>]*>\s*</span>", "", price_match.group("body"), flags=re.I)
+    plain = _strip_html_text(body)
+    rub_match = re.search(r"Цена:\s*([\d\s]+)\s*руб", plain, re.I)
+    if rub_match:
+        parsed = _parse_price(rub_match.group(1))
+        if parsed is not None:
+            return parsed
+    prices = extract_prices_from_text(plain)
+    if prices:
+        return min(prices)
+    return _parse_price(plain)
+
+
+def _parse_td_school_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_query_param_product_url(page_url):
+        return None
+    if not _is_td_school_product_html(html):
+        return None
+
+    title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not title_match:
+        return None
+    name = re.sub(r"\s+", " ", title_match.group("name")).strip()
+    if len(name) < 4:
+        return None
+
+    hints = get_domain_parsing_hints(domain)
+    articul = None
+    code_match = re.search(r'class="productcode"[^>]*>\s*([^<]+)', html, re.I)
+    if code_match:
+        articul = code_match.group(1).strip()
+    elif hints and hints.articul_html_hint:
+        articul = _parse_articul_from_hint(html, hints.articul_html_hint)
+
+    price = _parse_td_school_price(html)
+    price_label = None
+    if price is None and hints and hints.price_html_hint:
+        price = _parse_price_from_hint(html, hints.price_html_hint)
+    if price is None:
+        price_label = price_on_request_label(html)
+
+    parsed = urlparse(page_url)
+    page_id = parse_qs(parsed.query).get("page", [""])[0]
+    canonical = _canonical_td_school_product_url(domain, page_id) if page_id else page_url.split("#")[0]
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=canonical,
+        articul=articul,
+        price_label=price_label,
+    )
+
+
+def _is_td_school_product_html(html: str) -> bool:
+    return bool(
+        re.search(r'class="productcode"', html, re.I)
+        and re.search(r'class="price"', html, re.I)
+        and re.search(r"<h1[^>]*>", html, re.I)
+    )
+
+
+def _td_school_page_urls_from_html(html: str, *, domain: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for page_id in re.findall(r"index\.php\?page=(\d+)", html, re.I):
+        absolute = _canonical_td_school_product_url(domain, page_id)
+        if absolute not in seen:
+            seen.add(absolute)
+            urls.append(absolute)
+    for match in _TD_SCHOOL_PRODUCT_HREF_RE.finditer(html):
+        page_id = match.group(2) or match.group(3)
+        if not page_id:
+            continue
+        absolute = _canonical_td_school_product_url(domain, page_id)
+        if absolute not in seen:
+            seen.add(absolute)
+            urls.append(absolute)
+    return urls
+
+
+def _parse_td_school_catalog_links(
+    html: str,
+    *,
+    domain: str,
+    page_url: str,
+) -> tuple[list[str], list[str]]:
+    product_urls: list[str] = []
+    category_urls: list[str] = []
+    seen_products: set[str] = set()
+    seen_categories: set[str] = set()
+
+    for match in _TD_SCHOOL_PRODUCT_HREF_RE.finditer(html):
+        page_id = match.group(2) or match.group(3)
+        if not page_id:
+            continue
+        absolute = _canonical_td_school_product_url(domain, page_id)
+        if absolute not in seen_products:
+            seen_products.add(absolute)
+            product_urls.append(absolute)
+
+    for href in _HREF_RE.findall(html):
+        lower = href.lower()
+        if "page=" in lower:
+            continue
+        if "index.php" not in lower and not lower.startswith("/"):
+            continue
+        if any(skip in lower for skip in ("search=", "logout", "cart", "mailto:", "javascript:")):
+            continue
+        absolute = _absolute_url(domain, href, page_url)
+        if not absolute or domain not in urlparse(absolute).netloc.lower():
+            continue
+        if absolute in seen_categories:
+            continue
+        seen_categories.add(absolute)
+        category_urls.append(absolute)
+
+    return product_urls, category_urls
+
+
+def _discover_td_school_product_urls(*, max_pages: int = 800) -> list[str]:
+    domain = "td-school.ru"
+    seeds = [
+        "https://td-school.ru/",
+        "https://td-school.ru/index.php",
+    ]
+    product_urls: set[str] = set()
+    seen_pages: set[str] = set()
+    queue: list[str] = list(seeds)
+    pages_fetched = 0
+
+    append_index_log(domain, "Обход каталога td-school.ru для поиска карточек товаров…")
+
+    with httpx.Client(
+        timeout=WEB_SEARCH_TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+    ) as client:
+        while queue and pages_fetched < max_pages:
+            page_url = queue.pop(0)
+            normalized_page = page_url.split("#")[0]
+            if normalized_page in seen_pages:
+                continue
+            seen_pages.add(normalized_page)
+            pages_fetched += 1
+            try:
+                response = client.get(page_url)
+                response.raise_for_status()
+            except Exception:
+                continue
+            html = response.text[:700_000]
+            final_url = str(response.url).split("#")[0]
+
+            if _is_td_school_product_html(html):
+                parsed = urlparse(final_url)
+                page_id = parse_qs(parsed.query).get("page", [""])[0]
+                if page_id:
+                    product_urls.add(_canonical_td_school_product_url(domain, page_id))
+
+            for child_url in _td_school_page_urls_from_html(html, domain=domain):
+                if child_url.split("#")[0] not in seen_pages and child_url not in queue:
+                    queue.append(child_url)
+
+            for href in _HREF_RE.findall(html):
+                lower = href.lower()
+                if any(skip in lower for skip in ("search=", "logout", "cart", "mailto:", "javascript:")):
+                    continue
+                absolute = _absolute_url(domain, href, final_url)
+                if not absolute or domain not in urlparse(absolute).netloc.lower():
+                    continue
+                norm = absolute.split("#")[0]
+                if norm in seen_pages or absolute in queue:
+                    continue
+                if "index.php" in lower or norm.endswith("td-school.ru") or norm.endswith("td-school.ru/"):
+                    queue.append(absolute)
+
+            if pages_fetched % 50 == 0:
+                append_index_log(
+                    domain,
+                    f"  → страниц: {pages_fetched}, очередь: {len(queue)}, карточек: {len(product_urls)}",
+                )
+
+    result = sorted(
+        product_urls,
+        key=lambda url: int(parse_qs(urlparse(url).query).get("page", ["0"])[0]),
+    )
+    append_index_log(domain, f"Найдено карточек товаров в каталоге: {len(result)}")
+    return result[:COMPETITOR_INDEX_MAX_URLS]
+
+
+def fetch_td_school_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    hints = get_domain_parsing_hints(site.domain)
+    if not hints or not hints.price_html_hint:
+        set_domain_parsing_hints(
+            site.domain,
+            product_sample_url=_TD_SCHOOL_DEFAULT_SAMPLE_URL,
+            price_html_hint='<div class="price">',
+            articul_html_hint='class="productcode"',
+        )
+
+    hints = get_domain_parsing_hints(site.domain)
+    sample_url = hints.product_sample_url if hints else _TD_SCHOOL_DEFAULT_SAMPLE_URL
+
+    sitemap_urls = _discover_generic_sitemap_product_urls(site.domain, sample_url)
+    product_urls = sitemap_urls or _discover_td_school_product_urls()
+    if sample_url and sample_url not in product_urls:
+        product_urls = [sample_url, *product_urls]
+
+    if not product_urls:
+        append_index_log(site.domain, "Не удалось найти URL карточек товаров", level="error")
+        return []
+
+    append_index_log(
+        site.domain,
+        f"Индексация {len(product_urls)} карточек td-school.ru…",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
+    )
+
+
+def _parse_td_school_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if domain.lower().removeprefix("www.") != "td-school.ru":
+        return []
+
+    product = _parse_td_school_product_html(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    return [product] if product else []
+
+
 def _parse_product_detail_page(
     html: str,
     *,
@@ -1808,8 +2118,7 @@ def _parse_product_detail_page(
     site_label: str,
     page_url: str,
 ) -> list[CompetitorCatalogProduct]:
-    path = urlparse(page_url).path.lower()
-    if not _is_product_detail_path(path):
+    if not _is_product_page_url(page_url):
         return []
 
     title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
@@ -1930,6 +2239,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     )
     if vrtorg_products:
         return vrtorg_products
+
+    td_school_products = _parse_td_school_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if td_school_products:
+        return td_school_products
 
     shop2_products = _parse_shop2_products(
         html,
@@ -2153,6 +2471,8 @@ def fetch_catalog_products(
         return fetch_labkabinet_catalog(site)
     if normalized_domain == "vrtorg.ru":
         return fetch_vrtorg_catalog(site)
+    if normalized_domain == "td-school.ru":
+        return fetch_td_school_catalog(site)
 
     hints = get_domain_parsing_hints(normalized_domain)
     sample_url = hints.product_sample_url if hints else None

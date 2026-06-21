@@ -150,6 +150,23 @@ class CompetitorSiteManager:
         return f"{scheme}://{parsed.netloc}{parsed.path or ''}".rstrip("/") or f"{scheme}://{parsed.netloc}"
 
     @staticmethod
+    def normalize_product_page_url(raw: str) -> str:
+        text = raw.strip()
+        if not text:
+            raise ValueError("Укажите ссылку на карточку товара")
+        if not text.startswith(("http://", "https://")):
+            text = f"https://{text}"
+        parsed = urlparse(text)
+        if not parsed.netloc:
+            raise ValueError("Некорректная ссылка на карточку товара")
+        scheme = parsed.scheme or "https"
+        path = parsed.path or ""
+        base = f"{scheme}://{parsed.netloc}{path}".rstrip("/") or f"{scheme}://{parsed.netloc}"
+        if parsed.query:
+            return f"{base}?{parsed.query}"
+        return base
+
+    @staticmethod
     def domain_from_url(url: str) -> str:
         host = urlparse(url).netloc.lower().removeprefix("www.")
         if not host:
@@ -313,7 +330,7 @@ class CompetitorSiteManager:
         text = (raw or "").strip()
         if not text:
             return None
-        return CompetitorSiteManager.normalize_url(text)
+        return CompetitorSiteManager.normalize_product_page_url(text)
 
     def get_draft(self, domain: str) -> CompetitorSiteDraft | None:
         normalized = domain.lower().removeprefix("www.")
@@ -342,6 +359,13 @@ class CompetitorSiteManager:
             resolved_search = builtin_site.search_url or resolved_search
 
         sample_url = self._normalize_optional_url(product_sample_url)
+        if sample_url:
+            sample_domain = self.domain_from_url(sample_url)
+            if sample_domain.lower().removeprefix("www.") != normalized:
+                raise ValueError(
+                    f"URL карточки товара ({sample_domain}) должен быть с сайта {domain}"
+                )
+
         draft = CompetitorSiteDraft(
             url=str(analysis["url"]),
             domain=domain,

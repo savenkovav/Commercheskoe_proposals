@@ -5,6 +5,7 @@ import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from rapidfuzz import fuzz, process
 
@@ -13,6 +14,15 @@ from src.services.competitor_catalog_service import CompetitorCatalogProduct
 from src.services.data_loader import normalize_name
 
 logger = logging.getLogger(__name__)
+
+
+def competitor_product_url_key(url: str) -> str:
+    normalized = url.rstrip("/").split("#")[0]
+    parsed = urlparse(normalized)
+    query = parse_qs(parsed.query)
+    if query.get("page") or parsed.path.lower().endswith("index.php"):
+        return normalized
+    return normalized.split("?")[0]
 
 
 def merge_competitor_product_fields(
@@ -168,7 +178,7 @@ class CompetitorProductStore:
             if name_key:
                 index_by_key[name_key] = index
             if product.url:
-                url_by_key[product.url.rstrip("/").split("#")[0].split("?")[0]] = index
+                url_by_key[competitor_product_url_key(product.url)] = index
 
         added = 0
         updated = 0
@@ -178,7 +188,7 @@ class CompetitorProductStore:
             name_key = normalize_name(product.name)
             url_key = ""
             if product.url:
-                url_key = product.url.rstrip("/").split("#")[0].split("?")[0]
+                url_key = competitor_product_url_key(product.url)
 
             existing_index = index_by_key.get(name_key)
             if existing_index is None and url_key:
@@ -204,9 +214,7 @@ class CompetitorProductStore:
                     if name_key:
                         index_by_key[name_key] = existing_index
                     if merged.url:
-                        url_by_key[
-                            merged.url.rstrip("/").split("#")[0].split("?")[0]
-                        ] = existing_index
+                        url_by_key[competitor_product_url_key(merged.url)] = existing_index
                 continue
 
             new_product = CompetitorCatalogProduct(
