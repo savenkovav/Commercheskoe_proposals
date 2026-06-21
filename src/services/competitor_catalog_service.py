@@ -38,6 +38,284 @@ _SITEMAP_CATALOG_MIN_PRODUCTS: dict[str, int] = {
 _reindex_jobs: dict[str, dict[str, object]] = {}
 _reindex_lock = threading.Lock()
 
+_CLASS_ATTR_RE = re.compile(r'class="([^"]+)"', re.I)
+_ID_ATTR_RE = re.compile(r'id="([^"]+)"', re.I)
+_ITEMPROP_ATTR_RE = re.compile(r'itemprop="([^"]+)"', re.I)
+_SITEMAP_LOC_RE = re.compile(r"<loc>\s*(https?://[^<]+)\s*</loc>", re.I)
+
+
+@dataclass
+class CompetitorParsingHints:
+    product_sample_url: str = ""
+    price_html_hint: str = ""
+    articul_html_hint: str = ""
+
+
+_domain_parsing_hints: dict[str, CompetitorParsingHints] = {}
+
+
+def set_domain_parsing_hints(
+    domain: str,
+    *,
+    product_sample_url: str = "",
+    price_html_hint: str = "",
+    articul_html_hint: str = "",
+) -> None:
+    normalized = domain.lower().removeprefix("www.")
+    if not any((product_sample_url, price_html_hint, articul_html_hint)):
+        _domain_parsing_hints.pop(normalized, None)
+        return
+    _domain_parsing_hints[normalized] = CompetitorParsingHints(
+        product_sample_url=product_sample_url.strip(),
+        price_html_hint=price_html_hint.strip(),
+        articul_html_hint=articul_html_hint.strip(),
+    )
+
+
+def get_domain_parsing_hints(domain: str) -> CompetitorParsingHints | None:
+    normalized = domain.lower().removeprefix("www.")
+    return _domain_parsing_hints.get(normalized)
+
+
+def apply_parsing_hints_from_entry(entry) -> None:
+    if not entry:
+        return
+    set_domain_parsing_hints(
+        entry.domain,
+        product_sample_url=entry.product_sample_url or "",
+        price_html_hint=entry.price_html_hint or "",
+        articul_html_hint=entry.articul_html_hint or "",
+    )
+
+
+def _hint_attr_tokens(hint: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    for match in _CLASS_ATTR_RE.finditer(hint):
+        for cls in match.group(1).split():
+            cleaned = cls.strip()
+            if cleaned:
+                tokens.append(("class", cleaned))
+    id_match = _ID_ATTR_RE.search(hint)
+    if id_match:
+        tokens.append(("id", id_match.group(1).strip()))
+    for match in _ITEMPROP_ATTR_RE.finditer(hint):
+        tokens.append(("itemprop", match.group(1).strip()))
+    return tokens
+
+
+def _extract_text_by_hint(html: str, hint: str) -> str | None:
+    hint = hint.strip()
+    if not hint or not html:
+        return None
+
+    for token_type, token_value in _hint_attr_tokens(hint):
+        if token_type == "class":
+            pattern = rf'class="[^"]*\b{re.escape(token_value)}\b[^"]*"[^>]*>(?P<body>.*?)</'
+            match = re.search(pattern, html, re.I | re.S)
+            if match:
+                text = _strip_html_text(match.group("body"))
+                if text:
+                    return text
+        elif token_type == "id":
+            pattern = rf'id="{re.escape(token_value)}"[^>]*>(?P<body>.*?)</'
+            match = re.search(pattern, html, re.I | re.S)
+            if match:
+                text = _strip_html_text(match.group("body"))
+                if text:
+                    return text
+        elif token_type == "itemprop":
+            pattern = rf'itemprop="{re.escape(token_value)}"[^>]*(?:content="(?P<content>[^"]+)"|>(?P<body>[^<]+))'
+            match = re.search(pattern, html, re.I | re.S)
+            if match:
+                text = (match.group("content") or match.group("body") or "").strip()
+                if text:
+                    return text
+
+    compact_hint = re.sub(r"\s+", " ", hint)
+    compact_html = re.sub(r"\s+", " ", html)
+    if len(compact_hint) >= 12 and compact_hint in compact_html:
+        start = compact_html.index(compact_hint)
+        tail = compact_html[start : start + len(compact_hint) + 120]
+        text = _strip_html_text(tail)
+        if text:
+            return text
+    return None
+
+
+def _parse_price_from_hint(html: str, hint: str) -> float | None:
+    text = _extract_text_by_hint(html, hint)
+    if not text:
+        return None
+    prices = extract_prices_from_text(text)
+    return prices[0] if prices else _parse_price(text)
+
+
+def _parse_articul_from_hint(html: str, hint: str) -> str | None:
+    text = _extract_text_by_hint(html, hint)
+    if not text:
+        return None
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = re.sub(r"^(арт\.?|артикул|sku|код)\s*[:\-]?\s*", "", cleaned, flags=re.I)
+    return cleaned[:80] or None
+
+
+def _infer_product_path_prefix(sample_url: str) -> str | None:
+    path = urlparse(sample_url).path.rstrip("/")
+    if not path:
+        return None
+    markers = (
+        "/catalog/product/",
+        "/magazin/product/",
+        "/product/",
+        "/tovar/",
+        "/goods/",
+        "/item/",
+        "/card/",
+    )
+    lower = path.lower()
+    for marker in markers:
+        if marker in lower:
+            idx = lower.index(marker)
+            return path[: idx + len(marker)]
+    segments = [segment for segment in path.split("/") if segment]
+    if len(segments) >= 2:
+        return "/" + "/".join(segments[:-1]) + "/"
+    return None
+
+
+def _url_matches_product_pattern(url: str, sample_url: str | None) -> bool:
+    if is_competitor_product_page_url(url):
+        return True
+    if not sample_url:
+        return False
+    prefix = _infer_product_path_prefix(sample_url)
+    if not prefix:
+        return False
+    path = urlparse(url).path
+    return path.startswith(prefix) and path.rstrip("/") != prefix.rstrip("/")
+
+
+def _discover_generic_sitemap_product_urls(
+    domain: str,
+    sample_url: str | None = None,
+    *,
+    limit: int = 8000,
+) -> list[str]:
+    normalized = domain.lower().removeprefix("www.")
+    root = f"https://{normalized}"
+    queue = [f"{root}/sitemap.xml", f"{root}/sitemap_index.xml"]
+    seen_sitemaps: set[str] = set()
+    product_urls: list[str] = []
+    seen_products: set[str] = set()
+
+    try:
+        with httpx.Client(
+            timeout=WEB_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            while queue and len(product_urls) < limit:
+                sitemap_url = queue.pop(0)
+                if sitemap_url in seen_sitemaps:
+                    continue
+                seen_sitemaps.add(sitemap_url)
+                try:
+                    response = client.get(sitemap_url)
+                    response.raise_for_status()
+                except Exception:
+                    continue
+                body = response.text[:2_000_000]
+                locs = _SITEMAP_LOC_RE.findall(body)
+                for loc in locs:
+                    clean = loc.strip().split("#")[0]
+                    if not clean:
+                        continue
+                    if clean.endswith(".xml") and normalized in urlparse(clean).netloc.lower():
+                        if clean not in seen_sitemaps:
+                            queue.append(clean)
+                        continue
+                    if normalized not in urlparse(clean).netloc.lower().removeprefix("www."):
+                        continue
+                    if not _url_matches_product_pattern(clean, sample_url):
+                        continue
+                    if clean in seen_products:
+                        continue
+                    seen_products.add(clean)
+                    product_urls.append(clean)
+                    if len(product_urls) >= limit:
+                        break
+    except Exception:
+        logger.exception("Failed to discover sitemap for %s", domain)
+
+    return product_urls
+
+
+def _fetch_products_from_url_list(
+    site: CompetitorSite,
+    product_urls: list[str],
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    if not product_urls:
+        return []
+
+    products: list[CompetitorCatalogProduct] = []
+    seen_names: set[str] = set()
+    total = len(product_urls)
+    store = get_competitor_product_store() if checkpoint_every > 0 else None
+    logger.info("%s: indexing %s product URLs", site.domain, total)
+
+    with httpx.Client(
+        timeout=WEB_SEARCH_TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+    ) as client:
+        for index, product_url in enumerate(product_urls, start=1):
+            try:
+                response = client.get(product_url)
+                response.raise_for_status()
+            except Exception:
+                logger.debug("Product fetch failed %s", product_url, exc_info=True)
+                continue
+
+            page_products = parse_catalog_html(
+                response.text[:700_000],
+                domain=site.domain,
+                site_label=site.label,
+                page_url=str(response.url),
+            )
+            if not page_products:
+                continue
+            for item in page_products:
+                key = normalize_name(item.name)
+                if key in seen_names:
+                    continue
+                seen_names.add(key)
+                products.append(item)
+
+            if store and checkpoint_every > 0 and products and (
+                index % checkpoint_every == 0 or index == total
+            ):
+                saved = store.replace_site_products(
+                    site.domain,
+                    products,
+                    site_label=site.label,
+                )
+                logger.info(
+                    "%s checkpoint %s/%s urls, %s products saved",
+                    site.domain,
+                    index,
+                    total,
+                    saved,
+                )
+            elif index % 500 == 0 or index == total:
+                logger.info("%s indexed %s/%s URLs", site.domain, index, total)
+
+    logger.info("%s catalog complete: %s products", site.domain, len(products))
+    return products
+
 
 def site_catalog_looks_complete(domain: str, product_count: int) -> bool:
     normalized = domain.lower().removeprefix("www.")
@@ -62,6 +340,8 @@ def start_site_reindex_background(
     doc_rag_index,
     *,
     force: bool = True,
+    site: CompetitorSite | None = None,
+    extra_urls: list[str] | None = None,
 ) -> dict[str, object]:
     normalized = domain.lower().removeprefix("www.")
     with _reindex_lock:
@@ -83,15 +363,17 @@ def start_site_reindex_background(
 
     def _run() -> None:
         try:
-            site = next(
-                (
-                    item
-                    for item in competitor_sites_with_search()
-                    if item.domain.lower().removeprefix("www.") == normalized
-                ),
-                None,
-            )
-            if site is None:
+            resolved_site = site
+            if resolved_site is None:
+                resolved_site = next(
+                    (
+                        item
+                        for item in competitor_sites_with_search()
+                        if item.domain.lower().removeprefix("www.") == normalized
+                    ),
+                    None,
+                )
+            if resolved_site is None:
                 _reindex_jobs[normalized] = {
                     "domain": normalized,
                     "running": False,
@@ -101,11 +383,18 @@ def start_site_reindex_background(
                 return
 
             logger.info("Background reindex started for %s force=%s", normalized, force)
-            result = index_competitor_site_catalog(site, doc_rag_index, force=force)
+            result = index_competitor_site_catalog(
+                resolved_site,
+                doc_rag_index,
+                force=force,
+                extra_urls=extra_urls,
+            )
             sync_unified_competitor_rag(doc_rag_index)
             from src.services.competitor_product_store import get_competitor_product_store
+            from src.services.competitor_site_manager import get_competitor_site_manager
 
             store_stats = get_competitor_product_store().stats()
+            get_competitor_site_manager().mark_draft_indexed(normalized, result)
             _reindex_jobs[normalized] = {
                 "domain": normalized,
                 "running": False,
@@ -1220,6 +1509,7 @@ def _parse_product_detail_page(
         return []
 
     focused = _focus_product_price_html(html)
+    hints = get_domain_parsing_hints(domain)
     articul_match = re.search(
         r'data-value="([A-Za-z0-9\-_.]+)"[^>]*>\s*<span>\s*Артикул:',
         html[:120_000],
@@ -1227,7 +1517,13 @@ def _parse_product_detail_page(
     )
     if not articul_match:
         articul_match = _ARTICUL_RE.search(html[:120_000])
+    articul = articul_match.group(1) if articul_match else None
+    if hints and hints.articul_html_hint and not articul:
+        articul = _parse_articul_from_hint(html, hints.articul_html_hint)
+
     price = _extract_primary_product_price(focused)
+    if price is None and hints and hints.price_html_hint:
+        price = _parse_price_from_hint(html, hints.price_html_hint)
     price_label = price_on_request_label(focused) if price is None else None
     return [
         CompetitorCatalogProduct(
@@ -1236,7 +1532,7 @@ def _parse_product_detail_page(
             name=name[:300],
             price=price,
             url=page_url.split("#")[0],
-            articul=articul_match.group(1) if articul_match else None,
+            articul=articul,
             price_label=price_label,
         )
     ]
@@ -1539,6 +1835,15 @@ def fetch_catalog_products(
         return fetch_labkabinet_catalog(site)
     if normalized_domain == "vrtorg.ru":
         return fetch_vrtorg_catalog(site)
+
+    hints = get_domain_parsing_hints(normalized_domain)
+    sample_url = hints.product_sample_url if hints else None
+    sitemap_urls = _discover_generic_sitemap_product_urls(
+        normalized_domain,
+        sample_url,
+    )
+    if sitemap_urls:
+        return _fetch_products_from_url_list(site, sitemap_urls)
 
     dedup_urls = resolve_catalog_urls(site, extra_urls=extra_urls)
 
@@ -1914,6 +2219,7 @@ def reindex_all_competitor_sites(
             results.append({"domain": site.domain, "label": site.label, "indexed": False, "error": True})
 
     for entry in manager.list_custom():
+        apply_parsing_hints_from_entry(entry)
         site = CompetitorSite(
             domain=entry.domain,
             label=entry.label or entry.domain,

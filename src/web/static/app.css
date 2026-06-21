@@ -427,6 +427,14 @@ body {
 
 .form-stack { display: flex; flex-direction: column; gap: 12px; }
 
+.input--textarea {
+  min-height: 72px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
 .upload-blocks {
   display: flex;
   flex-direction: column;

@@ -188,10 +188,20 @@ class CompetitorSiteAnalyzeRequest(BaseModel):
     label: str = Field(default="", max_length=200)
 
 
+class CompetitorSiteIndexRequest(BaseModel):
+    url: str = Field(min_length=4, max_length=500)
+    label: str = Field(default="", max_length=200)
+    product_sample_url: str | None = Field(default=None, max_length=800)
+    price_html_hint: str | None = Field(default=None, max_length=8000)
+    articul_html_hint: str | None = Field(default=None, max_length=8000)
+
+
 class CompetitorSiteAddRequest(BaseModel):
     url: str = Field(min_length=4, max_length=500)
     label: str = Field(default="", max_length=200)
-    search_url: str | None = Field(default=None, max_length=500)
+    product_sample_url: str | None = Field(default=None, max_length=800)
+    price_html_hint: str | None = Field(default=None, max_length=8000)
+    articul_html_hint: str | None = Field(default=None, max_length=8000)
 
 
 class CompetitorSearchRequest(BaseModel):
@@ -484,7 +494,12 @@ def _list_competitor_sites_payload() -> dict[str, Any]:
     }
 
 
-def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
+def _index_competitor_rag(
+    entry,
+    analysis: dict,
+    *,
+    skip_catalog: bool = False,
+) -> dict[str, str | int | bool]:
     rag_text = str(analysis.get("rag_text") or "")
     if not rag_text.strip():
         rag_text = (
@@ -501,9 +516,17 @@ def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
         filename=entry.domain,
         force=True,
     )
-    from src.services.competitor_catalog_service import index_competitor_site_catalog
+    if skip_catalog:
+        return {"meta": meta, "catalog": {"skipped": True}, "pages": []}
+
+    from src.services.competitor_catalog_service import (
+        apply_parsing_hints_from_entry,
+        index_competitor_page_url,
+        index_competitor_site_catalog,
+    )
     from src.services.competitor_sites import CompetitorSite
 
+    apply_parsing_hints_from_entry(entry)
     site = CompetitorSite(
         domain=entry.domain,
         label=entry.label or entry.domain,
@@ -516,8 +539,6 @@ def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
         extra_urls=entry.catalog_urls,
     )
     pages: list[dict[str, object]] = []
-    from src.services.competitor_catalog_service import index_competitor_page_url
-
     for page_url in entry.catalog_urls:
         pages.append(
             index_competitor_page_url(
@@ -528,6 +549,10 @@ def _index_competitor_rag(entry, analysis: dict) -> dict[str, str | int | bool]:
             )
         )
     return {"meta": meta, "catalog": catalog, "pages": pages}
+
+
+def _index_competitor_site_meta(entry, analysis: dict) -> dict[str, str | int | bool]:
+    return _index_competitor_rag(entry, analysis, skip_catalog=True)
 
 
 def _normalize_task_mode(task_mode: str | None, *, parse_only: bool | None = None) -> str:
@@ -1058,19 +1083,138 @@ def api_competitors_analyze(body: CompetitorSiteAnalyzeRequest) -> dict[str, Any
     return {"analysis": analysis}
 
 
-@app.post("/api/competitors")
-def api_competitors_add(body: CompetitorSiteAddRequest) -> dict[str, Any]:
+@app.get("/api/competitors/index/status")
+def api_competitors_index_status(url: str) -> dict[str, Any]:
     manager = get_competitor_site_manager()
     try:
-        entry, analysis = manager.add(
+        normalized = manager.normalize_url(url)
+        domain = manager.domain_from_url(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    draft = manager.get_draft(domain)
+    return {
+        "domain": domain,
+        "index_completed": bool(draft and draft.indexed),
+        "catalog": draft.index_result if draft else None,
+    }
+
+
+@app.post("/api/competitors/index")
+def api_competitors_index(body: CompetitorSiteIndexRequest) -> dict[str, Any]:
+    from src.services.competitor_catalog_service import (
+        _discover_generic_sitemap_product_urls,
+        index_competitor_page_url,
+        index_competitor_site_catalog,
+        set_domain_parsing_hints,
+        start_site_reindex_background,
+        sync_unified_competitor_rag,
+    )
+    from src.services.competitor_product_store import get_competitor_product_store
+    from src.services.competitor_sites import CompetitorSite
+
+    manager = get_competitor_site_manager()
+    try:
+        draft, analysis = manager.prepare_index_draft(
             body.url,
             label=body.label,
-            search_url=body.search_url,
+            product_sample_url=body.product_sample_url,
+            price_html_hint=body.price_html_hint,
+            articul_html_hint=body.articul_html_hint,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    rag = _index_competitor_rag(entry, analysis)
+    domain = draft.domain
+    set_domain_parsing_hints(
+        domain,
+        product_sample_url=draft.product_sample_url or "",
+        price_html_hint=draft.price_html_hint or "",
+        articul_html_hint=draft.articul_html_hint or "",
+    )
+
+    site = CompetitorSite(
+        domain=domain,
+        label=draft.label,
+        search_url=draft.search_url,
+    )
+    extra_urls: list[str] = []
+    if draft.product_sample_url:
+        extra_urls.append(draft.product_sample_url)
+
+    index = _doc_rag_index_service()
+    if draft.product_sample_url:
+        index_competitor_page_url(
+            draft.product_sample_url,
+            domain=domain,
+            site_label=draft.label,
+            doc_rag_index=index,
+        )
+
+    sitemap_urls = _discover_generic_sitemap_product_urls(
+        domain,
+        draft.product_sample_url,
+    )
+    background = len(sitemap_urls) > 300
+    if background:
+        job = start_site_reindex_background(
+            domain,
+            index,
+            force=True,
+            site=site,
+            extra_urls=extra_urls or None,
+        )
+        store = get_competitor_product_store()
+        store.reload()
+        return {
+            "analysis": analysis,
+            "catalog": {"indexed": False, "background": True, "sitemap_urls": len(sitemap_urls)},
+            "background_job": job,
+            "index_completed": False,
+            "catalog_products": store.stats(),
+        }
+
+    catalog = index_competitor_site_catalog(
+        site,
+        index,
+        force=True,
+        extra_urls=extra_urls or None,
+    )
+    sync_unified_competitor_rag(index)
+    manager.mark_draft_indexed(domain, catalog)
+    store = get_competitor_product_store()
+    store.reload()
+    return {
+        "analysis": analysis,
+        "catalog": catalog,
+        "index_completed": True,
+        "catalog_products": store.stats(),
+    }
+
+
+@app.post("/api/competitors")
+def api_competitors_add(body: CompetitorSiteAddRequest) -> dict[str, Any]:
+    manager = get_competitor_site_manager()
+    try:
+        entry, analysis = manager.add_from_indexed_draft(
+            body.url,
+            label=body.label,
+            product_sample_url=body.product_sample_url,
+            price_html_hint=body.price_html_hint,
+            articul_html_hint=body.articul_html_hint,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from src.services.competitor_catalog_service import set_domain_parsing_hints
+
+    set_domain_parsing_hints(
+        entry.domain,
+        product_sample_url=entry.product_sample_url or "",
+        price_html_hint=entry.price_html_hint or "",
+        articul_html_hint=entry.articul_html_hint or "",
+    )
+    rag = _index_competitor_site_meta(entry, analysis)
     from src.services.competitor_product_store import get_competitor_product_store
 
     return {

@@ -29,6 +29,9 @@ class CompetitorSiteEntry:
     label: str
     search_url: str | None
     catalog_urls: list[str]
+    product_sample_url: str | None
+    price_html_hint: str | None
+    articul_html_hint: str | None
     notes: str
     builtin: bool
     title: str
@@ -48,6 +51,9 @@ class CompetitorSiteEntry:
             label=str(data.get("label", "")),
             search_url=data.get("search_url") or None,
             catalog_urls=[str(url) for url in catalog_urls if url],
+            product_sample_url=data.get("product_sample_url") or None,
+            price_html_hint=data.get("price_html_hint") or None,
+            articul_html_hint=data.get("articul_html_hint") or None,
             notes=str(data.get("notes", "")),
             builtin=bool(data.get("builtin", False)),
             title=str(data.get("title", "")),
@@ -57,10 +63,26 @@ class CompetitorSiteEntry:
         )
 
 
+@dataclass
+class CompetitorSiteDraft:
+    url: str
+    domain: str
+    label: str
+    search_url: str | None
+    product_sample_url: str | None
+    price_html_hint: str | None
+    articul_html_hint: str | None
+    analysis: dict
+    indexed: bool = False
+    index_result: dict | None = None
+    indexed_at: str = ""
+
+
 class CompetitorSiteManager:
     def __init__(self, registry_path: Path = COMPETITOR_SITES_REGISTRY_PATH) -> None:
         self.registry_path = registry_path
         self._custom: list[CompetitorSiteEntry] = []
+        self._drafts: dict[str, CompetitorSiteDraft] = {}
         self._load()
 
     @staticmethod
@@ -252,15 +274,83 @@ class CompetitorSiteManager:
 
         return f"{root}/search?q={{query}}"
 
-    def add(
+    @staticmethod
+    def _normalize_optional_url(raw: str | None) -> str | None:
+        text = (raw or "").strip()
+        if not text:
+            return None
+        return CompetitorSiteManager.normalize_url(text)
+
+    def get_draft(self, domain: str) -> CompetitorSiteDraft | None:
+        normalized = domain.lower().removeprefix("www.")
+        return self._drafts.get(normalized)
+
+    def prepare_index_draft(
         self,
         url: str,
         *,
         label: str = "",
-        search_url: str | None = None,
-    ) -> tuple[CompetitorSiteEntry, dict[str, str | bool | None]]:
+        product_sample_url: str | None = None,
+        price_html_hint: str | None = None,
+        articul_html_hint: str | None = None,
+    ) -> tuple[CompetitorSiteDraft, dict[str, str | bool | None]]:
         analysis = self.analyze_url(url, label=label)
         domain = str(analysis["domain"])
+        normalized = domain.lower().removeprefix("www.")
+
+        from src.services.competitor_sites import all_competitor_domains
+
+        if domain in {entry.domain for entry in self._custom}:
+            raise ValueError(f"Сайт {domain} уже добавлен")
+        if domain in all_competitor_domains(include_custom=False):
+            raise ValueError(f"Сайт {domain} уже есть во встроенном списке")
+
+        sample_url = self._normalize_optional_url(product_sample_url)
+        draft = CompetitorSiteDraft(
+            url=str(analysis["url"]),
+            domain=domain,
+            label=str(analysis.get("label") or label.strip() or domain),
+            search_url=analysis.get("search_url"),
+            product_sample_url=sample_url,
+            price_html_hint=(price_html_hint or "").strip() or None,
+            articul_html_hint=(articul_html_hint or "").strip() or None,
+            analysis=analysis,
+        )
+        self._drafts[normalized] = draft
+        return draft, analysis
+
+    def mark_draft_indexed(self, domain: str, index_result: dict) -> CompetitorSiteDraft | None:
+        normalized = domain.lower().removeprefix("www.")
+        draft = self._drafts.get(normalized)
+        if not draft:
+            return None
+        draft.indexed = True
+        draft.index_result = index_result
+        draft.indexed_at = self._now()
+        return draft
+
+    def clear_draft(self, domain: str) -> None:
+        normalized = domain.lower().removeprefix("www.")
+        self._drafts.pop(normalized, None)
+
+    def add_from_indexed_draft(
+        self,
+        url: str,
+        *,
+        label: str = "",
+        product_sample_url: str | None = None,
+        price_html_hint: str | None = None,
+        articul_html_hint: str | None = None,
+    ) -> tuple[CompetitorSiteEntry, dict[str, str | bool | None]]:
+        normalized_url = self.normalize_url(url)
+        domain = self.domain_from_url(normalized_url)
+        normalized = domain.lower().removeprefix("www.")
+        draft = self._drafts.get(normalized)
+        if not draft or not draft.indexed:
+            raise ValueError(
+                "Сначала нажмите «Проиндексировать» и дождитесь завершения индексации каталога"
+            )
+
         existing = {entry.domain for entry in self._custom}
         if domain in existing:
             raise ValueError(f"Сайт {domain} уже добавлен")
@@ -277,28 +367,40 @@ class CompetitorSiteManager:
             entry_id = f"{self._make_id(domain)}_{suffix}"
             suffix += 1
 
-        resolved_search = search_url or analysis.get("search_url")
+        resolved_search = draft.search_url
         if resolved_search and "{query}" not in resolved_search:
             resolved_search = f"{resolved_search.rstrip('/')}?q={{query}}"
 
+        resolved_label = label.strip() or draft.label or domain
+        resolved_sample = self._normalize_optional_url(product_sample_url) or draft.product_sample_url
+        resolved_price_hint = (price_html_hint or "").strip() or draft.price_html_hint
+        resolved_articul_hint = (articul_html_hint or "").strip() or draft.articul_html_hint
+
+        catalog_urls = [draft.url]
+        if resolved_sample and resolved_sample not in catalog_urls:
+            catalog_urls.append(resolved_sample)
+
         now = self._now()
-        catalog_urls = [str(analysis["url"])]
         entry = CompetitorSiteEntry(
             id=entry_id,
-            url=str(analysis["url"]),
+            url=draft.url,
             domain=domain,
-            label=str(analysis.get("label") or domain),
+            label=resolved_label,
             search_url=resolved_search,
             catalog_urls=catalog_urls,
-            notes=str(analysis.get("notes") or ""),
+            product_sample_url=resolved_sample,
+            price_html_hint=resolved_price_hint,
+            articul_html_hint=resolved_articul_hint,
+            notes=str(draft.analysis.get("notes") or ""),
             builtin=False,
-            title=str(analysis.get("title") or ""),
-            status=str(analysis.get("status") or "ok"),
+            title=str(draft.analysis.get("title") or ""),
+            status=str(draft.analysis.get("status") or "ok"),
             added_at=now,
-            analyzed_at=now,
+            analyzed_at=draft.indexed_at or now,
         )
         self._custom.append(entry)
         self._save()
+        self._drafts.pop(normalized, None)
 
         from src.services.competitor_catalog_urls import get_competitor_catalog_url_registry
 
@@ -310,7 +412,22 @@ class CompetitorSiteManager:
                 label=entry.label,
                 source="site_add",
             )
-        return entry, analysis
+        return entry, draft.analysis
+
+    def add(
+        self,
+        url: str,
+        *,
+        label: str = "",
+        search_url: str | None = None,
+    ) -> tuple[CompetitorSiteEntry, dict[str, str | bool | None]]:
+        return self.add_from_indexed_draft(
+            url,
+            label=label,
+            product_sample_url=None,
+            price_html_hint=None,
+            articul_html_hint=None,
+        )
 
     def remove(self, site_id: str) -> CompetitorSiteEntry:
         entry = self.get_custom(site_id)

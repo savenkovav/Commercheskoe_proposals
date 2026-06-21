@@ -136,7 +136,7 @@
               id="kpChatInput"
               class="input chat-compose__input"
               rows="2"
-              placeholder="Например: найди в каталогах · уточни характеристики · наценка 25%..."
+              placeholder="Введите запрос сюда..."
               autocomplete="off"
             ></textarea>
             <button class="btn btn--primary chat-compose__send" type="submit" id="btnKpChatSend">Отправить</button>
@@ -229,15 +229,27 @@
       <section class="panel" id="panel-competitors" data-panel="competitors">
         <div class="grid-2">
           <div class="card">
-            <h2>Добавить сайт конкурента</h2>
-            <p class="muted">Вставьте ссылку — сайт будет проанализирован и добавлен в базу для поиска цен и RAG</p>
+            <h2>Добавить сайт</h2>
+            <p class="muted">Укажите сайт, проиндексируйте каталог товаров, затем добавьте сайт в базу для поиска цен и RAG</p>
             <div class="form-stack">
               <input type="url" id="competitorUrl" class="input" placeholder="https://example-shop.ru">
               <input type="text" id="competitorLabel" class="input" placeholder="Название (необязательно)">
-              <input type="url" id="competitorSearchUrl" class="input" placeholder="URL поиска с {query} (необязательно)">
+              <input type="url" id="competitorProductSampleUrl" class="input" placeholder="URL карточки товара — образец для индексации (необязательно)">
+              <textarea
+                id="competitorPriceHtmlHint"
+                class="input input--textarea"
+                rows="3"
+                placeholder="HTML-код цены из карточки товара — для ориентира при индексации (необязательно)"
+              ></textarea>
+              <textarea
+                id="competitorArticulHtmlHint"
+                class="input input--textarea"
+                rows="3"
+                placeholder="HTML-код артикула из карточки товара — для ориентира при индексации (необязательно)"
+              ></textarea>
               <div class="actions actions--wrap">
-                <button class="btn btn--secondary" type="button" id="btnAnalyzeCompetitor">Проанализировать</button>
-                <button class="btn btn--primary" type="button" id="btnAddCompetitor">Добавить сайт</button>
+                <button class="btn btn--secondary" type="button" id="btnIndexCompetitor">Проиндексировать</button>
+                <button class="btn btn--primary" type="button" id="btnAddCompetitor" disabled>Добавить сайт</button>
               </div>
             </div>
             <div class="competitor-analysis hidden" id="competitorAnalysis"></div>
