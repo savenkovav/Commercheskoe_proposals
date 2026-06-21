@@ -38,8 +38,8 @@ class KpSession:
     results: list[MatchResult]
     summary: ProposalSummary
     output_path: Path
-    pdf_path: Path | None = None
     use_ai: bool
+    pdf_path: Path | None = None
     preferences: KpPreferences = field(default_factory=KpPreferences)
     chat_history: list[ChatTurn] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
