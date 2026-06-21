@@ -16,6 +16,11 @@ class KpSelectionItem:
     variant: str = "primary"
 
 
+def _is_market_estimate_quote(quote: PriceQuote) -> bool:
+    label = (quote.label or "").lower()
+    return "оценка рынка" in label or "оценка ai" in label
+
+
 def _local_comparison_quotes(result: MatchResult) -> list[PriceQuote]:
     return [quote for quote in result.comparison if quote.source != "web"]
 
@@ -24,7 +29,7 @@ def _web_comparison_quotes(result: MatchResult) -> list[PriceQuote]:
     seen: set[str] = set()
     quotes: list[PriceQuote] = []
     for quote in [*result.comparison, *result.competitors]:
-        if quote.source != "web":
+        if quote.source != "web" or _is_market_estimate_quote(quote):
             continue
         key = quote.url or f"{quote.label}|{quote.matched_name}|{quote.price}"
         if key in seen:

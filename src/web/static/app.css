@@ -268,6 +268,17 @@ a.btn.btn--disabled {
   vertical-align: top;
 }
 
+.compare-block__market-estimate {
+  margin-bottom: 12px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.compare-block__market-estimate a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .kp-variant-list {
   display: flex;
   flex-direction: column;

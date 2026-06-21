@@ -85,6 +85,52 @@ let kpProcessData = null;
 let kpFormed = false;
 let kpExportSummary = null;
 
+function isMarketEstimateQuote(q) {
+  const label = (q?.label || "").toLowerCase();
+  return label.includes("оценка рынка") || label.includes("оценка ai");
+}
+
+function collectMarketEstimateQuotes(item) {
+  const seen = new Set();
+  const rows = [];
+  for (const q of [...(item.comparison || []), ...(item.competitors || [])]) {
+    if (!isMarketEstimateQuote(q)) continue;
+    const key = q.url || `${q.label}|${q.matched_name}|${q.price}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(q);
+  }
+  return rows;
+}
+
+function renderMarketEstimateLink(q) {
+  const url = q.url && !isSearchListingUrl(q.url) ? q.url : null;
+  const title = (q.matched_name || "").trim();
+  if (url) {
+    const text = title || shortenUrlForDisplay(url);
+    return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`;
+  }
+  if (title) return escapeHtml(title);
+  return "—";
+}
+
+function renderMarketEstimateInfo(item) {
+  const quotes = collectMarketEstimateQuotes(item);
+  if (!quotes.length) return "";
+  return quotes
+    .map((q) => {
+      const price = q.price ?? q.cost;
+      return `
+    <div class="compare-block__market-estimate">
+      <strong>${escapeHtml(q.label || "Интернет (оценка рынка)")}:</strong>
+      ${renderMarketEstimateLink(q)}${
+        q.match_score ? `<span class="muted"> · ${Math.round(q.match_score)}%</span>` : ""
+      }${price != null ? `<span class="muted"> · ${fmtMoney(price)}</span>` : ""}
+    </div>`;
+    })
+    .join("");
+}
+
 function listItemVariants(item) {
   const variants = [
     {
@@ -104,14 +150,16 @@ function listItemVariants(item) {
         meta: q.match_score ? `${Math.round(q.match_score)}%` : "",
       });
     });
-  collectWebEntries(item).forEach((q, index) => {
-    variants.push({
-      id: `web:${index}`,
-      label: q.label || "Интернет",
-      name: q.matched_name || "—",
-      meta: q.match_score ? `${Math.round(q.match_score)}%` : "",
+  collectWebEntries(item)
+    .filter((q) => !isMarketEstimateQuote(q))
+    .forEach((q, index) => {
+      variants.push({
+        id: `web:${index}`,
+        label: q.label || "Интернет",
+        name: q.matched_name || "—",
+        meta: q.match_score ? `${Math.round(q.match_score)}%` : "",
+      });
     });
-  });
   return variants;
 }
 
@@ -762,8 +810,9 @@ function renderPrimaryMatchBlock(item) {
 }
 
 function renderWebComparisonRows(webEntries, item) {
-  if (!webEntries.length) return "";
-  const rows = webEntries
+  const productEntries = webEntries.filter((q) => !isMarketEstimateQuote(q));
+  if (!productEntries.length) return "";
+  const rows = productEntries
     .map((q) => {
       const webPrice = q.price ?? q.cost;
       const isSelected =
@@ -884,6 +933,7 @@ function renderComparisonTable(item) {
   return `
     <div class="compare-block">
       ${renderVariantChoices(item)}
+      ${renderMarketEstimateInfo(item)}
       ${primaryBlock}
       ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
       ${renderWebComparisonRows(webEntries, item)}
