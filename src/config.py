@@ -209,3 +209,4 @@ COMPETITOR_PRODUCTS_PATH = PROJECT_ROOT / os.getenv(
 COMPETITOR_CATALOG_URLS_PATH = PROJECT_ROOT / os.getenv(
     "COMPETITOR_CATALOG_URLS_PATH", "data/competitor_catalog_urls.json"
 )
+KP_SESSIONS_PATH = PROJECT_ROOT / os.getenv("KP_SESSIONS_PATH", "data/kp_sessions.json")

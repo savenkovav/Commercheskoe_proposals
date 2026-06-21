@@ -186,6 +186,11 @@ class CompetitorPageIndexRequest(BaseModel):
     label: str = Field(default="", max_length=200)
 
 
+class CompetitorEnrichImagesRequest(BaseModel):
+    domain: str = Field(default="vrtorg.ru", min_length=3, max_length=200)
+    label: str = Field(default="", max_length=200)
+    limit: int | None = Field(default=None, ge=1, le=5000)
+
 def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
     return {
         "source": quote.source,
@@ -618,6 +623,18 @@ def _lookup_result_to_dict(result: ProductLookupResult) -> dict[str, Any]:
         MatchStatus.NOT_FOUND: "not_found",
     }.get(result.status, "not_found")
 
+    registry = _serialize_registry_block(result.registry)
+    photo_urls = list(registry.get("photo_urls") or [])
+    if not photo_urls:
+        items = (result.competitors or {}).get("items")
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                image_url = item.get("image_url")
+                if isinstance(image_url, str) and image_url.strip():
+                    photo_urls.append(image_url.strip())
+
     return {
         "query_name": result.query_name,
         "matched_name": result.matched_name,
@@ -630,9 +647,11 @@ def _lookup_result_to_dict(result: ProductLookupResult) -> dict[str, Any]:
         "available_fields": list(get_field_labels().values()),
         "catalog": result.catalog,
         "price_list": result.price_list,
-        "registry": _serialize_registry_block(result.registry),
+        "registry": registry,
         "competitors": result.competitors,
         "ai_insight": result.ai_insight,
+        "photo_urls": photo_urls,
+        "photo_url": photo_urls[0] if photo_urls else None,
     }
 
 
@@ -754,10 +773,19 @@ def api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
     try:
         service = _kp_chat_service()
         session_id = body.session_id
-        if not session_id:
+        session_recreated = False
+        if session_id:
+            session = service.store.get(session_id)
+            if not session:
+                session_id = service.create_free_session()
+                session_recreated = True
+        else:
             session_id = service.create_free_session()
+            session_recreated = True
         chat_result = service.chat(session_id, body.message)
-        return _kp_chat_response(chat_result, session_id)
+        response = _kp_chat_response(chat_result, session_id)
+        response["session_recreated"] = session_recreated
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -1114,6 +1142,27 @@ def api_competitors_index_page(body: CompetitorPageIndexRequest) -> dict[str, An
         normalized,
         domain=domain,
         site_label=label,
+        doc_rag_index=_doc_rag_index_service(),
+    )
+    return {
+        "result": result,
+        "catalog_products": get_competitor_product_store().stats(),
+        "rag_docs": _doc_rag_index_service().stats(),
+    }
+
+
+@app.post("/api/competitors/enrich-images")
+def api_competitors_enrich_images(body: CompetitorEnrichImagesRequest) -> dict[str, Any]:
+    from src.services.competitor_catalog_service import enrich_site_product_images
+    from src.services.competitor_product_store import get_competitor_product_store
+    from src.services.competitor_sites import competitor_label_for_url
+
+    domain = body.domain.lower().removeprefix("www.")
+    label = body.label.strip() or competitor_label_for_url(f"https://{domain}/") or domain
+    result = enrich_site_product_images(
+        domain,
+        site_label=label,
+        limit=body.limit,
         doc_rag_index=_doc_rag_index_service(),
     )
     return {

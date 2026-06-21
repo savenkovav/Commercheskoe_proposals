@@ -272,6 +272,8 @@ class KpChatService:
 
         session.chat_history.append(ChatTurn(role="assistant", text=reply))
 
+        self.store.save()
+
         response: dict = {
             "reply": reply,
             "preferences": session.preferences.to_dict(),
@@ -337,6 +339,7 @@ class KpChatService:
             session.results,
             time.perf_counter() - start,
         )
+        self.store.save()
 
     def _generate_excel(self, session: KpSession) -> None:
         for result in session.results:
@@ -349,6 +352,7 @@ class KpChatService:
             preferences=session.preferences,
         )
         session.stage = "exported"
+        self.store.save()
 
     @staticmethod
     def _apply_kit_aggregation(results: list[MatchResult]) -> None:

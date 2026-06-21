@@ -1533,7 +1533,7 @@ def index_competitor_page_url(
 
     products = fetch_catalog_page(page_url, domain=domain, site_label=site_label)
     store = get_competitor_product_store()
-    added = store.merge_products(products, domain=domain, site_label=site_label)
+    added, updated = store.merge_products(products, domain=domain, site_label=site_label)
     store.record_indexed_page(
         page_url,
         domain=domain,
@@ -1570,7 +1570,82 @@ def index_competitor_page_url(
         "domain": domain,
         "products_found": len(products),
         "products_added": added,
+        "products_updated": updated,
         "rag": rag_result,
+    }
+
+
+_VRTORG_IMAGE_ENRICH_DOMAINS = {"vrtorg.ru"}
+
+
+def enrich_site_product_images(
+    domain: str,
+    *,
+    site_label: str = "",
+    limit: int | None = None,
+    doc_rag_index=None,
+) -> dict[str, int | bool | str]:
+    normalized = domain.lower().removeprefix("www.")
+    if normalized not in _VRTORG_IMAGE_ENRICH_DOMAINS:
+        return {
+            "domain": normalized,
+            "supported": False,
+            "message": "Обогащение фото пока доступно только для vrtorg.ru",
+        }
+
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    store = get_competitor_product_store()
+    label = site_label or store._site_labels.get(normalized, normalized)
+    targets = [
+        product
+        for product in store.products_for_domain(normalized)
+        if product.url and not product.image_url
+    ]
+    if limit is not None and limit > 0:
+        targets = targets[:limit]
+
+    checked = 0
+    updated = 0
+    failed = 0
+    for product in targets:
+        checked += 1
+        fetched = fetch_catalog_page(
+            product.url or "",
+            domain=normalized,
+            site_label=label,
+        )
+        if not fetched:
+            failed += 1
+            continue
+        incoming = fetched[0]
+        if not incoming.image_url:
+            failed += 1
+            continue
+        _added, batch_updated = store.merge_products(
+            [incoming],
+            domain=normalized,
+            site_label=label,
+        )
+        if batch_updated:
+            updated += batch_updated
+
+    if updated and doc_rag_index is not None:
+        sync_unified_competitor_rag(doc_rag_index)
+
+    return {
+        "domain": normalized,
+        "supported": True,
+        "checked": checked,
+        "updated": updated,
+        "failed": failed,
+        "remaining_without_image": len(
+            [
+                product
+                for product in store.products_for_domain(normalized)
+                if product.url and not product.image_url
+            ]
+        ),
     }
 
 

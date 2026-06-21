@@ -849,11 +849,13 @@ function resetKpChat(sessionId) {
   renderKpChatMessages();
 }
 
-async function sendKpChatMessage(text) {
+async function sendKpChatMessage(text, isRetry = false) {
   const message = text.trim();
   if (!message || kpChatLoading) return;
 
-  kpChatMessages.push({ role: "user", text: message, ts: Date.now() });
+  if (!isRetry) {
+    kpChatMessages.push({ role: "user", text: message, ts: Date.now() });
+  }
   kpChatLoading = true;
   updateKpChatFormState();
   renderKpChatMessages();
@@ -865,6 +867,16 @@ async function sendKpChatMessage(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: kpSessionId, message }),
     });
+    if (data.session_id) {
+      kpSessionId = data.session_id;
+    }
+    if (data.session_recreated && !isRetry) {
+      kpChatMessages.push({
+        role: "assistant",
+        text: "Сессия была обновлена. Поиск по товару продолжается; для КП по ТЗ загрузите файл заново.",
+        ts: Date.now(),
+      });
+    }
     kpChatMessages.push({
       role: "assistant",
       text: data.reply,
@@ -886,6 +898,11 @@ async function sendKpChatMessage(text) {
       showToast("Ответ получен");
     }
   } catch (e) {
+    if (!isRetry && /сессия не найдена/i.test(String(e.message || ""))) {
+      kpSessionId = null;
+      kpSessionPromise = null;
+      return sendKpChatMessage(text, true);
+    }
     kpChatMessages.push({ role: "error", text: e.message, ts: Date.now() });
     showToast(e.message, true);
   } finally {
@@ -1411,7 +1428,7 @@ function renderRegistryPhotos(registry) {
     </div>`;
 }
 
-function renderLookupResultPhotos(registry, competitors) {
+function renderLookupResultPhotos(registry, competitors, lookupData) {
   const registryUrls =
     registry?.photo_urls?.length > 0
       ? registry.photo_urls
@@ -1420,6 +1437,29 @@ function renderLookupResultPhotos(registry, competitors) {
         : [];
   if (registryUrls.length) {
     return renderRegistryPhotos(registry);
+  }
+
+  const topLevelUrls =
+    lookupData?.photo_urls?.length > 0
+      ? lookupData.photo_urls
+      : lookupData?.photo_url
+        ? [lookupData.photo_url]
+        : [];
+  if (topLevelUrls.length) {
+    const alt =
+      lookupData?.matched_name ||
+      lookupData?.query_name ||
+      competitors?.items?.[0]?.name ||
+      "Фото товара";
+    const [mainUrl, ...extraUrls] = topLevelUrls;
+    const extras = extraUrls
+      .map((url) => renderPhotoButton(url, alt, "lookup-result__photo lookup-result__photo--thumb"))
+      .join("");
+    return `
+      <div class="lookup-result__photos">
+        ${renderPhotoButton(mainUrl, alt)}
+        ${extras ? `<div class="lookup-result__photo-stack">${extras}</div>` : ""}
+      </div>`;
   }
 
   const competitorItems = competitors?.items?.length
@@ -1596,7 +1636,7 @@ function renderCompetitorsBlock(competitors) {
 }
 
 function renderLookupResultHtml(data) {
-  const photoHtml = renderLookupResultPhotos(data.registry, data.competitors);
+  const photoHtml = renderLookupResultPhotos(data.registry, data.competitors, data);
 
   const registryBlock = data.registry?.found
     ? renderMatchVariants(

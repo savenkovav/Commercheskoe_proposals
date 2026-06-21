@@ -15,6 +15,29 @@ from src.services.data_loader import normalize_name
 logger = logging.getLogger(__name__)
 
 
+def merge_competitor_product_fields(
+    existing: CompetitorCatalogProduct,
+    incoming: CompetitorCatalogProduct,
+) -> tuple[CompetitorCatalogProduct, bool]:
+    merged = CompetitorCatalogProduct(
+        domain=existing.domain,
+        site_label=incoming.site_label or existing.site_label,
+        name=incoming.name or existing.name,
+        price=incoming.price if incoming.price is not None else existing.price,
+        url=incoming.url or existing.url,
+        articul=incoming.articul or existing.articul,
+        price_label=incoming.price_label or existing.price_label,
+        details=incoming.details or existing.details,
+        wholesale_price=(
+            incoming.wholesale_price
+            if incoming.wholesale_price is not None
+            else existing.wholesale_price
+        ),
+        image_url=incoming.image_url or existing.image_url,
+    )
+    return merged, merged != existing
+
+
 class CompetitorProductStore:
     def __init__(self, path: Path = COMPETITOR_PRODUCTS_PATH) -> None:
         self.path = path
@@ -120,7 +143,7 @@ class CompetitorProductStore:
             for product in self._products
             if product.domain.lower().removeprefix("www.") != normalized
         ]
-        added = self.merge_products(products, domain=domain, site_label=site_label)
+        added, _updated = self.merge_products(products, domain=domain, site_label=site_label)
         if site_label:
             self._site_labels[normalized] = site_label
         self.save()
@@ -132,41 +155,85 @@ class CompetitorProductStore:
         *,
         domain: str,
         site_label: str = "",
-    ) -> int:
+    ) -> tuple[int, int]:
         self.ensure_loaded()
         normalized_domain = domain.lower().removeprefix("www.")
-        existing_keys = {
-            normalize_name(product.name)
-            for product in self._products
-            if product.domain.lower().removeprefix("www.") == normalized_domain
-        }
-        added = 0
         label = site_label or self._site_labels.get(normalized_domain, domain)
+        index_by_key: dict[str, int] = {}
+        url_by_key: dict[str, int] = {}
+        for index, product in enumerate(self._products):
+            if product.domain.lower().removeprefix("www.") != normalized_domain:
+                continue
+            name_key = normalize_name(product.name)
+            if name_key:
+                index_by_key[name_key] = index
+            if product.url:
+                url_by_key[product.url.rstrip("/").split("#")[0].split("?")[0]] = index
+
+        added = 0
+        updated = 0
         for product in products:
             if not product.name.strip():
                 continue
-            key = normalize_name(product.name)
-            if key in existing_keys:
+            name_key = normalize_name(product.name)
+            url_key = ""
+            if product.url:
+                url_key = product.url.rstrip("/").split("#")[0].split("?")[0]
+
+            existing_index = index_by_key.get(name_key)
+            if existing_index is None and url_key:
+                existing_index = url_by_key.get(url_key)
+
+            if existing_index is not None:
+                existing = self._products[existing_index]
+                merged, changed = merge_competitor_product_fields(existing, product)
+                if changed:
+                    self._products[existing_index] = CompetitorCatalogProduct(
+                        domain=normalized_domain,
+                        site_label=merged.site_label or label,
+                        name=merged.name,
+                        price=merged.price,
+                        url=merged.url,
+                        articul=merged.articul,
+                        price_label=merged.price_label,
+                        details=merged.details,
+                        wholesale_price=merged.wholesale_price,
+                        image_url=merged.image_url,
+                    )
+                    updated += 1
+                    if name_key:
+                        index_by_key[name_key] = existing_index
+                    if merged.url:
+                        url_by_key[
+                            merged.url.rstrip("/").split("#")[0].split("?")[0]
+                        ] = existing_index
                 continue
-            existing_keys.add(key)
-            self._products.append(
-                CompetitorCatalogProduct(
-                    domain=normalized_domain,
-                    site_label=product.site_label or label,
-                    name=product.name,
-                    price=product.price,
-                    url=product.url,
-                    articul=product.articul,
-                    price_label=product.price_label,
-                    details=product.details,
-                    wholesale_price=product.wholesale_price,
-                    image_url=product.image_url,
-                )
+
+            new_product = CompetitorCatalogProduct(
+                domain=normalized_domain,
+                site_label=product.site_label or label,
+                name=product.name,
+                price=product.price,
+                url=product.url,
+                articul=product.articul,
+                price_label=product.price_label,
+                details=product.details,
+                wholesale_price=product.wholesale_price,
+                image_url=product.image_url,
             )
+            self._products.append(new_product)
+            new_index = len(self._products) - 1
+            if name_key:
+                index_by_key[name_key] = new_index
+            if url_key:
+                url_by_key[url_key] = new_index
             added += 1
+
         if label:
             self._site_labels[normalized_domain] = label
-        return added
+        if added or updated:
+            self.save()
+        return added, updated
 
     def record_indexed_page(
         self,
@@ -252,18 +319,22 @@ class CompetitorProductStore:
             results.append(by_name[name_key])
         return results[:limit]
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, int | dict[str, int]]:
         self.ensure_loaded()
         by_domain: dict[str, int] = {}
+        images_by_domain: dict[str, int] = {}
         for product in self._products:
             domain = product.domain.lower().removeprefix("www.")
             if domain:
                 by_domain[domain] = by_domain.get(domain, 0) + 1
+                if product.image_url:
+                    images_by_domain[domain] = images_by_domain.get(domain, 0) + 1
         return {
             "products": len(self._products),
             "sites": len(self.site_domains()),
             "pages": len(self._pages),
             "by_domain": by_domain,
+            "images_by_domain": images_by_domain,
         }
 
 
