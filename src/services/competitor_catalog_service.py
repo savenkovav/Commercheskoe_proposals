@@ -41,6 +41,8 @@ _SITEMAP_CATALOG_MIN_PRODUCTS: dict[str, int] = {
     "labkabinet.ru": 1000,
     "stronikum.ru": 100,
     "td-school.ru": 100,
+    "n-72.ru": 1000,
+    "epp24.ru": 1000,
 }
 
 _TD_SCHOOL_DEFAULT_SAMPLE_URL = "https://td-school.ru/index.php?page=100"
@@ -378,24 +380,35 @@ def _format_index_eta(seconds: float) -> str:
 def _fetch_single_product_page(
     site: CompetitorSite,
     product_url: str,
+    *,
+    request_timeout: float | httpx.Timeout | None = None,
 ) -> list[CompetitorCatalogProduct]:
-    try:
-        with httpx.Client(
-            timeout=COMPETITOR_INDEX_REQUEST_TIMEOUT,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
-        ) as client:
-            response = client.get(product_url)
-            response.raise_for_status()
-            return parse_catalog_html(
-                response.text[:700_000],
-                domain=site.domain,
-                site_label=site.label,
-                page_url=str(response.url),
-            )
-    except Exception:
-        logger.debug("Product fetch failed %s", product_url, exc_info=True)
-        return []
+    timeout = request_timeout if request_timeout is not None else COMPETITOR_INDEX_REQUEST_TIMEOUT
+    response = None
+    for attempt in range(3):
+        try:
+            with httpx.Client(
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+            ) as client:
+                response = client.get(product_url)
+                if response.status_code in {429, 502, 503, 504} and attempt < 2:
+                    time.sleep(0.6 * (attempt + 1))
+                    continue
+                response.raise_for_status()
+                return parse_catalog_html(
+                    response.text[:700_000],
+                    domain=site.domain,
+                    site_label=site.label,
+                    page_url=str(response.url),
+                )
+        except Exception:
+            if attempt >= 2:
+                logger.debug("Product fetch failed %s", product_url, exc_info=True)
+                return []
+            time.sleep(0.6 * (attempt + 1))
+    return []
 
 
 def _fetch_products_from_url_list(
@@ -403,6 +416,8 @@ def _fetch_products_from_url_list(
     product_urls: list[str],
     *,
     checkpoint_every: int = 500,
+    request_timeout: float | httpx.Timeout | None = None,
+    max_workers: int | None = None,
 ) -> list[CompetitorCatalogProduct]:
     from src.services.competitor_product_store import get_competitor_product_store
 
@@ -414,7 +429,7 @@ def _fetch_products_from_url_list(
     state_lock = threading.Lock()
     total = len(product_urls)
     store = get_competitor_product_store() if checkpoint_every > 0 else None
-    workers = min(COMPETITOR_INDEX_WORKERS, total)
+    workers = min(max_workers or COMPETITOR_INDEX_WORKERS, total)
     logger.info("%s: indexing %s product URLs with %s workers", site.domain, total, workers)
     append_index_log(
         site.domain,
@@ -472,7 +487,12 @@ def _fetch_products_from_url_list(
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [
-            executor.submit(_fetch_single_product_page, site, product_url)
+            executor.submit(
+                _fetch_single_product_page,
+                site,
+                product_url,
+                request_timeout=request_timeout,
+            )
             for product_url in product_urls
         ]
         for future in as_completed(futures):
@@ -812,6 +832,7 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     ],
     "n-72.ru": [
         "https://n-72.ru/catalog/",
+        "https://n-72.ru/sitemap.xml",
     ],
     "stronikum.ru": [
         "https://stronikum.ru/prices",
@@ -838,6 +859,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _ARTICUL_RE = re.compile(r"Артикул:\s*(?:<span>)?([^\s<]+)", re.I)
+_N72_SITEMAP_PRODUCT_RE = re.compile(
+    r"<loc>(https://n-72\.ru/catalog/product/[^<]+)</loc>",
+    re.I,
+)
 _N72_PREVIEW_RE = re.compile(
     r'href="(?P<url>/catalog/product/[^"]+)".*?'
     r'class="n72r-product-preview__title">(?P<name>[^<]+)</a>.*?'
@@ -1767,6 +1792,173 @@ def _extract_primary_product_price(html: str) -> float | None:
     return None
 
 
+def _is_n72_product_url(url: str) -> bool:
+    return "/catalog/product/" in urlparse(url).path.lower()
+
+
+_N72_SITEMAP_TIMEOUT = httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0)
+_N72_REQUEST_TIMEOUT = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
+
+
+def _discover_n72_product_urls() -> list[str]:
+    sitemap_url = "https://n-72.ru/sitemap.xml"
+    limit = COMPETITOR_INDEX_MAX_URLS
+    try:
+        with httpx.Client(
+            timeout=_N72_SITEMAP_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            response = client.get(sitemap_url)
+            response.raise_for_status()
+            body = response.text
+    except Exception:
+        logger.exception("Failed to load n-72 sitemap")
+        return []
+
+    seen: set[str] = set()
+    urls: list[str] = []
+    for match in _N72_SITEMAP_PRODUCT_RE.finditer(body):
+        clean = match.group(1).strip().split("#")[0]
+        if clean in seen:
+            continue
+        seen.add(clean)
+        urls.append(clean)
+        if len(urls) >= limit:
+            break
+
+    logger.info("n-72.ru: discovered %s product URLs in sitemap (limit %s)", len(urls), limit)
+    return urls
+
+
+def _extract_n72_product_image(html: str, *, domain: str, page_url: str) -> str | None:
+    for pattern in (
+        r'<a[^>]*href="(?P<url>/upload/[^"]+)"[^>]*class="[^"]*popup_link',
+        r'class="popup_link[^"]*"[^>]*href="(?P<url>/upload/[^"]+)"',
+        r'id="[^"]*_pict"[^>]*src="(?P<url>/upload/[^"]+)"',
+        r'itemprop="image"[^>]*(?:src|content)="(?P<url>/upload/[^"]+)"',
+    ):
+        match = re.search(pattern, html, re.I | re.S)
+        if not match:
+            continue
+        absolute = _absolute_url(domain, match.group("url"), page_url)
+        if absolute:
+            return absolute
+    return None
+
+
+def _extract_n72_description(html: str) -> str | None:
+    desc_match = re.search(
+        r'class="info-desc-hight[^"]*"[^>]*>(?P<body>.*?)(?=</div>\s*<div\b|\Z)',
+        html,
+        re.I | re.S,
+    )
+    if not desc_match:
+        return None
+    text = _strip_html_text(desc_match.group("body"))
+    if len(text) < 20:
+        return None
+    return text[:4000]
+
+
+def _parse_n72_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_n72_product_url(page_url):
+        return None
+
+    name_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not name_match:
+        name_match = re.search(
+            r'itemprop="name"[^>]*content="(?P<name>[^"]+)"',
+            html,
+            re.I | re.S,
+        )
+    if not name_match:
+        return None
+
+    name = re.sub(r"\s+", " ", name_match.group("name")).strip()
+    if len(name) < 4:
+        return None
+
+    price = None
+    price_match = re.search(r'class="price_value">(?P<price>[^<]+)</span>', html, re.I | re.S)
+    if price_match:
+        price = _parse_price(price_match.group("price"))
+    if price is None:
+        prices = extract_prices_from_text(html[:120_000])
+        if prices:
+            price = min(prices)
+
+    price_label = price_on_request_label(html[:80_000]) if price is None else None
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=page_url.split("#")[0],
+        articul=None,
+        price_label=price_label,
+        image_url=_extract_n72_product_image(html, domain=domain, page_url=page_url),
+        description=_extract_n72_description(html),
+    )
+
+
+def _parse_n72_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if domain.lower().removeprefix("www.") != "n-72.ru":
+        return []
+
+    if _is_n72_product_url(page_url):
+        product = _parse_n72_product_html(
+            html,
+            domain=domain,
+            site_label=site_label,
+            page_url=page_url,
+        )
+        return [product] if product else []
+
+    return _parse_n72_product_previews(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+
+
+def fetch_n72_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_n72_product_urls()
+    if not product_urls:
+        append_index_log(site.domain, "Sitemap n-72.ru пуст — обход каталога", level="error")
+        return fetch_catalog_products(site, max_pages=12)
+
+    append_index_log(
+        site.domain,
+        f"Индексация по sitemap n-72.ru: {len(product_urls)} URL",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
+        request_timeout=_N72_REQUEST_TIMEOUT,
+        max_workers=min(8, COMPETITOR_INDEX_WORKERS),
+    )
+
+
 def _parse_n72_product_previews(
     html: str,
     *,
@@ -2378,6 +2570,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if epp24_products:
         return epp24_products
 
+    n72_products = _parse_n72_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if n72_products:
+        return n72_products
+
     shop2_products = _parse_shop2_products(
         html,
         domain=domain,
@@ -2386,24 +2587,6 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     )
     if shop2_products:
         return shop2_products
-
-    n72_products = _parse_n72_product_previews(
-        html,
-        domain=domain,
-        site_label=site_label,
-        page_url=page_url,
-    )
-    if n72_products:
-        if _is_product_detail_path(urlparse(page_url).path.lower()):
-            detail_products = _parse_product_detail_page(
-                html,
-                domain=domain,
-                site_label=site_label,
-                page_url=page_url,
-            )
-            if detail_products:
-                return detail_products
-        return n72_products
 
     preview_products = _parse_preview_product_blocks(
         html,
@@ -2602,6 +2785,8 @@ def fetch_catalog_products(
         return fetch_vrtorg_catalog(site)
     if normalized_domain == "td-school.ru":
         return fetch_td_school_catalog(site)
+    if normalized_domain == "n-72.ru":
+        return fetch_n72_catalog(site)
 
     hints = get_domain_parsing_hints(normalized_domain)
     sample_url = hints.product_sample_url if hints else None
