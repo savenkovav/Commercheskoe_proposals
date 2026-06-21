@@ -16,8 +16,10 @@ from pydantic import BaseModel, Field
 from src.logging_config import setup_logging
 from src.services.app_state import get_processor, reload_processor
 from src.config import (
+    CATALOG_PATH,
     OUTPUT_DIR,
     PROJECT_ROOT,
+    REGISTRY_PATH,
     REGISTRY_PHOTOS_DIR,
     USE_AI_INTERNET_SEARCH,
     WEB_BEHIND_PROXY,
@@ -1600,6 +1602,37 @@ async def api_upload_catalog(file: UploadFile = File(...)) -> dict[str, Any]:
 @app.post("/api/sources/registry/upload")
 async def api_upload_registry(file: UploadFile = File(...)) -> dict[str, Any]:
     return await _upload_static_source_file("registry", file)
+
+
+@app.post("/api/sources/reload")
+def api_sources_reload() -> dict[str, Any]:
+    """Перезагрузить каталог, реестр остатков и прайсы из data/."""
+    total_items = reload_processor()
+    rag_index = _doc_rag_index_service()
+    rag: dict[str, object] = {}
+    if CATALOG_PATH.exists():
+        rag["catalog"] = rag_index.index_document(
+            doc_id="catalog:main",
+            source_type="catalog",
+            source_name=CATALOG_PATH.stem,
+            file_path=CATALOG_PATH,
+            force=True,
+        )
+    if REGISTRY_PATH.exists():
+        rag["registry"] = rag_index.index_document(
+            doc_id="registry:main",
+            source_type="registry",
+            source_name=REGISTRY_PATH.stem,
+            file_path=REGISTRY_PATH,
+            force=True,
+        )
+    processor = get_processor()
+    return {
+        "catalog_items": len(processor.catalog),
+        "registry_items": len(processor.registry),
+        "price_list_items": total_items,
+        "rag": rag,
+    }
 
 
 @app.put("/api/prices/{price_id}/file")

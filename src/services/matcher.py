@@ -6,7 +6,7 @@ from typing import Optional
 from rapidfuzz import fuzz, process
 
 from src.config import EXACT_MATCH_THRESHOLD, LOCAL_MATCH_THRESHOLD, SIMILAR_MATCH_THRESHOLD
-from src.services.data_loader import normalize_name
+from src.services.data_loader import format_catalog_supplier, normalize_name
 from src.services.fuzzy_scoring import name_match_score
 from src.services.meilisearch_service import meilisearch_available, search_products
 from src.services.tz_search import (
@@ -62,7 +62,13 @@ class ItemMatcher:
         self.registry = registry
         self.price_lists = price_lists
 
-        self._catalog_names = [normalize_name(i.name) for i in catalog]
+        searchable_catalog = [
+            item
+            for item in catalog
+            if item.entry_type in {"item", "kit_total", "sub_kit"}
+        ]
+        self._searchable_catalog = searchable_catalog
+        self._catalog_names = [normalize_name(i.name) for i in searchable_catalog]
         self._registry_names = [normalize_name(i.name) for i in registry]
         self._price_names = [normalize_name(i.name) for i in price_lists]
 
@@ -101,7 +107,13 @@ class ItemMatcher:
             if source == MatchSource.PRICE_LIST and isinstance(payload, PriceListItem):
                 detail = f"{payload.supplier} / {payload.sheet} / код {payload.code}"
             elif source == MatchSource.CATALOG and isinstance(payload, CatalogItem):
-                detail = payload.source_file
+                supplier = format_catalog_supplier(payload)
+                detail_parts = [payload.source_file]
+                if payload.row_index:
+                    detail_parts.append(f"строка {payload.row_index}")
+                if supplier:
+                    detail_parts.append(supplier.replace("\n", "; "))
+                detail = " / ".join(detail_parts)
             elif source == MatchSource.REGISTRY and isinstance(payload, RegistryItem):
                 detail = f"остаток: {payload.quantity} шт."
 
@@ -331,7 +343,7 @@ class ItemMatcher:
         catalog_hits = self._search_source(
             tz_item,
             self._catalog_names,
-            self.catalog,
+            self._searchable_catalog,
             MatchSource.CATALOG,
         )
         registry_hits = self._search_source(
@@ -446,6 +458,10 @@ class ItemMatcher:
                 "cost": item.cost,
                 "unit": item.unit,
                 "score": round(hit.score, 1),
+                "row_index": item.row_index,
+                "supplier": format_catalog_supplier(item),
+                "actual_markup_pct": item.actual_markup_pct,
+                "stock": item.stock,
             }
 
         def registry_dict(hit: FuzzyHit) -> dict:

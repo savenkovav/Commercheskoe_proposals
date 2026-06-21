@@ -10,6 +10,16 @@ def _catalog_doc(item: CatalogItem, index: int) -> dict[str, Any] | None:
         return None
     if not item.name.strip():
         return None
+    supplier = None
+    if item.supplier:
+        supplier = item.supplier
+        if item.supplier_note:
+            supplier = f"{item.supplier} | {item.supplier_note}"
+    detail_parts = [item.source_file]
+    if item.row_index:
+        detail_parts.append(f"строка {item.row_index}")
+    if supplier:
+        detail_parts.append(supplier)
     return {
         "id": f"catalog_{index}",
         "name": item.name.strip(),
@@ -18,7 +28,11 @@ def _catalog_doc(item: CatalogItem, index: int) -> dict[str, Any] | None:
         "cost": item.cost,
         "price": item.price,
         "unit": item.unit,
-        "detail": item.source_file,
+        "stock": item.stock,
+        "supplier": supplier,
+        "actual_markup_pct": item.actual_markup_pct,
+        "row_index": item.row_index,
+        "detail": " / ".join(detail_parts),
         "entry_type": item.entry_type,
     }
 

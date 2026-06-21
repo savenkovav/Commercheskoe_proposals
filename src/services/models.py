@@ -32,6 +32,8 @@ class CatalogItem:
     entry_type: str = "item"
     components_group: Optional[str] = None
     row_index: int = 0
+    supplier: Optional[str] = None
+    supplier_note: Optional[str] = None
 
 
 @dataclass

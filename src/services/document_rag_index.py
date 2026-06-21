@@ -12,6 +12,7 @@ from src.config import (
     RAG_DOCS_INDEX_DIR,
     REGISTRY_PATH,
 )
+from src.services.data_loader import build_catalog_rag_text, load_catalog
 from src.services.price_list_manager import PriceListManager
 from src.services.tz_parser import extract_tz_document_text
 from src.services.tz_rag_service import RagIndex, TZRagService
@@ -100,7 +101,7 @@ class DocumentRagIndexService:
                 "skipped": True,
             }
 
-        text = extract_tz_document_text(file_path)
+        text = self._extract_document_text(file_path, doc_id=doc_id)
         if not text.strip():
             return {"indexed": False, "chunks": 0, "vectorized": False}
 
@@ -122,6 +123,14 @@ class DocumentRagIndexService:
             "vectorized": bool(rag_index.vectors),
             "skipped": False,
         }
+
+    def _extract_document_text(self, file_path: Path, *, doc_id: str) -> str:
+        if doc_id == "catalog:main" and file_path.suffix.lower() == ".xlsx":
+            catalog = load_catalog(file_path)
+            structured = build_catalog_rag_text(catalog)
+            if structured.strip():
+                return structured
+        return extract_tz_document_text(file_path)
 
     def index_text(
         self,

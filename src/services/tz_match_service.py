@@ -15,7 +15,7 @@ from src.config import (
 )
 from src.services.ai_agent import AIAgent
 from src.services.catalog_structure import CatalogStructure
-from src.services.data_loader import normalize_name
+from src.services.data_loader import format_catalog_supplier, normalize_name
 from src.config import SEARCH_KIT_COMPONENT_LINKS
 from src.services.kp_preferences import KpPreferences, filter_web_quotes
 from src.services.competitor_urls import (
@@ -134,6 +134,11 @@ class TZMatchService:
             supplier = goods_hit.supplier
             purchase_date = goods_hit.purchase_date
             comparison.append(self._quote_from_goods_report(goods_hit))
+
+        if catalog_hit and isinstance(catalog_hit.payload, CatalogItem):
+            catalog_supplier = format_catalog_supplier(catalog_hit.payload)
+            if catalog_supplier:
+                supplier = catalog_supplier
 
         if price_hit:
             comparison.append(self._quote_from_price(price_hit))
@@ -607,9 +612,11 @@ class TZMatchService:
                 if item.cost is not None:
                     unit_cost = item.cost
                 unit_price = item.price or item.cost
+                supplier = format_catalog_supplier(item)
                 goods_hit = self._goods_for_catalog_match(catalog_hit, name)
                 if goods_hit:
-                    supplier = goods_hit.supplier
+                    if not supplier:
+                        supplier = goods_hit.supplier
                     purchase_date = goods_hit.purchase_date
                     if goods_hit.cost is not None:
                         unit_cost = goods_hit.cost
@@ -1425,6 +1432,8 @@ class TZMatchService:
         best: FuzzyHit | None = None
         best_score = -1.0
         for item in self.catalog:
+            if item.entry_type not in {"item", "kit_total", "sub_kit"}:
+                continue
             name_norm = normalize_name(item.name)
             score = 100.0 if name_norm == query else name_match_score(query, name_norm)
             if score < LOCAL_MATCH_THRESHOLD:
@@ -1528,12 +1537,14 @@ class TZMatchService:
             if total > 0:
                 cost = round(total, 2)
         notes = f"состав: {len(kit_components)} поз." if kit_components else ""
+        supplier = format_catalog_supplier(item)
         return PriceQuote(
             source="catalog",
             label="Каталог",
             matched_name=hit.name,
             cost=cost,
             price=item.price or cost,
+            supplier=supplier,
             match_score=hit.score,
             notes=notes,
         )

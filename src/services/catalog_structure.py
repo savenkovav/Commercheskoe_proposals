@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.services.data_loader import normalize_name
+from src.services.data_loader import format_catalog_supplier
 from src.services.models import CatalogItem, KitComponentLine
 
 
@@ -22,6 +23,7 @@ class CatalogStructure:
                     unit_cost=matched.cost,
                     unit_price=matched.price,
                     quantity=1.0,
+                    supplier=format_catalog_supplier(matched),
                 )
             ]
         return []
@@ -59,6 +61,9 @@ class CatalogStructure:
                         unit_cost=item.cost,
                         unit_price=item.price,
                         quantity=1.0,
+                        supplier=format_catalog_supplier(item),
+                        found_in_catalog=True,
+                        catalog_matched_name=item.name,
                     )
                 )
         return lines

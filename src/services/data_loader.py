@@ -35,48 +35,158 @@ def _classify_catalog_row(name: str, cost: float | None, price: float | None) ->
     return "item", None
 
 
+def _parse_optional_number(value) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace("\u00a0", " ")
+    if not text or text in {"-", "—", "–", " " * len(text)}:
+        return None
+    cleaned = text.replace(" ", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _parse_catalog_unit(value) -> str:
+    if value is None:
+        return "шт"
+    text = str(value).strip()
+    return text or "шт"
+
+
+def _is_supplier_header_name(name: str) -> bool:
+    lower = name.lower()
+    return lower.startswith("состав") or "составляющие" in lower
+
+
+def format_catalog_supplier(item: CatalogItem) -> str | None:
+    parts: list[str] = []
+    if item.supplier and item.supplier.strip():
+        parts.append(item.supplier.strip())
+    if item.supplier_note and item.supplier_note.strip():
+        note = item.supplier_note.strip()
+        if note not in parts:
+            parts.append(note)
+    if not parts:
+        return None
+    return "\n".join(parts)
+
+
+def build_catalog_rag_text(catalog: list[CatalogItem]) -> str:
+    lines = ["# Каталог товаров", ""]
+    for item in catalog:
+        if item.entry_type not in {"item", "kit_total", "sub_kit"}:
+            continue
+        supplier = format_catalog_supplier(item)
+        parts = [f"Строка {item.row_index}: {item.name}"]
+        if supplier:
+            parts.append(f"Поставщик: {supplier.replace(chr(10), '; ')}")
+        if item.cost is not None:
+            parts.append(f"Себестоимость: {item.cost}")
+        if item.price is not None:
+            parts.append(f"Цена: {item.price}")
+        if item.stock is not None:
+            parts.append(f"Остаток: {item.stock} {item.unit}")
+        if item.actual_markup_pct is not None:
+            parts.append(f"Наценка: {item.actual_markup_pct}%")
+        parts.append(f"Ед. изм.: {item.unit or 'шт'}")
+        lines.append(" | ".join(parts))
+    return "\n".join(lines)
+
+
 def load_catalog(path: Path) -> list[CatalogItem]:
     if not path.exists():
         return []
 
     items: list[CatalogItem] = []
-    wb = load_workbook(path, read_only=True, data_only=True)
+    wb = load_workbook(path, data_only=True)
     ws = wb[wb.sheetnames[0]]
 
     current_group: str | None = None
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        name = str(row[0]).strip() if row[0] else ""
+    current_supplier: str | None = None
+    current_supplier_note: str | None = None
+
+    for row_idx in range(2, ws.max_row + 1):
+        cell_a = ws.cell(row_idx, 1)
+        name = str(cell_a.value).strip() if cell_a.value else ""
         if not name:
             continue
 
-        cost = row[3] if isinstance(row[3], (int, float)) else None
-        sale_price = row[1] if isinstance(row[1], (int, float)) else None
-        unit = str(row[4]).strip() if len(row) > 4 and row[4] else "шт"
-        stock = row[2] if isinstance(row[2], (int, float)) else None
-        markup = row[5] if len(row) > 5 and isinstance(row[5], (int, float)) else None
+        cost = _parse_optional_number(ws.cell(row_idx, 4).value)
+        sale_price = _parse_optional_number(ws.cell(row_idx, 2).value)
+        stock = _parse_optional_number(ws.cell(row_idx, 3).value)
+        unit = _parse_catalog_unit(ws.cell(row_idx, 5).value)
+        markup = _parse_optional_number(ws.cell(row_idx, 6).value)
+
+        bold = bool(cell_a.font and cell_a.font.bold)
+        is_supplier_row = (
+            bold
+            and cost is None
+            and sale_price is None
+            and stock is None
+            and markup is None
+        )
+
+        if is_supplier_row:
+            if _is_supplier_header_name(name):
+                current_supplier_note = name
+                current_group = name
+                entry_type = "components_header"
+            else:
+                current_supplier = name
+                current_supplier_note = None
+                current_group = None
+                entry_type = "section"
+            items.append(
+                CatalogItem(
+                    name=name,
+                    cost=None,
+                    price=None,
+                    unit=unit or "шт",
+                    stock=None,
+                    source_file=path.name,
+                    actual_markup_pct=None,
+                    entry_type=entry_type,
+                    components_group=current_group if entry_type == "components_header" else None,
+                    row_index=row_idx,
+                    supplier=current_supplier,
+                    supplier_note=current_supplier_note,
+                )
+            )
+            continue
 
         entry_type, group_name = _classify_catalog_row(
             name,
-            float(cost) if cost is not None else None,
-            float(sale_price) if sale_price is not None else None,
+            cost,
+            sale_price,
         )
         if entry_type == "components_header":
             current_group = group_name
+            current_supplier_note = name
         elif entry_type == "section":
             current_group = None
+            current_supplier = name
+            current_supplier_note = None
 
         items.append(
             CatalogItem(
                 name=name,
-                cost=float(cost) if cost is not None else None,
-                price=float(sale_price) if sale_price is not None else None,
+                cost=cost,
+                price=sale_price,
                 unit=unit or "шт",
-                stock=float(stock) if stock is not None else None,
+                stock=stock,
                 source_file=path.name,
-                actual_markup_pct=float(markup) if markup is not None else None,
+                actual_markup_pct=markup,
                 entry_type=entry_type,
                 components_group=current_group,
                 row_index=row_idx,
+                supplier=current_supplier,
+                supplier_note=current_supplier_note,
             )
         )
 

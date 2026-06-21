@@ -1816,7 +1816,7 @@ function renderMatchVariants(title, block, buildLines, missingText) {
       return `
         <li class="match-variant${item.is_primary ? " match-variant--primary" : ""}">
           <div class="match-variant__head">
-            <strong>${escapeHtml(item.name)}</strong>
+            <strong>${escapeHtml(item.display_name || item.name)}</strong>
             <span class="match-variant__score">${Math.round(item.match_score || 0)}%</span>
             ${primaryBadge}
           </div>
@@ -2101,6 +2101,10 @@ function renderLookupResultHtml(data) {
     "Каталог",
     data.catalog || {},
     (item) => [
+      item.supplier
+        ? `Поставщик: ${escapeHtml(String(item.supplier)).replace(/\n/g, "<br>")}`
+        : null,
+      item.actual_markup_pct ? `Фактическая наценка: ${escapeHtml(String(item.actual_markup_pct))}` : null,
       item.cost ? `Себестоимость: ${item.cost}` : null,
       item.price ? `Цена: ${item.price}` : null,
       item.stock ? `Остаток: ${item.stock}` : null,

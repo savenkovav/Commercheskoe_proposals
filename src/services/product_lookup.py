@@ -14,7 +14,7 @@ from src.config import (
     WEB_SEARCH_ENABLED,
 )
 from src.services.markup_settings import get_markup_percent
-from src.services.data_loader import normalize_name
+from src.services.data_loader import format_catalog_supplier, normalize_name
 from src.services.models import CatalogItem, MatchSource, MatchStatus, PriceListItem, PriceQuote, RegistryItem, TZItem
 from src.services.ai_agent import AIAgent
 from src.services.matcher import FuzzyHit, ItemMatcher
@@ -790,6 +790,11 @@ class ProductLookupService:
             return "шт."
 
         if lookup_field == LookupField.SUPPLIER:
+            if catalog_hit and catalog_hit.score >= SIMILAR_MATCH_THRESHOLD:
+                item: CatalogItem = catalog_hit.payload
+                supplier = format_catalog_supplier(item)
+                if supplier:
+                    return supplier
             if price_hit and price_hit.score >= SIMILAR_MATCH_THRESHOLD:
                 item: PriceListItem = price_hit.payload
                 return item.supplier
@@ -869,18 +874,33 @@ class ProductLookupService:
         items: list[dict[str, object]] = []
         for hit in ranked:
             item: CatalogItem = hit.payload
+            supplier = format_catalog_supplier(item)
+            markup = (
+                f"{item.actual_markup_pct:g}%"
+                if item.actual_markup_pct is not None
+                else None
+            )
+            stock = (
+                f"{ProductLookupService._format_qty(item.stock)} {item.unit or 'шт'}"
+                if item.stock is not None
+                else None
+            )
             items.append(
                 {
                     "name": hit.name,
+                    "display_name": (
+                        f"Строка {item.row_index}: {hit.name}"
+                        if item.row_index
+                        else hit.name
+                    ),
+                    "row_index": item.row_index,
                     "match_score": round(hit.score, 1),
                     "is_primary": hit.name == primary_name,
+                    "supplier": supplier,
+                    "actual_markup_pct": markup,
                     "cost": ProductLookupService._format_money(item.cost),
                     "price": ProductLookupService._format_money(item.price),
-                    "stock": (
-                        f"{ProductLookupService._format_qty(item.stock)} шт."
-                        if item.stock is not None
-                        else None
-                    ),
+                    "stock": stock,
                     "unit": item.unit or "шт",
                 }
             )
@@ -889,7 +909,11 @@ class ProductLookupService:
         return {
             "found": True,
             "name": primary["name"],
+            "display_name": primary.get("display_name"),
+            "row_index": primary.get("row_index"),
             "match_score": primary["match_score"],
+            "supplier": primary.get("supplier"),
+            "actual_markup_pct": primary.get("actual_markup_pct"),
             "cost": primary.get("cost"),
             "price": primary.get("price"),
             "stock": primary.get("stock"),
@@ -1418,7 +1442,13 @@ def _format_catalog_source_lines(catalog: dict[str, object]) -> list[str]:
         if not isinstance(item, dict):
             continue
         marker = "★" if item.get("is_primary") else "◦"
-        lines.append(f"  {marker} {item.get('name')} ({item.get('match_score')}%)")
+        title = item.get("display_name") or item.get("name")
+        lines.append(f"  {marker} {title} ({item.get('match_score')}%)")
+        if item.get("supplier"):
+            for supplier_line in str(item["supplier"]).splitlines():
+                lines.append(f"    — поставщик: {supplier_line}")
+        if item.get("actual_markup_pct"):
+            lines.append(f"    — наценка: {item['actual_markup_pct']}")
         if item.get("cost"):
             lines.append(f"    — себест.: {item['cost']}")
         if item.get("price"):
