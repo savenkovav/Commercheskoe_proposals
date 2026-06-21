@@ -37,6 +37,62 @@ _SITEMAP_CATALOG_MIN_PRODUCTS: dict[str, int] = {
 
 _reindex_jobs: dict[str, dict[str, object]] = {}
 _reindex_lock = threading.Lock()
+_index_logs: dict[str, list[dict[str, object]]] = {}
+_index_log_lock = threading.Lock()
+
+_INDEX_PHASE_LABELS: dict[str, str] = {
+    "starting": "Запуск индексации…",
+    "analyze": "Изучаю структуру сайта…",
+    "sample": "Индексирую образец карточки товара…",
+    "sitemap": "Поиск карты сайта (sitemap)…",
+    "catalog": "Индексация каталога товаров…",
+    "rag": "Сохранение в базу данных и RAG…",
+    "done": "Индексация завершена",
+}
+
+
+def clear_index_logs(domain: str) -> None:
+    normalized = domain.lower().removeprefix("www.")
+    with _index_log_lock:
+        _index_logs[normalized] = []
+
+
+def append_index_log(domain: str, message: str, *, level: str = "info") -> None:
+    normalized = domain.lower().removeprefix("www.")
+    entry: dict[str, object] = {
+        "id": 0,
+        "ts": time.time(),
+        "level": level,
+        "message": message.strip(),
+    }
+    with _index_log_lock:
+        rows = _index_logs.setdefault(normalized, [])
+        entry["id"] = len(rows) + 1
+        rows.append(entry)
+        if len(rows) > 500:
+            del rows[: len(rows) - 500]
+
+
+def get_index_logs(domain: str, *, since: int = 0) -> list[dict[str, object]]:
+    normalized = domain.lower().removeprefix("www.")
+    with _index_log_lock:
+        rows = list(_index_logs.get(normalized, []))
+    if since > 0:
+        rows = [row for row in rows if int(row.get("id", 0)) > since]
+    return rows
+
+
+def get_index_phase_label(phase: str | None) -> str:
+    if not phase:
+        return "Индексация…"
+    return _INDEX_PHASE_LABELS.get(phase, "Индексация…")
+
+
+def _set_index_phase(normalized: str, phase: str) -> None:
+    with _reindex_lock:
+        job = _reindex_jobs.get(normalized)
+        if job:
+            job["phase"] = phase
 
 _CLASS_ATTR_RE = re.compile(r'class="([^"]+)"', re.I)
 _ID_ATTR_RE = re.compile(r'id="([^"]+)"', re.I)
@@ -266,6 +322,8 @@ def _fetch_products_from_url_list(
     total = len(product_urls)
     store = get_competitor_product_store() if checkpoint_every > 0 else None
     logger.info("%s: indexing %s product URLs", site.domain, total)
+    append_index_log(site.domain, f"Загрузка {total} страниц товаров…")
+    progress_step = max(1, min(50, total // 20 or 1))
 
     with httpx.Client(
         timeout=WEB_SEARCH_TIMEOUT,
@@ -294,6 +352,12 @@ def _fetch_products_from_url_list(
                     continue
                 seen_names.add(key)
                 products.append(item)
+
+            if index == 1 or index % progress_step == 0 or index == total:
+                append_index_log(
+                    site.domain,
+                    f"  → обработано {index}/{total} URL, товаров: {len(products)}",
+                )
 
             if store and checkpoint_every > 0 and products and (
                 index % checkpoint_every == 0 or index == total
@@ -383,6 +447,8 @@ def start_site_reindex_background(
                 return
 
             logger.info("Background reindex started for %s force=%s", normalized, force)
+            append_index_log(normalized, f"Индексация каталога {normalized}…")
+            _set_index_phase(normalized, "catalog")
             result = index_competitor_site_catalog(
                 resolved_site,
                 doc_rag_index,
@@ -395,9 +461,16 @@ def start_site_reindex_background(
 
             store_stats = get_competitor_product_store().stats()
             get_competitor_site_manager().mark_draft_indexed(normalized, result)
+            products_count = result.get("products") or result.get("store_products") or 0
+            append_index_log(
+                normalized,
+                f"Индексация завершена. Товаров: {products_count}",
+                level="success",
+            )
             _reindex_jobs[normalized] = {
                 "domain": normalized,
                 "running": False,
+                "phase": "done",
                 "started_at": _reindex_jobs[normalized]["started_at"],
                 "finished_at": time.time(),
                 "result": result,
@@ -410,9 +483,11 @@ def start_site_reindex_background(
             )
         except Exception as exc:
             logger.exception("Background reindex failed for %s", normalized)
+            append_index_log(normalized, f"Ошибка индексации: {exc}", level="error")
             _reindex_jobs[normalized] = {
                 "domain": normalized,
                 "running": False,
+                "phase": "error",
                 "error": str(exc),
                 "finished_at": time.time(),
             }
@@ -432,6 +507,171 @@ def start_site_reindex_background(
             "Проверяйте статус: GET /api/competitors/reindex/status?domain="
             f"{normalized}"
         ),
+    }
+
+
+def start_competitor_site_index_background(
+    *,
+    url: str,
+    label: str,
+    product_sample_url: str | None,
+    price_html_hint: str | None,
+    articul_html_hint: str | None,
+    doc_rag_index,
+) -> dict[str, object]:
+    from src.services.competitor_site_manager import get_competitor_site_manager
+
+    manager = get_competitor_site_manager()
+    normalized_url = manager.normalize_url(url)
+    domain = manager.domain_from_url(normalized_url)
+    normalized = domain.lower().removeprefix("www.")
+
+    from src.services.competitor_sites import all_competitor_domains
+
+    if domain in {entry.domain for entry in manager.list_custom()}:
+        raise ValueError(f"Сайт {domain} уже добавлен")
+    if domain in all_competitor_domains(include_custom=False):
+        raise ValueError(f"Сайт {domain} уже есть во встроенном списке")
+
+    with _reindex_lock:
+        job = _reindex_jobs.get(normalized)
+        if job and job.get("running"):
+            return {
+                "started": False,
+                "running": True,
+                "domain": normalized,
+                "message": "Индексация уже выполняется",
+                **job,
+            }
+        clear_index_logs(normalized)
+        append_index_log(normalized, "Запуск индексации…")
+        _reindex_jobs[normalized] = {
+            "domain": normalized,
+            "running": True,
+            "phase": "starting",
+            "started_at": time.time(),
+        }
+
+    def _run() -> None:
+        analysis: dict[str, object] = {}
+        try:
+            append_index_log(normalized, "Изучаю структуру сайта…")
+            _set_index_phase(normalized, "analyze")
+            draft, analysis = manager.prepare_index_draft(
+                url,
+                label=label,
+                product_sample_url=product_sample_url,
+                price_html_hint=price_html_hint,
+                articul_html_hint=articul_html_hint,
+            )
+            append_index_log(normalized, f"Домен: {draft.domain}")
+            title = analysis.get("title")
+            if title:
+                append_index_log(normalized, f"Заголовок: {title}")
+            search_url = analysis.get("search_url")
+            if search_url:
+                append_index_log(normalized, f"Поиск на сайте: {search_url}")
+            notes = analysis.get("notes")
+            if notes:
+                append_index_log(normalized, str(notes))
+
+            set_domain_parsing_hints(
+                draft.domain,
+                product_sample_url=draft.product_sample_url or "",
+                price_html_hint=draft.price_html_hint or "",
+                articul_html_hint=draft.articul_html_hint or "",
+            )
+            if draft.price_html_hint:
+                append_index_log(normalized, "Подсказка HTML для цены сохранена")
+            if draft.articul_html_hint:
+                append_index_log(normalized, "Подсказка HTML для артикула сохранена")
+
+            site = CompetitorSite(
+                domain=draft.domain,
+                label=draft.label,
+                search_url=draft.search_url,
+            )
+            extra_urls: list[str] = []
+            if draft.product_sample_url:
+                extra_urls.append(draft.product_sample_url)
+                append_index_log(
+                    normalized,
+                    f"Индексирую образец карточки: {draft.product_sample_url}",
+                )
+                _set_index_phase(normalized, "sample")
+                index_competitor_page_url(
+                    draft.product_sample_url,
+                    domain=draft.domain,
+                    site_label=draft.label,
+                    doc_rag_index=doc_rag_index,
+                )
+                append_index_log(normalized, "Образец карточки проиндексирован")
+
+            append_index_log(normalized, "Поиск sitemap.xml…")
+            _set_index_phase(normalized, "sitemap")
+            sitemap_urls = _discover_generic_sitemap_product_urls(
+                draft.domain,
+                draft.product_sample_url,
+            )
+            append_index_log(normalized, f"Найдено товарных URL в sitemap: {len(sitemap_urls)}")
+
+            append_index_log(normalized, "Индексация каталога товаров…")
+            _set_index_phase(normalized, "catalog")
+            catalog = index_competitor_site_catalog(
+                site,
+                doc_rag_index,
+                force=True,
+                extra_urls=extra_urls or None,
+            )
+            products_count = catalog.get("products") or catalog.get("store_products") or 0
+            append_index_log(normalized, f"Товаров в каталоге: {products_count}")
+            if catalog.get("skipped"):
+                append_index_log(normalized, "Каталог уже был проиндексирован — данные обновлены")
+
+            append_index_log(normalized, "Сохранение в базу данных…")
+            _set_index_phase(normalized, "rag")
+            manager.mark_draft_indexed(draft.domain, catalog)
+
+            from src.services.competitor_product_store import get_competitor_product_store
+
+            store_stats = get_competitor_product_store().stats()
+            append_index_log(
+                normalized,
+                f"Индексация завершена. Товаров: {products_count}",
+                level="success",
+            )
+            _reindex_jobs[normalized] = {
+                "domain": normalized,
+                "running": False,
+                "phase": "done",
+                "started_at": _reindex_jobs[normalized]["started_at"],
+                "finished_at": time.time(),
+                "result": catalog,
+                "analysis": analysis,
+                "catalog_products": store_stats,
+            }
+        except Exception as exc:
+            logger.exception("Competitor site index failed for %s", normalized)
+            append_index_log(normalized, f"Ошибка: {exc}", level="error")
+            _reindex_jobs[normalized] = {
+                "domain": normalized,
+                "running": False,
+                "phase": "error",
+                "error": str(exc),
+                "analysis": analysis,
+                "finished_at": time.time(),
+            }
+
+    threading.Thread(
+        target=_run,
+        daemon=True,
+        name=f"index-{normalized}",
+    ).start()
+    return {
+        "started": True,
+        "running": True,
+        "domain": normalized,
+        "phase": "starting",
     }
 
 
@@ -1843,9 +2083,17 @@ def fetch_catalog_products(
         sample_url,
     )
     if sitemap_urls:
+        append_index_log(
+            site.domain,
+            f"Индексация по sitemap: {len(sitemap_urls)} URL",
+        )
         return _fetch_products_from_url_list(site, sitemap_urls)
 
     dedup_urls = resolve_catalog_urls(site, extra_urls=extra_urls)
+    append_index_log(
+        site.domain,
+        f"Sitemap не найден — обход {min(max_pages, len(dedup_urls))} страниц каталога",
+    )
 
     products: list[CompetitorCatalogProduct] = []
     seen_names: set[str] = set()
@@ -1858,10 +2106,15 @@ def fetch_catalog_products(
             headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
         ) as client:
             discovered: list[str] = []
-            for page_url in list(dedup_urls[:max_pages]):
+            page_count = len(list(dedup_urls[:max_pages]))
+            for page_index, page_url in enumerate(list(dedup_urls[:max_pages]), start=1):
                 if page_url in seen_urls:
                     continue
                 seen_urls.add(page_url)
+                append_index_log(
+                    site.domain,
+                    f"  → страница {page_index}/{page_count}: {page_url}",
+                )
                 try:
                     response = client.get(page_url)
                     response.raise_for_status()
@@ -1889,6 +2142,11 @@ def fetch_catalog_products(
                         continue
                     seen_names.add(key)
                     products.append(item)
+            if discovered:
+                append_index_log(
+                    site.domain,
+                    f"  → найдено дополнительных разделов: {len(discovered)}",
+                )
 
             for page_url in discovered:
                 if page_url in seen_urls:
@@ -1913,6 +2171,7 @@ def fetch_catalog_products(
     except Exception:
         logger.exception("Catalog crawl failed for %s", site.domain)
 
+    append_index_log(site.domain, f"Сбор завершён: {len(products)} товаров")
     return products
 
 
@@ -2150,6 +2409,7 @@ def index_competitor_site_catalog(
             source="site_index",
         )
 
+    append_index_log(site.domain, f"Сбор каталога с {site.domain}…")
     products = fetch_catalog_products(site, extra_urls=extra_urls)
     existing_products = store.products_for_domain(site.domain)
     if not products and existing_products:
@@ -2182,8 +2442,10 @@ def index_competitor_site_catalog(
     products = store.products_for_domain(site.domain)
 
     if not products:
+        append_index_log(site.domain, "Товары не найдены", level="error")
         return {"indexed": False, "products": 0, "chunks": 0, "store_products": store_count}
 
+    append_index_log(site.domain, f"Запись {len(products)} товаров в RAG-индекс…")
     text = products_to_rag_text(products, site=site)
     result = doc_rag_index.index_text(
         doc_id=doc_id,

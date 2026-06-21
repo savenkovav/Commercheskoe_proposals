@@ -1085,6 +1085,8 @@ def api_competitors_analyze(body: CompetitorSiteAnalyzeRequest) -> dict[str, Any
 
 @app.get("/api/competitors/index/status")
 def api_competitors_index_status(url: str) -> dict[str, Any]:
+    from src.services.competitor_catalog_service import get_index_phase_label, get_reindex_job
+
     manager = get_competitor_site_manager()
     try:
         normalized = manager.normalize_url(url)
@@ -1092,102 +1094,71 @@ def api_competitors_index_status(url: str) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    normalized = domain.lower().removeprefix("www.")
     draft = manager.get_draft(domain)
+    job = get_reindex_job(normalized)
+    running = bool(job and job.get("running"))
+    phase = str(job.get("phase") or "") if job else ""
+    analysis = (job or {}).get("analysis") or (draft.analysis if draft else None)
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    store = get_competitor_product_store()
+    store.reload()
     return {
         "domain": domain,
-        "index_completed": bool(draft and draft.indexed),
+        "running": running,
+        "phase": phase or None,
+        "phase_label": get_index_phase_label(phase if phase else None),
+        "index_completed": bool(draft and draft.indexed and not running),
         "catalog": draft.index_result if draft else None,
+        "analysis": analysis,
+        "error": job.get("error") if job else None,
+        "catalog_products": store.stats(),
+    }
+
+
+@app.get("/api/competitors/index/logs")
+def api_competitors_index_logs(domain: str, since: int = 0) -> dict[str, Any]:
+    from src.services.competitor_catalog_service import get_index_logs, get_reindex_job
+
+    normalized = domain.lower().removeprefix("www.").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Укажите domain")
+    job = get_reindex_job(normalized)
+    return {
+        "domain": normalized,
+        "logs": get_index_logs(normalized, since=since),
+        "running": bool(job and job.get("running")),
+        "phase": job.get("phase") if job else None,
     }
 
 
 @app.post("/api/competitors/index")
 def api_competitors_index(body: CompetitorSiteIndexRequest) -> dict[str, Any]:
-    from src.services.competitor_catalog_service import (
-        _discover_generic_sitemap_product_urls,
-        index_competitor_page_url,
-        index_competitor_site_catalog,
-        set_domain_parsing_hints,
-        start_site_reindex_background,
-        sync_unified_competitor_rag,
-    )
+    from src.services.competitor_catalog_service import start_competitor_site_index_background
     from src.services.competitor_product_store import get_competitor_product_store
-    from src.services.competitor_sites import CompetitorSite
 
-    manager = get_competitor_site_manager()
     try:
-        draft, analysis = manager.prepare_index_draft(
-            body.url,
+        result = start_competitor_site_index_background(
+            url=body.url,
             label=body.label,
             product_sample_url=body.product_sample_url,
             price_html_hint=body.price_html_hint,
             articul_html_hint=body.articul_html_hint,
+            doc_rag_index=_doc_rag_index_service(),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    domain = draft.domain
-    set_domain_parsing_hints(
-        domain,
-        product_sample_url=draft.product_sample_url or "",
-        price_html_hint=draft.price_html_hint or "",
-        articul_html_hint=draft.articul_html_hint or "",
-    )
-
-    site = CompetitorSite(
-        domain=domain,
-        label=draft.label,
-        search_url=draft.search_url,
-    )
-    extra_urls: list[str] = []
-    if draft.product_sample_url:
-        extra_urls.append(draft.product_sample_url)
-
-    index = _doc_rag_index_service()
-    if draft.product_sample_url:
-        index_competitor_page_url(
-            draft.product_sample_url,
-            domain=domain,
-            site_label=draft.label,
-            doc_rag_index=index,
-        )
-
-    sitemap_urls = _discover_generic_sitemap_product_urls(
-        domain,
-        draft.product_sample_url,
-    )
-    background = len(sitemap_urls) > 300
-    if background:
-        job = start_site_reindex_background(
-            domain,
-            index,
-            force=True,
-            site=site,
-            extra_urls=extra_urls or None,
-        )
-        store = get_competitor_product_store()
-        store.reload()
-        return {
-            "analysis": analysis,
-            "catalog": {"indexed": False, "background": True, "sitemap_urls": len(sitemap_urls)},
-            "background_job": job,
-            "index_completed": False,
-            "catalog_products": store.stats(),
-        }
-
-    catalog = index_competitor_site_catalog(
-        site,
-        index,
-        force=True,
-        extra_urls=extra_urls or None,
-    )
-    sync_unified_competitor_rag(index)
-    manager.mark_draft_indexed(domain, catalog)
     store = get_competitor_product_store()
     store.reload()
     return {
-        "analysis": analysis,
-        "catalog": catalog,
-        "index_completed": True,
+        "started": result.get("started", False),
+        "running": result.get("running", False),
+        "domain": result.get("domain"),
+        "phase": result.get("phase"),
+        "index_completed": False,
+        "message": result.get("message"),
         "catalog_products": store.stats(),
     }
 
