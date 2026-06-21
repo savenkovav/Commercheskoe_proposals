@@ -68,14 +68,33 @@ def _startup_competitor_catalog_bootstrap() -> None:
 
     def _run() -> None:
         try:
-            from src.services.competitor_catalog_service import reindex_all_competitor_sites
+            from src.services.competitor_catalog_service import (
+                _SITEMAP_CATALOG_MIN_PRODUCTS,
+                reindex_all_competitor_sites,
+                site_catalog_looks_complete,
+                start_site_reindex_background,
+            )
             from src.services.competitor_catalog_urls import get_competitor_catalog_url_registry
             from src.services.competitor_product_store import get_competitor_product_store
+            from src.services.competitor_sites import competitor_sites_with_search
 
             store = get_competitor_product_store()
             index = _doc_rag_index_service()
             index.ensure_loaded()
-            if store.stats()["products"] > 0 and "competitor-catalog:all" in index._entries:
+            incomplete_domains = [
+                site.domain
+                for site in competitor_sites_with_search()
+                if site.domain.lower().removeprefix("www.") in _SITEMAP_CATALOG_MIN_PRODUCTS
+                and not site_catalog_looks_complete(
+                    site.domain,
+                    len(store.products_for_domain(site.domain)),
+                )
+            ]
+            if (
+                not incomplete_domains
+                and store.stats()["products"] > 0
+                and "competitor-catalog:all" in index._entries
+            ):
                 return
 
             registry = get_competitor_catalog_url_registry()
@@ -85,6 +104,10 @@ def _startup_competitor_catalog_bootstrap() -> None:
                 label="Скале",
                 source="seed",
             )
+            if incomplete_domains:
+                for domain in incomplete_domains:
+                    start_site_reindex_background(domain, index, force=True)
+                return
             reindex_all_competitor_sites(_doc_rag_index_service(), force=False)
         except Exception:
             logger.exception("Competitor catalog startup bootstrap failed")
@@ -179,6 +202,7 @@ class CompetitorSearchRequest(BaseModel):
 class CompetitorReindexRequest(BaseModel):
     force: bool = False
     domains: list[str] | None = None
+    background: bool = True
 
 
 class CompetitorPageIndexRequest(BaseModel):
@@ -1089,8 +1113,11 @@ def api_competitors_remove(site_id: str) -> dict[str, Any]:
 @app.post("/api/competitors/reindex")
 def api_competitors_reindex(body: CompetitorReindexRequest) -> dict[str, Any]:
     from src.services.competitor_catalog_service import (
+        _SITEMAP_CATALOG_MIN_PRODUCTS,
         index_competitor_site_catalog,
+        list_reindex_jobs,
         reindex_all_competitor_sites,
+        start_site_reindex_background,
         sync_unified_competitor_rag,
     )
     from src.services.competitor_product_store import get_competitor_product_store
@@ -1100,10 +1127,41 @@ def api_competitors_reindex(body: CompetitorReindexRequest) -> dict[str, Any]:
 
     try:
         if body.domains:
+            normalized_domains = {
+                domain.lower().removeprefix("www.") for domain in body.domains if domain.strip()
+            }
+            selected_sites = [
+                site
+                for site in competitor_sites_with_search()
+                if site.domain.lower().removeprefix("www.") in normalized_domains
+            ]
+            if not selected_sites:
+                raise HTTPException(status_code=400, detail="Указанные домены не найдены")
+
+            use_background = body.background or any(
+                site.domain.lower().removeprefix("www.") in _SITEMAP_CATALOG_MIN_PRODUCTS
+                for site in selected_sites
+            )
+            if use_background:
+                reindex_force = body.force or True
+                jobs = [
+                    start_site_reindex_background(
+                        site.domain,
+                        index,
+                        force=reindex_force,
+                    )
+                    for site in selected_sites
+                ]
+                return {
+                    "mode": "background",
+                    "jobs": jobs,
+                    "active_jobs": list_reindex_jobs(),
+                    "catalog_products": get_competitor_product_store().stats(),
+                    "rag_docs": index.stats(),
+                }
+
             results: list[dict[str, Any]] = []
-            for site in competitor_sites_with_search():
-                if site.domain.lower() not in {d.lower() for d in body.domains}:
-                    continue
+            for site in selected_sites:
                 results.append(
                     index_competitor_site_catalog(site, index, force=body.force)
                     | {"domain": site.domain, "label": site.label}
@@ -1112,15 +1170,37 @@ def api_competitors_reindex(body: CompetitorReindexRequest) -> dict[str, Any]:
             store = get_competitor_product_store()
             store.reload()
             return {
+                "mode": "sync",
                 "sites": results,
                 "catalog_products": store.stats(),
                 "rag_docs": index.stats(),
             }
 
         return reindex_all_competitor_sites(index, force=True)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Competitor reindex failed domains=%s", body.domains)
         raise HTTPException(status_code=500, detail=f"Ошибка индексации: {exc}") from exc
+
+
+@app.get("/api/competitors/reindex/status")
+def api_competitors_reindex_status(domain: str | None = None) -> dict[str, Any]:
+    from src.services.competitor_catalog_service import get_reindex_job, list_reindex_jobs
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    store = get_competitor_product_store()
+    store.reload()
+    if domain:
+        normalized = domain.lower().removeprefix("www.")
+        return {
+            "job": get_reindex_job(normalized),
+            "catalog_products": store.stats(),
+        }
+    return {
+        "jobs": list_reindex_jobs(),
+        "catalog_products": store.stats(),
+    }
 
 
 @app.post("/api/competitors/pages/index")

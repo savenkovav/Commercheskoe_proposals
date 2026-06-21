@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass
 from html import unescape
@@ -26,6 +27,124 @@ from src.services.web_search_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Минимум товаров в store, чтобы считать sitemap-каталог полностью проиндексированным.
+_SITEMAP_CATALOG_MIN_PRODUCTS: dict[str, int] = {
+    "vrtorg.ru": 500,
+    "labkabinet.ru": 1000,
+    "stronikum.ru": 100,
+}
+
+_reindex_jobs: dict[str, dict[str, object]] = {}
+_reindex_lock = threading.Lock()
+
+
+def site_catalog_looks_complete(domain: str, product_count: int) -> bool:
+    normalized = domain.lower().removeprefix("www.")
+    min_products = _SITEMAP_CATALOG_MIN_PRODUCTS.get(normalized)
+    if min_products is None:
+        return product_count > 0
+    return product_count >= min_products
+
+
+def get_reindex_job(domain: str) -> dict[str, object] | None:
+    normalized = domain.lower().removeprefix("www.")
+    job = _reindex_jobs.get(normalized)
+    return dict(job) if job else None
+
+
+def list_reindex_jobs() -> dict[str, dict[str, object]]:
+    return {domain: dict(job) for domain, job in _reindex_jobs.items()}
+
+
+def start_site_reindex_background(
+    domain: str,
+    doc_rag_index,
+    *,
+    force: bool = True,
+) -> dict[str, object]:
+    normalized = domain.lower().removeprefix("www.")
+    with _reindex_lock:
+        job = _reindex_jobs.get(normalized)
+        if job and job.get("running"):
+            return {
+                "started": False,
+                "running": True,
+                "domain": normalized,
+                "message": "Индексация уже выполняется",
+                **job,
+            }
+        _reindex_jobs[normalized] = {
+            "domain": normalized,
+            "running": True,
+            "started_at": time.time(),
+            "force": force,
+        }
+
+    def _run() -> None:
+        try:
+            site = next(
+                (
+                    item
+                    for item in competitor_sites_with_search()
+                    if item.domain.lower().removeprefix("www.") == normalized
+                ),
+                None,
+            )
+            if site is None:
+                _reindex_jobs[normalized] = {
+                    "domain": normalized,
+                    "running": False,
+                    "error": f"Сайт {normalized} не найден в списке конкурентов",
+                    "finished_at": time.time(),
+                }
+                return
+
+            logger.info("Background reindex started for %s force=%s", normalized, force)
+            result = index_competitor_site_catalog(site, doc_rag_index, force=force)
+            sync_unified_competitor_rag(doc_rag_index)
+            from src.services.competitor_product_store import get_competitor_product_store
+
+            store_stats = get_competitor_product_store().stats()
+            _reindex_jobs[normalized] = {
+                "domain": normalized,
+                "running": False,
+                "started_at": _reindex_jobs[normalized]["started_at"],
+                "finished_at": time.time(),
+                "result": result,
+                "catalog_products": store_stats,
+            }
+            logger.info(
+                "Background reindex finished for %s products=%s",
+                normalized,
+                store_stats.get("by_domain", {}).get(normalized, 0),
+            )
+        except Exception as exc:
+            logger.exception("Background reindex failed for %s", normalized)
+            _reindex_jobs[normalized] = {
+                "domain": normalized,
+                "running": False,
+                "error": str(exc),
+                "finished_at": time.time(),
+            }
+
+    threading.Thread(
+        target=_run,
+        daemon=True,
+        name=f"reindex-{normalized}",
+    ).start()
+    return {
+        "started": True,
+        "running": True,
+        "domain": normalized,
+        "force": force,
+        "message": (
+            f"Запущена фоновая индексация {normalized}. "
+            "Проверяйте статус: GET /api/competitors/reindex/status?domain="
+            f"{normalized}"
+        ),
+    }
+
 
 _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "skale.ru": [
@@ -1633,19 +1752,39 @@ def enrich_site_product_images(
     if updated and doc_rag_index is not None:
         sync_unified_competitor_rag(doc_rag_index)
 
+    total = len(store.products_for_domain(normalized))
+    with_image = sum(
+        1 for product in store.products_for_domain(normalized) if product.image_url
+    )
+    without_image = total - with_image
+    if total == 0:
+        message = (
+            "В индексе 0 товаров для этого сайта. "
+            "enrich-images не загружает каталог — запустите "
+            'POST /api/competitors/reindex с {"domains":["'
+            f'{normalized}"], "force": true, "background": true}}'
+        )
+    elif checked == 0 and without_image == 0:
+        message = (
+            f"В индексе {total} товаров, у всех уже есть фото. "
+            "Для полной индексации каталога используйте /api/competitors/reindex."
+        )
+    else:
+        message = (
+            f"Проверено {checked} товаров без фото, обновлено {updated}, "
+            f"осталось без фото: {without_image}."
+        )
+
     return {
         "domain": normalized,
         "supported": True,
         "checked": checked,
         "updated": updated,
         "failed": failed,
-        "remaining_without_image": len(
-            [
-                product
-                for product in store.products_for_domain(normalized)
-                if product.url and not product.image_url
-            ]
-        ),
+        "total_products": total,
+        "products_with_image": with_image,
+        "remaining_without_image": without_image,
+        "message": message,
     }
 
 
@@ -1682,13 +1821,20 @@ def index_competitor_site_catalog(
     doc_id = f"competitor-catalog:{site.domain}"
     doc_rag_index.ensure_loaded()
     store = get_competitor_product_store()
-    if not force and store.has_site(site.domain) and doc_id in doc_rag_index._entries:
+    existing_count = len(store.products_for_domain(site.domain))
+    if (
+        not force
+        and store.has_site(site.domain)
+        and doc_id in doc_rag_index._entries
+        and site_catalog_looks_complete(site.domain, existing_count)
+    ):
         entry = doc_rag_index._entries[doc_id]
         return {
             "indexed": True,
-            "products": len(store.products_for_domain(site.domain)),
+            "products": existing_count,
             "chunks": len(entry.chunks),
             "skipped": True,
+            "reason": "catalog_already_complete",
         }
 
     for page_url in extra_urls or []:
