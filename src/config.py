@@ -25,7 +25,10 @@ COMPANY_INN = os.getenv("COMPANY_INN", "")
 COMPANY_KPP = os.getenv("COMPANY_KPP", "")
 COMPANY_OGRN = os.getenv("COMPANY_OGRN", "")
 COMPANY_ADDRESS = os.getenv("COMPANY_ADDRESS", "")
-COMPANY_DIRECTOR = os.getenv("COMPANY_DIRECTOR", "Генеральный директор")
+COMPANY_DIRECTOR = os.getenv(
+    "COMPANY_DIRECTOR",
+    "Генеральный директор Геккель Оксана Николаевна",
+)
 KP_SHEET_NAME = os.getenv("KP_SHEET_NAME", "КП")
 KP_VAT_LABEL = os.getenv("KP_VAT_LABEL", "включая НДС 5%")
 KP_TEMPLATES_DIR = PROJECT_ROOT / os.getenv("KP_TEMPLATES_DIR", "data/templates")
