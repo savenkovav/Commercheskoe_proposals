@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from src.config import COMPETITOR_SEARCH_FALLBACK_THRESHOLD, WEB_SEARCH_EXACT_THRESHOLD
 
@@ -491,9 +491,15 @@ def is_competitor_product_page_url(url: str) -> bool:
     if not url or is_competitor_asset_url(url):
         return False
 
-    path = urlparse(url).path.lower().rstrip("/")
+    parsed = urlparse(url)
+    path = parsed.path.lower().rstrip("/")
     if not path:
         return False
+
+    query = parse_qs(parsed.query)
+    page_id = (query.get("page") or [None])[0]
+    if path.endswith("index.php") and page_id and str(page_id).isdigit():
+        return True
 
     if any(
         marker in path
