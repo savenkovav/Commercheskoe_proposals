@@ -15,7 +15,10 @@ from src.config import (
     COMPANY_OGRN,
     DELIVERY_DAYS,
     DELIVERY_TERMS,
+    KP_PDF_FONT_BOLD_PATH,
+    KP_PDF_FONT_PATH,
     KP_STAMP_PATH,
+    KP_TEMPLATES_DIR,
     KP_VAT_LABEL,
     PAYMENT_TERMS,
 )
@@ -25,6 +28,9 @@ from src.services.models import MatchResult, MatchStatus, ProposalSummary
 
 logger = logging.getLogger(__name__)
 
+PDF_FONT_REGULAR_NAME = "KpPdfRegular"
+PDF_FONT_BOLD_NAME = "KpPdfBold"
+
 
 def resolve_kp_stamp_image() -> Path | None:
     stamp_path = KP_STAMP_PATH
@@ -32,6 +38,47 @@ def resolve_kp_stamp_image() -> Path | None:
         logger.warning("KP stamp image not found: %s", stamp_path)
         return None
     return stamp_path
+
+
+def _first_existing_path(candidates: list[Path]) -> Path | None:
+    for path in candidates:
+        if path and path.exists():
+            return path
+    return None
+
+
+def resolve_pdf_font_paths() -> tuple[Path, Path]:
+    bundled_regular = KP_TEMPLATES_DIR / "fonts" / "DejaVuSans.ttf"
+    bundled_bold = KP_TEMPLATES_DIR / "fonts" / "DejaVuSans-Bold.ttf"
+    regular = _first_existing_path(
+        [
+            KP_PDF_FONT_PATH,
+            bundled_regular,
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/dejavu/DejaVuSans.ttf"),
+            Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+            Path("/Library/Fonts/Arial.ttf"),
+        ],
+    )
+    bold = _first_existing_path(
+        [
+            KP_PDF_FONT_BOLD_PATH,
+            bundled_bold,
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            Path("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
+            Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+            Path("/Library/Fonts/Arial Bold.ttf"),
+            regular,
+        ],
+    )
+    if regular is None:
+        raise FileNotFoundError(
+            "Не найден TTF-шрифт с поддержкой кириллицы для PDF. "
+            f"Положите DejaVuSans.ttf в {bundled_regular.parent}",
+        )
+    if bold is None:
+        bold = regular
+    return regular, bold
 
 
 def _fmt_money(value: float | None) -> str:
@@ -48,23 +95,62 @@ class PdfGenerator:
         output_path: Path,
         request_number: str = "б/н",
     ) -> Path:
+        regular_path, bold_path = resolve_pdf_font_paths()
+        font_regular = fitz.Font(fontfile=str(regular_path))
+        font_bold = fitz.Font(fontfile=str(bold_path))
+
         doc = fitz.open()
         page = doc.new_page(width=595, height=842)
         margin_x = 42
         y = 48
         today = datetime.now().strftime("%d.%m.%Y")
 
-        def write_line(text: str, *, size: float = 11, bold: bool = False, center: bool = False) -> None:
-            nonlocal y
-            font = "hebo" if bold else "helv"
+        def ensure_page_fonts(target_page: fitz.Page) -> None:
+            target_page.insert_font(fontname=PDF_FONT_REGULAR_NAME, fontfile=str(regular_path))
+            if bold_path == regular_path:
+                target_page.insert_font(fontname=PDF_FONT_BOLD_NAME, fontfile=str(regular_path))
+            else:
+                target_page.insert_font(fontname=PDF_FONT_BOLD_NAME, fontfile=str(bold_path))
+
+        ensure_page_fonts(page)
+
+        def write_line(
+            text: str,
+            *,
+            size: float = 11,
+            bold: bool = False,
+            center: bool = False,
+        ) -> None:
+            nonlocal y, page
+            fontname = PDF_FONT_BOLD_NAME if bold else PDF_FONT_REGULAR_NAME
+            font_obj = font_bold if bold else font_regular
+            x = margin_x
+            if center:
+                x = max(margin_x, (595 - font_obj.text_length(text, fontsize=size)) / 2)
             page.insert_text(
-                fitz.Point(margin_x if not center else 297, y),
+                fitz.Point(x, y),
                 text,
                 fontsize=size,
-                fontname=font,
+                fontname=fontname,
                 color=(0, 0, 0),
             )
             y += size + 6
+
+        def write_at(
+            x: float,
+            text: str,
+            *,
+            size: float = 9,
+            bold: bool = False,
+        ) -> None:
+            fontname = PDF_FONT_BOLD_NAME if bold else PDF_FONT_REGULAR_NAME
+            page.insert_text(
+                fitz.Point(x, y),
+                text,
+                fontsize=size,
+                fontname=fontname,
+                color=(0, 0, 0),
+            )
 
         write_line("КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ", size=16, bold=True, center=True)
         write_line(f"на запрос {request_number} от {today} г.", size=11, center=True)
@@ -85,7 +171,7 @@ class PdfGenerator:
         col_x = [margin_x, margin_x + 24, margin_x + 250, margin_x + 280, margin_x + 330, margin_x + 410]
         header_y = y
         for idx, header in enumerate(headers):
-            page.insert_text(fitz.Point(col_x[idx], header_y), header, fontsize=9, fontname="hebo")
+            write_at(col_x[idx], header, size=9, bold=True)
         y += 18
         page.draw_line(fitz.Point(margin_x, y - 4), fitz.Point(553, y - 4), width=0.8)
 
@@ -108,10 +194,11 @@ class PdfGenerator:
                 _fmt_money(line_total),
             ]
             for idx, value in enumerate(row_values):
-                page.insert_text(fitz.Point(col_x[idx], y), value, fontsize=9, fontname="helv")
+                write_at(col_x[idx], value, size=9)
             y += 14
             if y > 760:
                 page = doc.new_page(width=595, height=842)
+                ensure_page_fonts(page)
                 y = 48
 
         y += 6
