@@ -463,6 +463,7 @@ async function formKpDocument() {
   try {
     const data = await api("/api/kp/form", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: kpSessionId, selections }),
     });
     kpFormed = true;
@@ -545,11 +546,30 @@ function hideOverlay() {
   $("#overlay").classList.add("hidden");
 }
 
+function formatApiErrorDetail(detail) {
+  if (detail == null) return "";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item.msg === "string") return item.msg;
+        return JSON.stringify(item);
+      })
+      .join("; ");
+  }
+  if (typeof detail === "object") {
+    return detail.msg || detail.message || JSON.stringify(detail);
+  }
+  return String(detail);
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, options);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || `Ошибка ${res.status}`);
+    const message = formatApiErrorDetail(data.detail) || `Ошибка ${res.status}`;
+    throw new Error(message);
   }
   return data;
 }
