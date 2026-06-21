@@ -17,7 +17,7 @@ from src.services.data_loader import normalize_name
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 def competitor_product_url_key(url: str) -> str:
@@ -53,6 +53,7 @@ def _row_to_product(row: sqlite3.Row) -> CompetitorCatalogProduct:
         details=row["details"],
         wholesale_price=row["wholesale_price"],
         image_url=row["image_url"],
+        description=row["description"],
     )
 
 
@@ -112,6 +113,7 @@ class CompetitorCatalogDatabase:
                         details TEXT,
                         wholesale_price REAL,
                         image_url TEXT,
+                        description TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         FOREIGN KEY (domain) REFERENCES competitor_sites(domain) ON DELETE CASCADE,
@@ -139,6 +141,28 @@ class CompetitorCatalogDatabase:
                     "INSERT OR IGNORE INTO schema_meta(key, value) VALUES (?, ?)",
                     ("version", str(_SCHEMA_VERSION)),
                 )
+                self._migrate_schema(conn)
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        version_row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'version'"
+        ).fetchone()
+        version = int(version_row["value"]) if version_row else 1
+        if version >= _SCHEMA_VERSION:
+            return
+
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(competitor_products)")
+        }
+        if "description" not in columns:
+            conn.execute(
+                "ALTER TABLE competitor_products ADD COLUMN description TEXT"
+            )
+
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'version'",
+            (str(_SCHEMA_VERSION),),
+        )
 
     def _migrate_json_if_needed(self) -> None:
         if not COMPETITOR_PRODUCTS_PATH.exists():
@@ -174,6 +198,7 @@ class CompetitorCatalogDatabase:
                     details=row.get("details") or None,
                     wholesale_price=row.get("wholesale_price"),
                     image_url=row.get("image_url") or None,
+                    description=row.get("description") or None,
                 )
             )
 
@@ -271,8 +296,8 @@ class CompetitorCatalogDatabase:
                         INSERT INTO competitor_products (
                             domain, site_label, name, name_key, url, url_key,
                             articul, price, price_label, details,
-                            wholesale_price, image_url, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            wholesale_price, image_url, description, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             normalized,
@@ -287,6 +312,7 @@ class CompetitorCatalogDatabase:
                             product.details,
                             product.wholesale_price,
                             product.image_url,
+                            product.description,
                             now,
                             now,
                         ),
@@ -318,7 +344,8 @@ class CompetitorCatalogDatabase:
                     existing = conn.execute(
                         """
                         SELECT id, domain, site_label, name, name_key, url, url_key,
-                               articul, price, price_label, details, wholesale_price, image_url
+                               articul, price, price_label, details, wholesale_price,
+                               image_url, description
                         FROM competitor_products
                         WHERE domain = ? AND url_key = ?
                         """,
@@ -331,8 +358,8 @@ class CompetitorCatalogDatabase:
                             INSERT INTO competitor_products (
                                 domain, site_label, name, name_key, url, url_key,
                                 articul, price, price_label, details,
-                                wholesale_price, image_url, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                wholesale_price, image_url, description, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 normalized,
@@ -347,6 +374,7 @@ class CompetitorCatalogDatabase:
                                 product.details,
                                 product.wholesale_price,
                                 product.image_url,
+                                product.description,
                                 now,
                                 now,
                             ),
@@ -369,13 +397,14 @@ class CompetitorCatalogDatabase:
                             else existing["wholesale_price"]
                         ),
                         image_url=product.image_url or existing["image_url"],
+                        description=product.description or existing["description"],
                     )
                     conn.execute(
                         """
                         UPDATE competitor_products SET
                             site_label = ?, name = ?, name_key = ?, url = ?,
                             articul = ?, price = ?, price_label = ?, details = ?,
-                            wholesale_price = ?, image_url = ?, updated_at = ?
+                            wholesale_price = ?, image_url = ?, description = ?, updated_at = ?
                         WHERE id = ?
                         """,
                         (
@@ -389,6 +418,7 @@ class CompetitorCatalogDatabase:
                             merged.details,
                             merged.wholesale_price,
                             merged.image_url,
+                            merged.description,
                             now,
                             existing["id"],
                         ),
@@ -405,7 +435,7 @@ class CompetitorCatalogDatabase:
                 rows = conn.execute(
                     """
                     SELECT domain, site_label, name, url, articul, price,
-                           price_label, details, wholesale_price, image_url
+                           price_label, details, wholesale_price, image_url, description
                     FROM competitor_products
                     WHERE domain = ?
                     ORDER BY name COLLATE NOCASE
@@ -420,7 +450,7 @@ class CompetitorCatalogDatabase:
                 rows = conn.execute(
                     """
                     SELECT domain, site_label, name, url, articul, price,
-                           price_label, details, wholesale_price, image_url
+                           price_label, details, wholesale_price, image_url, description
                     FROM competitor_products
                     ORDER BY domain, name COLLATE NOCASE
                     """

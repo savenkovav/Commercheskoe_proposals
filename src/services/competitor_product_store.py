@@ -50,6 +50,7 @@ def merge_competitor_product_fields(
             else existing.wholesale_price
         ),
         image_url=incoming.image_url or existing.image_url,
+        description=incoming.description or existing.description,
     )
     return merged, merged != existing
 

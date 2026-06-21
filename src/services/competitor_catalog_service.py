@@ -829,6 +829,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
         "https://td-school.ru/",
         "https://td-school.ru/index.php",
     ],
+    "epp24.ru": [
+        "https://epp24.ru/sitemap_index.xml",
+        "https://epp24.ru/",
+    ],
 }
 
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
@@ -846,7 +850,8 @@ _PRODUCT_LINE_RE = re.compile(
     r"\s*url=(?P<url>[^|]*)\s*\|\s*articul=(?P<articul>[^|]*)(?:\s*\|\s*price_label=(?P<price_label>[^|]*))?"
     r"(?:\s*\|\s*wholesale_price=(?P<wholesale_price>[^|]*))?"
     r"(?:\s*\|\s*image_url=(?P<image_url>[^|]*))?"
-    r"(?:\s*\|\s*details=(?P<details>.*))?",
+    r"(?:\s*\|\s*details=(?P<details>[^|]*))?"
+    r"(?:\s*\|\s*description=(?P<description>.*))?",
     re.I,
 )
 
@@ -863,6 +868,7 @@ class CompetitorCatalogProduct:
     details: str | None = None
     wholesale_price: float | None = None
     image_url: str | None = None
+    description: str | None = None
 
 
 _STRONIKUM_PRODUCT_PATH_RE = re.compile(r"^/\d+_[^/]+/\d+_", re.I)
@@ -2111,6 +2117,120 @@ def _parse_td_school_page(
     return [product] if product else []
 
 
+def _is_epp24_product_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host != "epp24.ru":
+        return False
+    return "/product/" in parsed.path.lower()
+
+
+def _extract_epp24_product_image(html: str) -> str | None:
+    for pattern in (
+        r'data-large_image="(?P<url>[^"]+)"',
+        r'class="[^"]*wp-post-image[^"]*"[^>]*(?:data-src|src)="(?P<url>[^"]+)"',
+        r'property="og:image"\s+content="(?P<url>[^"]+)"',
+    ):
+        match = re.search(pattern, html, re.I | re.S)
+        if not match:
+            continue
+        url = match.group("url").strip()
+        if url and not url.startswith("data:"):
+            return url
+    return None
+
+
+def _extract_epp24_description(html: str) -> str | None:
+    desc_match = re.search(
+        r'(?:id="tab-description"|class="[^"]*woocommerce-Tabs-panel--description[^"]*")'
+        r'[^>]*>(?P<body>.*?)(?=</div>\s*<div\b|\Z)',
+        html,
+        re.I | re.S,
+    )
+    if not desc_match:
+        return None
+    text = _strip_html_text(desc_match.group("body"))
+    text = re.sub(r"^Описание\s*", "", text, flags=re.I).strip()
+    if len(text) < 20:
+        return None
+    return text[:4000]
+
+
+def _parse_epp24_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_epp24_product_url(page_url):
+        return None
+
+    name_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not name_match:
+        name_match = re.search(r'itemprop="name"[^>]*>\s*(?P<name>[^<]+?)\s*</', html, re.I | re.S)
+    if not name_match:
+        return None
+
+    name = re.sub(r"\s+", " ", name_match.group("name")).strip()
+    if len(name) < 4:
+        return None
+
+    price = None
+    price_match = re.search(
+        r'class="price"[^>]*>.*?woocommerce-Price-amount[^>]*>.*?(\d[\d\s]*)',
+        html,
+        re.I | re.S,
+    )
+    if price_match:
+        price = _parse_price(price_match.group(1))
+    if price is None:
+        price_match = re.search(
+            r'itemprop="price"\s+content="(?P<price>[\d.]+)"',
+            html,
+            re.I,
+        )
+        if price_match:
+            price = _parse_price(price_match.group("price"))
+
+    articul = None
+    articul_match = re.search(r'class="sku"[^>]*>([^<]+)</span>', html, re.I | re.S)
+    if articul_match:
+        articul = articul_match.group(1).strip()
+
+    image_url = _extract_epp24_product_image(html)
+    description = _extract_epp24_description(html)
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=page_url.split("#")[0],
+        articul=articul,
+        image_url=image_url,
+        description=description,
+    )
+
+
+def _parse_epp24_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if domain.lower().removeprefix("www.") != "epp24.ru":
+        return []
+    product = _parse_epp24_product_html(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    return [product] if product else []
+
+
 def _parse_product_detail_page(
     html: str,
     *,
@@ -2248,6 +2368,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     )
     if td_school_products:
         return td_school_products
+
+    epp24_products = _parse_epp24_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if epp24_products:
+        return epp24_products
 
     shop2_products = _parse_shop2_products(
         html,
@@ -2597,7 +2726,8 @@ def products_to_rag_text(
             f"price_label={product.price_label or ''} | "
             f"wholesale_price={product.wholesale_price or ''} | "
             f"image_url={product.image_url or ''} | "
-            f"details={product.details or ''}"
+            f"details={product.details or ''} | "
+            f"description={product.description or ''}"
         )
     return "\n".join(lines)
 
@@ -2972,6 +3102,7 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
             details=(match.group("details") or "").strip() or None,
             wholesale_price=_parse_price(match.group("wholesale_price")),
             image_url=(match.group("image_url") or "").strip() or None,
+            description=(match.group("description") or "").strip() or None,
         )
 
     domain = ""
@@ -3005,6 +3136,10 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
     if "image_url=" in text:
         image_url_raw = text.split("image_url=", 1)[1].split("|", 1)[0].strip()
         image_url = image_url_raw or None
+    description = None
+    if "description=" in text:
+        description_raw = text.split("description=", 1)[1].strip()
+        description = description_raw or None
     return CompetitorCatalogProduct(
         domain=domain or "unknown",
         site_label=competitor_label_for_url(url) or domain or "Конкурент",
@@ -3014,6 +3149,7 @@ def parse_product_from_chunk(text: str) -> CompetitorCatalogProduct | None:
         articul=articul,
         price_label=price_label,
         image_url=image_url,
+        description=description,
     )
 
 
@@ -3073,6 +3209,7 @@ def enrich_catalog_product_price(
                 details=item.details or product.details,
                 wholesale_price=item.wholesale_price or product.wholesale_price,
                 image_url=item.image_url or product.image_url,
+                description=item.description or product.description,
             )
     if fetched[0].price is not None or fetched[0].price_label:
         item = fetched[0]
@@ -3087,6 +3224,7 @@ def enrich_catalog_product_price(
             details=item.details or product.details,
             wholesale_price=item.wholesale_price or product.wholesale_price,
             image_url=item.image_url or product.image_url,
+            description=item.description or product.description,
         )
     return product
 
