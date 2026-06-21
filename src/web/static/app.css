@@ -268,6 +268,33 @@ a.btn.btn--disabled {
   vertical-align: top;
 }
 
+.kp-saved-selection {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.kp-saved-selection__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+
+.kp-saved-selection__head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.kp-saved-selection__table td,
+.kp-saved-selection__table th {
+  font-size: 0.9rem;
+}
+
 .compare-block__market-estimate {
   margin-bottom: 12px;
   font-size: 0.92rem;

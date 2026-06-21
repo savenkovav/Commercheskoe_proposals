@@ -29,6 +29,7 @@ COMPANY_DIRECTOR = os.getenv("COMPANY_DIRECTOR", "Генеральный дир�
 KP_SHEET_NAME = os.getenv("KP_SHEET_NAME", "КП")
 KP_VAT_LABEL = os.getenv("KP_VAT_LABEL", "включая НДС 5%")
 KP_TEMPLATES_DIR = PROJECT_ROOT / os.getenv("KP_TEMPLATES_DIR", "data/templates")
+KP_STAMP_PATH = PROJECT_ROOT / os.getenv("KP_STAMP_PATH", "data/templates/kp_stamp.png")
 DELIVERY_TERMS = os.getenv("DELIVERY_TERMS", "адресная доставка включена в стоимость")
 PAYMENT_TERMS = os.getenv("PAYMENT_TERMS", "безналичный расчет")
 DELIVERY_DAYS = os.getenv("DELIVERY_DAYS", "15 рабочих дней после получения денежных средств")

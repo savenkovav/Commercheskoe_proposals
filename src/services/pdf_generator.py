@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from src.config import (
     COMPANY_OGRN,
     DELIVERY_DAYS,
     DELIVERY_TERMS,
-    KP_TEMPLATES_DIR,
+    KP_STAMP_PATH,
     KP_VAT_LABEL,
     PAYMENT_TERMS,
 )
@@ -22,36 +23,14 @@ from src.services.excel_generator import _money
 from src.services.markup_settings import get_markup_percent
 from src.services.models import MatchResult, MatchStatus, ProposalSummary
 
+logger = logging.getLogger(__name__)
 
-def ensure_kp_stamp_image() -> Path:
-    stamp_path = KP_TEMPLATES_DIR / "kp_stamp.png"
-    if stamp_path.exists():
-        return stamp_path
 
-    from PIL import Image, ImageDraw, ImageFont
-
-    size = 240
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    blue = (0, 82, 165, 255)
-    draw.ellipse([8, 8, size - 8, size - 8], outline=blue, width=7)
-    draw.ellipse([18, 18, size - 18, size - 18], outline=(0, 82, 165, 180), width=2)
-
-    lines = ["ООО", "«УЧТЕНДЕР»"]
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
-    except OSError:
-        font = ImageFont.load_default()
-
-    y = 78
-    for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        text_w = bbox[2] - bbox[0]
-        draw.text(((size - text_w) / 2, y), line, fill=blue, font=font)
-        y += 34
-
-    stamp_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(stamp_path, format="PNG")
+def resolve_kp_stamp_image() -> Path | None:
+    stamp_path = KP_STAMP_PATH
+    if not stamp_path.exists():
+        logger.warning("KP stamp image not found: %s", stamp_path)
+        return None
     return stamp_path
 
 
@@ -151,16 +130,27 @@ class PdfGenerator:
         y += 18
         write_line(COMPANY_DIRECTOR, size=11)
 
-        stamp_path = ensure_kp_stamp_image()
-        stamp_size = 110
-        stamp_x = 330
-        stamp_y = y + 8
-        page.insert_image(
-            fitz.Rect(stamp_x, stamp_y, stamp_x + stamp_size, stamp_y + stamp_size),
-            filename=str(stamp_path),
-        )
+        stamp_path = resolve_kp_stamp_image()
+        if stamp_path:
+            from PIL import Image
 
-        y = stamp_y + stamp_size + 16
+            with Image.open(stamp_path) as stamp_image:
+                stamp_w, stamp_h = stamp_image.size
+            display_width = 150
+            display_height = max(80, int(display_width * stamp_h / max(stamp_w, 1)))
+            stamp_x = 305
+            stamp_y = y + 6
+            page.insert_image(
+                fitz.Rect(
+                    stamp_x,
+                    stamp_y,
+                    stamp_x + display_width,
+                    stamp_y + display_height,
+                ),
+                filename=str(stamp_path),
+            )
+            y = stamp_y + display_height + 12
+
         write_line("* — позиции, требующие проверки менеджером", size=9)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)

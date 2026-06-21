@@ -84,6 +84,8 @@ const hasKpDownload = (data) => Boolean(data?.kp_formed && data?.summary?.downlo
 let kpProcessData = null;
 let kpFormed = false;
 let kpExportSummary = null;
+let kpSavedSelections = null;
+let kpSelectionSaved = false;
 
 function isMarketEstimateQuote(q) {
   const label = (q?.label || "").toLowerCase();
@@ -211,10 +213,172 @@ function resetKpFormed() {
   updateKpExportButtons();
 }
 
+function resetKpSavedSelection() {
+  kpSavedSelections = null;
+  kpSelectionSaved = false;
+  const panel = $("#kpSavedSelection");
+  if (panel) {
+    panel.classList.add("hidden");
+    panel.innerHTML = "";
+  }
+  resetKpFormed();
+  updateAssistantMode(kpProcessData);
+}
+
+function resolveSelectionPreview(item, selection) {
+  if (!selection?.included) return null;
+
+  const base = {
+    number: item.number,
+    tzName: item.name,
+    quantity: item.quantity,
+    unit: item.unit,
+  };
+
+  if (selection.variant === "primary") {
+    return {
+      ...base,
+      matched: item.matched_name || item.name,
+      source: SOURCE_LABELS[item.source] || item.source || "—",
+      unitPrice: item.unit_base_price ?? item.unit_price,
+      total: item.total_price ?? lineSum(item.unit_price, item.quantity),
+    };
+  }
+
+  if (selection.variant.startsWith("local:")) {
+    const index = Number.parseInt(selection.variant.split(":")[1], 10);
+    const quotes = (item.comparison || []).filter(
+      (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
+    );
+    const quote = quotes[index];
+    if (quote) {
+      const unitPrice = quote.price ?? quote.cost;
+      return {
+        ...base,
+        matched: quote.matched_name || "—",
+        source: quote.label || "Источник",
+        unitPrice,
+        total: lineSum(unitPrice, item.quantity),
+      };
+    }
+  }
+
+  if (selection.variant.startsWith("web:")) {
+    const index = Number.parseInt(selection.variant.split(":")[1], 10);
+    const quotes = collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
+    const quote = quotes[index];
+    if (quote) {
+      const unitPrice = quote.price ?? quote.cost;
+      return {
+        ...base,
+        matched: quote.matched_name || "—",
+        source: quote.label || "Интернет",
+        unitPrice,
+        total: lineSum(unitPrice, item.quantity),
+      };
+    }
+  }
+
+  return {
+    ...base,
+    matched: item.matched_name || item.name,
+    source: SOURCE_LABELS[item.source] || item.source || "—",
+    unitPrice: item.unit_base_price ?? item.unit_price,
+    total: item.total_price ?? lineSum(item.unit_price, item.quantity),
+  };
+}
+
+function renderSavedSelectionList() {
+  const panel = $("#kpSavedSelection");
+  if (!panel || !kpSelectionSaved || !kpSavedSelections?.length || !kpProcessData?.items) {
+    panel?.classList.add("hidden");
+    return;
+  }
+
+  const itemsByNumber = Object.fromEntries(
+    kpProcessData.items.map((item) => [item.number, item]),
+  );
+  const rows = kpSavedSelections
+    .filter((selection) => selection.included)
+    .map((selection) => resolveSelectionPreview(itemsByNumber[selection.number], selection))
+    .filter(Boolean);
+
+  if (!rows.length) {
+    panel.classList.add("hidden");
+    panel.innerHTML = "";
+    return;
+  }
+
+  const total = rows.reduce((sum, row) => sum + (row.total ?? 0), 0);
+  panel.classList.remove("hidden");
+  panel.innerHTML = `
+    <div class="kp-saved-selection__head">
+      <h3>Выбрано для КП: ${rows.length} поз.</h3>
+      <p class="muted">Итого по выбранным: ${fmtMoney(total)}</p>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table kp-saved-selection__table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Позиция ТЗ</th>
+            <th>Выбранный товар</th>
+            <th>Источник</th>
+            <th>Кол-во</th>
+            <th>Цена КП</th>
+            <th>Сумма</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+            <tr>
+              <td>${row.number}</td>
+              <td>${escapeHtml(row.tzName)}</td>
+              <td>${escapeHtml(row.matched)}</td>
+              <td>${escapeHtml(row.source)}</td>
+              <td>${fmtQty(row.quantity, row.unit)}</td>
+              <td>${fmtMoney(row.unitPrice)}</td>
+              <td>${fmtMoney(row.total)}</td>
+            </tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function saveKpSelection() {
+  if (!kpProcessData?.search_completed) {
+    showToast("Сначала выполните поиск по ТЗ", true);
+    return;
+  }
+
+  const selections = getSelectionsFromUI();
+  const included = selections.filter((item) => item.included);
+  if (!included.length) {
+    showToast("Отметьте хотя бы одну позицию", true);
+    return;
+  }
+
+  kpSavedSelections = selections;
+  kpSelectionSaved = true;
+  resetKpFormed();
+  renderSavedSelectionList();
+  updateKpExportButtons();
+  updateAssistantMode(kpProcessData);
+  showToast(`Выбор сохранён: ${included.length} поз.`);
+}
+
 function updateKpExportButtons() {
+  const btnSave = $("#btnSaveKpSelection");
   const btnForm = $("#btnFormKp");
+  if (btnSave) {
+    btnSave.toggleAttribute("disabled", !kpProcessData?.search_completed);
+  }
   if (btnForm) {
-    btnForm.toggleAttribute("disabled", !kpProcessData?.search_completed);
+    btnForm.toggleAttribute("disabled", !kpSelectionSaved);
   }
   if (kpFormed && kpExportSummary) {
     enableDownloadLink($("#downloadPdfBtn"), kpExportSummary.pdf_download_url, kpExportSummary.pdf_filename);
@@ -248,7 +412,7 @@ function bindKpSelectionHandlers() {
     $$(".kp-item-include").forEach((checkbox) => {
       checkbox.checked = event.target.checked;
     });
-    resetKpFormed();
+    resetKpSavedSelection();
   });
 
   tbody?.addEventListener("change", (event) => {
@@ -260,7 +424,7 @@ function bindKpSelectionHandlers() {
         selectAll.checked = [...boxes].every((box) => box.checked);
         selectAll.indeterminate = !selectAll.checked && [...boxes].some((box) => box.checked);
       }
-      resetKpFormed();
+      resetKpSavedSelection();
       return;
     }
     if (target.classList.contains("kp-variant-input") && target.checked) {
@@ -270,7 +434,7 @@ function bindKpSelectionHandlers() {
           checkbox.checked = false;
         }
       });
-      resetKpFormed();
+      resetKpSavedSelection();
     }
   });
 
@@ -286,8 +450,12 @@ async function formKpDocument() {
     showToast("Сначала выполните поиск по ТЗ", true);
     return;
   }
-  const selections = getSelectionsFromUI();
-  if (!selections.some((item) => item.included)) {
+  if (!kpSelectionSaved || !kpSavedSelections?.length) {
+    showToast('Сначала нажмите «Сохранить выбор»', true);
+    return;
+  }
+  const selections = kpSavedSelections.filter((item) => item.included);
+  if (!selections.length) {
     showToast("Выберите хотя бы одну позицию", true);
     return;
   }
@@ -338,7 +506,8 @@ const stageLabel = (stage, searchCompleted) => {
   const map = {
     intake: "ожидание ТЗ",
     parsed: "ТЗ разобрано",
-    searched: "поиск выполнен — выберите позиции",
+    searched: "поиск выполнен — отметьте и сохраните выбор",
+    selection_saved: "выбор сохранён — сформируйте КП",
     exported: "КП сформировано",
   };
   if (!searchCompleted && stage === "parsed") return "поиск не запускался";
@@ -350,7 +519,13 @@ function updateAssistantMode(data) {
   const stageEl = $("#stageLabel");
   if (!taskEl || !stageEl) return;
   taskEl.textContent = taskModeLabel(data?.task_mode);
-  stageEl.textContent = stageLabel(data?.stage, data?.search_completed);
+  let stage = data?.stage;
+  if (data?.kp_formed || kpFormed) {
+    stage = "exported";
+  } else if (kpSelectionSaved) {
+    stage = "selection_saved";
+  }
+  stageEl.textContent = stageLabel(stage, data?.search_completed);
 }
 
 function showToast(msg, isError = false) {
@@ -1204,15 +1379,23 @@ function renderProcessResult(data) {
   kpProcessData = data;
   kpFormed = Boolean(data.kp_formed);
   kpExportSummary = kpFormed ? data.summary : null;
+  if (!kpFormed) {
+    kpSavedSelections = null;
+    kpSelectionSaved = false;
+  }
   updateAssistantMode(data);
   const parsedOnly = !data.search_completed;
   const summaryEl = $("#resultsSummary");
 
   if (parsedOnly || !summaryEl) {
     summaryEl?.classList.add("hidden");
-  } else {
+  } else if (kpFormed && data.summary) {
     renderProcessSummary(data);
+  } else {
+    summaryEl.classList.add("hidden");
   }
+
+  renderSavedSelectionList();
 
   $("#resultsCard").classList.remove("hidden");
   const tbody = $("#resultsTable tbody");
@@ -1366,6 +1549,7 @@ function initUpload() {
   btnTask1?.addEventListener("click", () => processUpload("task1"));
   btnTask12?.addEventListener("click", () => processUpload("task1_task2"));
   $("#btnFormKp")?.addEventListener("click", () => formKpDocument());
+  $("#btnSaveKpSelection")?.addEventListener("click", () => saveKpSelection());
   bindKpSelectionHandlers();
 }
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <title>КП-Ассистент</title>
-  <link rel="stylesheet" href="/app.css?v=20260621b">
+  <link rel="stylesheet" href="/app.css?v=20260621c">
 </head>
 <body>
   <div class="layout">
@@ -86,12 +86,14 @@
           <div class="card__head">
             <h2>Детализация позиций</h2>
             <div class="card__head-actions">
+              <button class="btn btn--secondary" type="button" id="btnSaveKpSelection" disabled>Сохранить выбор</button>
               <button class="btn btn--primary" type="button" id="btnFormKp" disabled>Сформировать КП</button>
               <a class="btn btn--secondary btn--disabled" id="downloadPdfBtn" href="#" download aria-disabled="true">Скачать PDF</a>
               <a class="btn btn--secondary btn--disabled" id="downloadBtn" href="#" download aria-disabled="true">Скачать Excel</a>
             </div>
           </div>
           <div class="results-summary hidden" id="resultsSummary"></div>
+          <div class="kp-saved-selection hidden" id="kpSavedSelection"></div>
           <div class="table-wrap">
             <table class="data-table" id="resultsTable">
               <thead>
