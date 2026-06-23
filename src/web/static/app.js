@@ -2659,30 +2659,23 @@ function renderCompetitorRow(site) {
     </tr>`;
 }
 
-function renderCompetitorSection(title, rows) {
+function renderCompetitorList(rows) {
   if (!rows.length) {
-    return `
-      <div class="data-sources-section">
-        <h3 class="data-sources-section__title">${escapeHtml(title)}</h3>
-        <p class="muted">Нет сайтов</p>
-      </div>`;
+    return `<p class="muted">Нет сайтов</p>`;
   }
   return `
-    <div class="data-sources-section">
-      <h3 class="data-sources-section__title">${escapeHtml(title)}</h3>
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Название</th>
-              <th>Домен</th>
-              <th>Поиск</th>
-              <th>Действия</th>
-            </tr>
-          </thead>
-          <tbody>${rows.map(renderCompetitorRow).join("")}</tbody>
-        </table>
-      </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Название</th>
+            <th>Домен</th>
+            <th>Поиск</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody>${rows.map(renderCompetitorRow).join("")}</tbody>
+      </table>
     </div>`;
 }
 
@@ -2740,7 +2733,7 @@ async function loadCompetitors() {
       applyCompetitorCatalogStats(data.catalog_products);
     }
     const container = $("#competitorsList");
-    container.innerHTML = renderCompetitorSection("Встроенные сайты", data.builtin || []);
+    container.innerHTML = renderCompetitorList(data.builtin || []);
 
     container.querySelectorAll("[data-remove-competitor]").forEach((btn) => {
       btn.addEventListener("click", () => removeCompetitorSite(btn.dataset.removeCompetitor));
