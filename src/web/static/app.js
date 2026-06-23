@@ -2885,7 +2885,7 @@ async function sendCompetitorChatMessage(text) {
     const data = await api("/api/competitors/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, limit: 12 }),
+      body: JSON.stringify({ query, limit: 30 }),
     });
     competitorChatMessages.push({
       role: "assistant",

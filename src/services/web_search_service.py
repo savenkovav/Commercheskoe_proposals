@@ -17,6 +17,7 @@ from src.config import (
     COMPETITOR_SEARCH_ENABLED,
     COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
     COMPETITOR_SEARCH_MAX_RESULTS,
+    COMPETITOR_SEARCH_PER_DOMAIN_MAX,
     COMPETITOR_SEARCH_PARALLEL_WORKERS,
     COMPETITOR_SEARCH_TIMEOUT,
     INTERNET_SEARCH_BUDGET_SECONDS,
@@ -511,7 +512,10 @@ class WebSearchService:
         if not query:
             return []
 
-        max_results = limit or COMPETITOR_SEARCH_MAX_RESULTS
+        max_results = limit or max(
+            COMPETITOR_SEARCH_MAX_RESULTS,
+            len(competitor_sites_with_search()) * COMPETITOR_SEARCH_PER_DOMAIN_MAX,
+        )
         strict_threshold = (
             exact_threshold if exact_threshold is not None else WEB_SEARCH_EXACT_THRESHOLD
         )
@@ -642,33 +646,14 @@ class WebSearchService:
         quotes: list[PriceQuote],
         limit: int,
     ) -> list[PriceQuote]:
+        from src.services.competitor_catalog_service import diversify_competitor_quotes_by_domain
+
         valid = [
             quote
             for quote in quotes
             if not quote.url or is_competitor_product_page_url(quote.url)
         ]
-        priced = [
-            quote
-            for quote in valid
-            if quote.price is not None or quote.cost is not None
-        ]
-        unpriced = [
-            quote
-            for quote in valid
-            if quote.price is None and quote.cost is None and quote.price_label
-        ]
-        empty = [
-            quote
-            for quote in valid
-            if quote.price is None and quote.cost is None and not quote.price_label
-        ]
-        priced.sort(
-            key=lambda item: item.price if item.price is not None else item.cost or 0
-        )
-        unpriced.sort(key=lambda item: -(item.match_score or 0))
-        empty.sort(key=lambda item: -(item.match_score or 0))
-        merged = priced + unpriced + empty
-        return merged[:limit]
+        return diversify_competitor_quotes_by_domain(valid, limit=limit)
 
     def _search_competitor_via_ddg(
         self,

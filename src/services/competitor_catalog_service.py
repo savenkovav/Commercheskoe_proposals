@@ -17,6 +17,7 @@ from src.config import (
     COMPETITOR_INDEX_REQUEST_TIMEOUT,
     COMPETITOR_INDEX_WORKERS,
     COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
+    COMPETITOR_SEARCH_PER_DOMAIN_MAX,
     WEB_SEARCH_TIMEOUT,
 )
 from src.services.competitor_sites import (
@@ -3949,6 +3950,98 @@ def _score_catalog_products(
     return quotes
 
 
+def _quote_domain_key(quote: PriceQuote) -> str:
+    if quote.url:
+        host = urlparse(quote.url).netloc.lower().removeprefix("www.")
+        if host:
+            return host
+    return (quote.label or "unknown").strip().lower()
+
+
+def _quote_price_value(quote: PriceQuote) -> float | None:
+    if quote.price is not None:
+        return quote.price
+    if quote.cost is not None:
+        return quote.cost
+    return None
+
+
+def _cheapest_quotes_per_domain(
+    domain_quotes: list[PriceQuote],
+    *,
+    count: int,
+) -> list[PriceQuote]:
+    if not domain_quotes or count <= 0:
+        return []
+
+    priced = [quote for quote in domain_quotes if _quote_price_value(quote) is not None]
+    unpriced = [quote for quote in domain_quotes if _quote_price_value(quote) is None]
+    priced.sort(key=lambda quote: _quote_price_value(quote) or 0)
+    unpriced.sort(key=lambda quote: -(quote.match_score or 0))
+
+    selected: list[PriceQuote] = []
+    seen: set[str] = set()
+    for quote in priced + unpriced:
+        key = quote.url or f"{_quote_domain_key(quote)}:{quote.matched_name}"
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(quote)
+        if len(selected) >= count:
+            break
+    return selected
+
+
+def diversify_competitor_quotes_by_domain(
+    quotes: list[PriceQuote],
+    *,
+    limit: int | None = None,
+    max_per_domain: int | None = None,
+) -> list[PriceQuote]:
+    """Оставляет до N самых дешёвых совпадений с каждого сайта."""
+    if not quotes:
+        return []
+
+    per_domain = max_per_domain or COMPETITOR_SEARCH_PER_DOMAIN_MAX
+    by_domain: dict[str, list[PriceQuote]] = {}
+    for quote in quotes:
+        by_domain.setdefault(_quote_domain_key(quote), []).append(quote)
+
+    result: list[PriceQuote] = []
+    seen: set[str] = set()
+    for domain_quotes in by_domain.values():
+        for quote in _cheapest_quotes_per_domain(domain_quotes, count=per_domain):
+            key = quote.url or f"{_quote_domain_key(quote)}:{quote.matched_name}"
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(quote)
+
+    result.sort(
+        key=lambda quote: (
+            0 if _quote_price_value(quote) is not None else 1,
+            _quote_price_value(quote) if _quote_price_value(quote) is not None else 0,
+            -(quote.match_score or 0),
+        )
+    )
+    if limit is not None and limit > 0:
+        return result[:limit]
+    return result
+
+
+def _diversify_catalog_quotes(
+    quotes: list[PriceQuote],
+    *,
+    limit: int,
+    max_per_domain: int | None = None,
+) -> list[PriceQuote]:
+    return diversify_competitor_quotes_by_domain(
+        quotes,
+        limit=limit,
+        max_per_domain=max_per_domain,
+    )
+
+
 def search_competitor_catalog_rag(
     query: str,
     doc_rag_index,
@@ -3960,6 +4053,7 @@ def search_competitor_catalog_rag(
     store = get_competitor_product_store()
     candidates: list[CompetitorCatalogProduct] = []
     seen: set[str] = set()
+    per_domain_limit = max(COMPETITOR_SEARCH_PER_DOMAIN_MAX * 4, 8)
 
     def _add(product: CompetitorCatalogProduct | None) -> None:
         if not product or not product.name.strip():
@@ -3970,8 +4064,18 @@ def search_competitor_catalog_rag(
         seen.add(key)
         candidates.append(product)
 
-    for product in store.search_products(query, limit=max(limit * 3, 24)):
-        _add(product)
+    domains = store.list_domains()
+    if domains:
+        for domain in domains:
+            for product in store.search_products(
+                query,
+                limit=per_domain_limit,
+                domain=domain,
+            ):
+                _add(product)
+    else:
+        for product in store.search_products(query, limit=max(limit * 3, 24)):
+            _add(product)
 
     if doc_rag_index is not None:
         rows = doc_rag_index.query(query, source_type="competitor", top_k=max(limit * 4, 16))
@@ -3986,4 +4090,13 @@ def search_competitor_catalog_rag(
         for product in _iter_catalog_products(doc_rag_index):
             _add(product)
 
-    return _score_catalog_products(query, candidates, limit=limit)
+    scored = _score_catalog_products(
+        query,
+        candidates,
+        limit=max(limit * len(domains or [1]), limit * 6, 48),
+    )
+    return _diversify_catalog_quotes(
+        scored,
+        limit=limit,
+        max_per_domain=COMPETITOR_SEARCH_PER_DOMAIN_MAX,
+    )

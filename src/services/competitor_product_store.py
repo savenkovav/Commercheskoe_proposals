@@ -172,11 +172,16 @@ class CompetitorProductStore:
     def iter_products(self) -> list[CompetitorCatalogProduct]:
         return self._db.iter_products()
 
+    def list_domains(self) -> list[str]:
+        self.ensure_loaded()
+        return sorted({product.domain for product in self._products if product.domain})
+
     def search_products(
         self,
         query: str,
         *,
         limit: int = 24,
+        domain: str | None = None,
     ) -> list[CompetitorCatalogProduct]:
         """Fuzzy search по проиндексированным карточкам конкурентов."""
         self.ensure_loaded()
@@ -184,11 +189,17 @@ class CompetitorProductStore:
         if not normalized_query or not self._products:
             return []
 
-        query_words = [word for word in normalized_query.split() if len(word) >= 3]
         pool = self._products
-        if query_words and len(self._products) > 400:
+        if domain:
+            normalized_domain = domain.lower().removeprefix("www.")
+            pool = [product for product in pool if product.domain == normalized_domain]
+            if not pool:
+                return []
+
+        query_words = [word for word in normalized_query.split() if len(word) >= 3]
+        if query_words and len(pool) > 400:
             filtered: list[CompetitorCatalogProduct] = []
-            for product in self._products:
+            for product in pool:
                 normalized_name = normalize_name(product.name)
                 if all(word in normalized_name for word in query_words):
                     filtered.append(product)
