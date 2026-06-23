@@ -2454,9 +2454,6 @@ function renderCompetitorAnalysis(analysis, catalog) {
     ${catalogLine}
     <p class="muted">${escapeHtml(analysis.notes || "")}</p>
   `;
-  if (analysis.label && !$("#competitorLabel").value.trim()) {
-    $("#competitorLabel").value = analysis.label;
-  }
 }
 
 let competitorSiteIndexed = false;
@@ -2465,15 +2462,8 @@ let competitorSiteBuiltin = false;
 let competitorIndexPollToken = 0;
 let competitorIndexLogSince = 0;
 
-function updateCompetitorAddButton() {
-  const btn = $("#btnAddCompetitor");
+function updateCompetitorIndexButton() {
   const indexBtn = $("#btnIndexCompetitor");
-  if (btn) {
-    btn.disabled = !competitorSiteIndexed || competitorSiteBuiltin;
-    btn.title = competitorSiteBuiltin
-      ? "Встроенный сайт уже в списке — добавление не требуется"
-      : "";
-  }
   if (indexBtn) indexBtn.disabled = Boolean(indexBtn.dataset.indexRunning === "1");
 }
 
@@ -2482,7 +2472,7 @@ function resetCompetitorIndexState() {
   competitorIndexedDomain = null;
   competitorSiteBuiltin = false;
   competitorIndexLogSince = 0;
-  updateCompetitorAddButton();
+  updateCompetitorIndexButton();
 }
 
 function showCompetitorIndexPanel(initialStatus = "Изучаю структуру сайта…") {
@@ -2561,13 +2551,14 @@ async function pollCompetitorIndexProgress(domain, pollToken) {
       if (statusData.analysis || statusData.catalog) {
         renderCompetitorAnalysis(statusData.analysis || { domain }, statusData.catalog);
       }
-      updateCompetitorAddButton();
+      updateCompetitorIndexButton();
       const count = statusData.catalog?.products ?? statusData.catalog?.store_products ?? 0;
       showToast(
         competitorSiteBuiltin
           ? `Каталог обновлён: ${count} товаров`
           : `Индексация завершена: ${count} товаров`,
       );
+      loadCompetitors();
       return statusData;
     }
 
@@ -2589,10 +2580,6 @@ async function pollCompetitorIndexProgress(domain, pollToken) {
 function competitorIndexPayload() {
   return {
     url: $("#competitorUrl").value.trim(),
-    label: $("#competitorLabel").value.trim(),
-    product_sample_url: $("#competitorProductSampleUrl").value.trim() || null,
-    price_html_hint: $("#competitorPriceHtmlHint").value.trim() || null,
-    articul_html_hint: $("#competitorArticulHtmlHint").value.trim() || null,
   };
 }
 
@@ -2611,7 +2598,7 @@ async function indexCompetitorSite() {
   const pollToken = competitorIndexPollToken;
   const indexBtn = $("#btnIndexCompetitor");
   if (indexBtn) indexBtn.dataset.indexRunning = "1";
-  updateCompetitorAddButton();
+  updateCompetitorIndexButton();
   showCompetitorIndexPanel("Изучаю структуру сайта…");
   appendCompetitorIndexLogLines([
     { id: 0, ts: Date.now() / 1000, level: "info", message: "Запрос отправлен…" },
@@ -2652,45 +2639,7 @@ async function indexCompetitorSite() {
     showToast(e.message, true);
   } finally {
     if (indexBtn) delete indexBtn.dataset.indexRunning;
-    updateCompetitorAddButton();
-  }
-}
-
-async function addCompetitorSite() {
-  const payload = competitorIndexPayload();
-  if (!payload.url) {
-    showToast("Введите ссылку на сайт", true);
-    return;
-  }
-  if (!competitorSiteIndexed) {
-    showToast("Сначала выполните индексацию каталога", true);
-    return;
-  }
-  showOverlay("Добавляю сайт в базу...");
-  try {
-    const data = await api("/api/competitors", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    renderCompetitorAnalysis(data.analysis, data.rag?.catalog);
-    showToast(`Сайт добавлен${ragUploadMessage(data.rag)}`);
-    if (data.catalog_products) {
-      applyCompetitorCatalogStats(data.catalog_products);
-    }
-    $("#competitorUrl").value = "";
-    $("#competitorLabel").value = "";
-    $("#competitorProductSampleUrl").value = "";
-    $("#competitorPriceHtmlHint").value = "";
-    $("#competitorArticulHtmlHint").value = "";
-    resetCompetitorIndexState();
-    renderCompetitorAnalysis(null);
-    loadCompetitors();
-    loadStatus();
-  } catch (e) {
-    showToast(e.message, true);
-  } finally {
-    hideOverlay();
+    updateCompetitorIndexButton();
   }
 }
 
@@ -2748,7 +2697,7 @@ async function refreshCompetitorIndexState() {
     competitorSiteIndexed = Boolean(data.index_completed);
     competitorIndexedDomain = data.domain || null;
     competitorSiteBuiltin = Boolean(data.is_builtin);
-    updateCompetitorAddButton();
+    updateCompetitorIndexButton();
     if (data.running) {
       showCompetitorIndexPanel(data.phase_label || "Индексация…");
       competitorIndexLogSince = 0;
@@ -2764,10 +2713,10 @@ async function refreshCompetitorIndexState() {
       const pollToken = competitorIndexPollToken;
       const indexBtn = $("#btnIndexCompetitor");
       if (indexBtn) indexBtn.dataset.indexRunning = "1";
-      updateCompetitorAddButton();
+      updateCompetitorIndexButton();
       pollCompetitorIndexProgress(data.domain, pollToken).finally(() => {
         if (indexBtn) delete indexBtn.dataset.indexRunning;
-        updateCompetitorAddButton();
+        updateCompetitorIndexButton();
       });
     } else if (data.index_completed) {
       setCompetitorIndexStatus(
@@ -3011,9 +2960,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btnUploadCatalog").addEventListener("click", uploadCatalog);
   $("#btnUploadStock").addEventListener("click", uploadStock);
   $("#btnIndexCompetitor").addEventListener("click", indexCompetitorSite);
-  $("#btnAddCompetitor").addEventListener("click", addCompetitorSite);
   $("#competitorUrl")?.addEventListener("input", resetCompetitorIndexState);
-  updateCompetitorAddButton();
+  updateCompetitorIndexButton();
   initCompetitorChat();
   loadInitialStatus();
   setInterval(() => {

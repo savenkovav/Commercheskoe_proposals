@@ -239,26 +239,11 @@
         <div class="grid-2">
           <div class="card">
             <h2>Добавить сайт</h2>
-            <p class="muted">Укажите сайт, проиндексируйте каталог товаров, затем добавьте сайт в базу для поиска цен и RAG</p>
+            <p class="muted">Укажите адрес сайта и нажмите «Переиндексировать» для обновления каталога товаров и RAG</p>
             <div class="form-stack">
               <input type="url" id="competitorUrl" class="input" placeholder="https://example-shop.ru">
-              <input type="text" id="competitorLabel" class="input" placeholder="Название (необязательно)">
-              <input type="url" id="competitorProductSampleUrl" class="input" placeholder="URL карточки товара с этого же сайта (необязательно), напр. …/index.php?page=100">
-              <textarea
-                id="competitorPriceHtmlHint"
-                class="input input--textarea"
-                rows="3"
-                placeholder="HTML-код цены из карточки товара — для ориентира при индексации (необязательно)"
-              ></textarea>
-              <textarea
-                id="competitorArticulHtmlHint"
-                class="input input--textarea"
-                rows="3"
-                placeholder="HTML-код артикула из карточки товара — для ориентира при индексации (необязательно)"
-              ></textarea>
               <div class="actions actions--wrap">
-                <button class="btn btn--secondary" type="button" id="btnIndexCompetitor">Проиндексировать</button>
-                <button class="btn btn--primary" type="button" id="btnAddCompetitor" disabled>Добавить сайт</button>
+                <button class="btn btn--primary" type="button" id="btnIndexCompetitor">Переиндексировать</button>
               </div>
             </div>
             <div class="competitor-index-panel hidden" id="competitorIndexPanel">

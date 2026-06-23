@@ -782,6 +782,13 @@ def start_competitor_site_index_background(
             append_index_log(normalized, "Сохранение в базу данных…")
             _set_index_phase(normalized, "rag")
             manager.mark_draft_indexed(draft.domain, catalog)
+            if not draft.builtin:
+                registered = manager.ensure_from_indexed_draft(draft.url, label=draft.label)
+                if registered:
+                    append_index_log(
+                        normalized,
+                        f"Сайт добавлен в список конкурентов: {registered.label}",
+                    )
 
             from src.services.competitor_product_store import get_competitor_product_store
 

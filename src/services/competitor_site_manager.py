@@ -409,7 +409,7 @@ class CompetitorSiteManager:
         draft = self._drafts.get(normalized)
         if not draft or not draft.indexed:
             raise ValueError(
-                "Сначала нажмите «Проиндексировать» и дождитесь завершения индексации каталога"
+                "Сначала нажмите «Переиндексировать» и дождитесь завершения индексации каталога"
             )
 
         existing = {entry.domain for entry in self._custom}
@@ -421,7 +421,7 @@ class CompetitorSiteManager:
         if domain in all_competitor_domains(include_custom=False):
             raise ValueError(
                 f"Сайт {domain} уже есть во встроенном списке — "
-                "добавление не требуется, используйте «Проиндексировать» для обновления каталога"
+                "добавление не требуется, используйте «Переиндексировать» для обновления каталога"
             )
 
         entry_id = self._make_id(domain)
@@ -477,6 +477,32 @@ class CompetitorSiteManager:
                 source="site_add",
             )
         return entry, draft.analysis
+
+    def ensure_from_indexed_draft(
+        self,
+        url: str,
+        *,
+        label: str = "",
+    ) -> CompetitorSiteEntry | None:
+        normalized_url = self.normalize_url(url)
+        domain = self.domain_from_url(normalized_url)
+        normalized = domain.lower().removeprefix("www.")
+
+        from src.services.competitor_sites import all_competitor_domains
+
+        if domain in all_competitor_domains(include_custom=False):
+            return None
+
+        existing = next((entry for entry in self._custom if entry.domain == domain), None)
+        if existing:
+            return existing
+
+        draft = self._drafts.get(normalized)
+        if not draft or not draft.indexed:
+            return None
+
+        entry, _ = self.add_from_indexed_draft(url, label=label)
+        return entry
 
     def add(
         self,
