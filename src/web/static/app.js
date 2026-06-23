@@ -2740,10 +2740,7 @@ async function loadCompetitors() {
       applyCompetitorCatalogStats(data.catalog_products);
     }
     const container = $("#competitorsList");
-    container.innerHTML = [
-      renderCompetitorSection("Добавленные сайты", data.custom || []),
-      renderCompetitorSection("Встроенные сайты", data.builtin || []),
-    ].join("");
+    container.innerHTML = renderCompetitorSection("Встроенные сайты", data.builtin || []);
 
     container.querySelectorAll("[data-remove-competitor]").forEach((btn) => {
       btn.addEventListener("click", () => removeCompetitorSite(btn.dataset.removeCompetitor));
