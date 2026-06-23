@@ -4,6 +4,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from html import unescape
@@ -43,6 +44,7 @@ _SITEMAP_CATALOG_MIN_PRODUCTS: dict[str, int] = {
     "td-school.ru": 100,
     "n-72.ru": 1000,
     "epp24.ru": 1000,
+    "zarnitza.ru": 500,
 }
 
 _TD_SCHOOL_DEFAULT_SAMPLE_URL = "https://td-school.ru/index.php?page=100"
@@ -858,6 +860,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "epp24.ru": [
         "https://epp24.ru/sitemap_index.xml",
         "https://epp24.ru/",
+    ],
+    "zarnitza.ru": [
+        "https://zarnitza.ru/catalog/",
+        "https://zarnitza.ru/sitemap.xml",
     ],
 }
 
@@ -1964,6 +1970,431 @@ def fetch_n72_catalog(
     )
 
 
+_ZARNITZA_SITEMAP_PRODUCT_RE = re.compile(
+    r"<loc>(https://zarnitza\.ru/catalog/[^<]+)</loc>",
+    re.I,
+)
+_ZARNITZA_LISTING_BLOCK_RE = re.compile(
+    r'<div class="cart-articul">(?P<body>.*?)</div>\s*<!-- /.cart-articul -->',
+    re.I | re.S,
+)
+_ZARNITZA_CATEGORY_SEEDS: tuple[str, ...] = (
+    "https://zarnitza.ru/catalog/",
+    "https://zarnitza.ru/catalog/uchlab/",
+    "https://zarnitza.ru/catalog/mekhatronika-i-robototekhnika/",
+    "https://zarnitza.ru/catalog/meditsina/",
+    "https://zarnitza.ru/catalog/podgotovka-professionalnykh-kadrov/",
+    "https://zarnitza.ru/catalog/avtogorodki-i-pdd/",
+    "https://zarnitza.ru/catalog/avtoshkola-i-avtodrom/",
+    "https://zarnitza.ru/catalog/hit/",
+    "https://zarnitza.ru/catalog/agrotekhklassy/",
+    "https://zarnitza.ru/catalog/oborudovanie-po-prikazu-804-ministerstva-prosveshcheniya-rf/",
+)
+_ZARNITZA_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
+_ZARNITZA_MAX_CRAWL_PAGES = 2500
+
+
+def _is_zarnitza_domain(domain: str) -> bool:
+    return domain.lower().removeprefix("www.") == "zarnitza.ru"
+
+
+def _is_zarnitza_product_page_html(html: str) -> bool:
+    return "main__card-product" in html and 'itemprop="price"' in html
+
+
+def _normalize_zarnitza_catalog_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if parsed.netloc.lower().removeprefix("www.") != "zarnitza.ru":
+        return ""
+    path = parsed.path or "/"
+    if not path.startswith("/catalog"):
+        return ""
+    clean = f"https://zarnitza.ru{path.rstrip('/')}/"
+    if clean == "https://zarnitza.ru/catalog/":
+        return clean
+    return clean
+
+
+def _extract_zarnitza_listing_product_urls(html: str, *, page_url: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in _ZARNITZA_LISTING_BLOCK_RE.finditer(html):
+        body = match.group("body")
+        for href_match in re.finditer(r'href="(?P<url>/catalog/[^"#?]+/?)"', body, re.I):
+            absolute = _absolute_url("zarnitza.ru", href_match.group("url"), page_url)
+            if not absolute:
+                continue
+            normalized = _normalize_zarnitza_catalog_url(absolute)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            urls.append(normalized)
+    return urls
+
+
+def _extract_zarnitza_catalog_links(html: str, *, page_url: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for href in _HREF_RE.findall(html):
+        if href.startswith("javascript:"):
+            continue
+        absolute = _absolute_url("zarnitza.ru", href, page_url)
+        if not absolute:
+            continue
+        parsed = urlparse(absolute.split("#")[0])
+        if not parsed.path.startswith("/catalog"):
+            continue
+        if parsed.query and parse_qs(parsed.query).get("PAGEN_1"):
+            page_link = absolute.split("#")[0]
+            if page_link not in seen:
+                seen.add(page_link)
+                urls.append(page_link)
+            continue
+        normalized = _normalize_zarnitza_catalog_url(absolute)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        urls.append(normalized)
+    return urls
+
+
+def _discover_zarnitza_sitemap_urls() -> list[str]:
+    index_url = "https://zarnitza.ru/sitemap.xml"
+    product_urls: list[str] = []
+    seen: set[str] = set()
+    try:
+        with httpx.Client(
+            timeout=WEB_SEARCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            index_response = client.get(index_url)
+            index_response.raise_for_status()
+            sitemap_urls = re.findall(
+                r"<loc>(https://zarnitza\.ru/sitemap[^<]+\.xml)</loc>",
+                index_response.text,
+                re.I,
+            )
+            if not sitemap_urls:
+                sitemap_urls = ["https://zarnitza.ru/sitemap-iblock-10.xml"]
+            for sitemap_url in sitemap_urls:
+                if "iblock-10" not in sitemap_url.lower():
+                    continue
+                try:
+                    response = client.get(sitemap_url)
+                    response.raise_for_status()
+                except Exception:
+                    continue
+                for url in _ZARNITZA_SITEMAP_PRODUCT_RE.findall(response.text):
+                    normalized = _normalize_zarnitza_catalog_url(url)
+                    if not normalized or normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    product_urls.append(normalized)
+    except Exception:
+        logger.exception("Failed to fetch zarnitza sitemap")
+    return product_urls
+
+
+def _discover_zarnitza_product_urls() -> list[str]:
+    limit = COMPETITOR_INDEX_MAX_URLS
+    queue: deque[str] = deque(_ZARNITZA_CATEGORY_SEEDS)
+    seen_pages: set[str] = set()
+    product_urls: list[str] = []
+    seen_products: set[str] = set()
+
+    for seed in _discover_zarnitza_sitemap_urls():
+        if seed not in seen_pages:
+            queue.append(seed)
+
+    append_index_log("zarnitza.ru", "Обход каталога zarnitza.ru (BFS)…")
+
+    try:
+        with httpx.Client(
+            timeout=_ZARNITZA_REQUEST_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            while queue and len(product_urls) < limit and len(seen_pages) < _ZARNITZA_MAX_CRAWL_PAGES:
+                page_url = queue.popleft()
+                page_key = page_url.split("#")[0]
+                if page_key in seen_pages:
+                    continue
+                seen_pages.add(page_key)
+
+                try:
+                    response = client.get(page_url)
+                    response.raise_for_status()
+                except Exception:
+                    logger.debug("Zarnitza crawl failed %s", page_url, exc_info=True)
+                    continue
+
+                html = response.text[:700_000]
+                final_url = str(response.url).split("#")[0]
+
+                if _is_zarnitza_product_page_html(html):
+                    product_url = _normalize_zarnitza_catalog_url(final_url) or final_url
+                    if product_url not in seen_products:
+                        seen_products.add(product_url)
+                        product_urls.append(product_url)
+                    continue
+
+                for product_url in _extract_zarnitza_listing_product_urls(html, page_url=final_url):
+                    if product_url in seen_products:
+                        continue
+                    seen_products.add(product_url)
+                    product_urls.append(product_url)
+                    if len(product_urls) >= limit:
+                        break
+
+                if len(product_urls) >= limit:
+                    break
+
+                for link in _extract_zarnitza_catalog_links(html, page_url=final_url):
+                    link_key = link.split("#")[0]
+                    if link_key not in seen_pages:
+                        queue.append(link)
+
+                if len(seen_pages) % 100 == 0:
+                    append_index_log(
+                        "zarnitza.ru",
+                        f"  → обход {len(seen_pages)} стр., найдено {len(product_urls)} товаров",
+                    )
+    except Exception:
+        logger.exception("Zarnitza catalog crawl failed")
+
+    logger.info(
+        "zarnitza.ru: discovered %s product URLs (%s pages crawled, limit %s)",
+        len(product_urls),
+        len(seen_pages),
+        limit,
+    )
+    return product_urls[:limit]
+
+
+def _extract_zarnitza_product_image(html: str, *, page_url: str) -> str | None:
+    for pattern in (
+        r'itemprop="image"[^>]*src="(?P<url>/upload/iblock/[^"]+)"',
+        r'href="(?P<url>/upload/iblock/[^"]+\.(?:png|jpe?g|webp))"',
+        r'(?:src|data-src)="(?P<url>/upload/iblock/[^"]+\.(?:png|jpe?g|webp))"',
+        r'(?:src|data-src)="(?P<url>/upload/resize_cache/iblock/[^"]+\.(?:png|jpe?g|webp))"',
+    ):
+        match = re.search(pattern, html, re.I | re.S)
+        if not match:
+            continue
+        absolute = _absolute_url("zarnitza.ru", match.group("url"), page_url)
+        if absolute and "resize_cache" not in absolute:
+            return absolute
+    match = re.search(
+        r'(?:src|data-src)="(?P<url>/upload/resize_cache/iblock/[^"]+)"',
+        html,
+        re.I,
+    )
+    if match:
+        return _absolute_url("zarnitza.ru", match.group("url"), page_url)
+    return None
+
+
+def _extract_zarnitza_description(html: str) -> str | None:
+    desc_match = re.search(
+        r'id="tab_opisanie"[^>]*>.*?<div class="text">(?P<body>.*?)</div>',
+        html,
+        re.I | re.S,
+    )
+    if not desc_match:
+        return None
+    text = _strip_html_text(desc_match.group("body"))
+    if len(text) < 20:
+        return None
+    return text[:4000]
+
+
+def _parse_zarnitza_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_zarnitza_product_page_html(html):
+        return None
+
+    name_match = re.search(r"<h1[^>]*>\s*(?P<name>.*?)\s*</h1>", html, re.I | re.S)
+    if not name_match:
+        return None
+    name = re.sub(r"\s+", " ", _strip_html_text(name_match.group("name"))).strip()
+    if len(name) < 4:
+        return None
+
+    price = None
+    price_match = re.search(r'itemprop="price"\s+content="(?P<price>[\d.]+)"', html, re.I)
+    if price_match:
+        price = _parse_price(price_match.group("price"))
+    if price is None:
+        price_match = re.search(
+            r'class="main__card-product--price".*?class="new-price">\s*(?P<price>[\d\s]+)',
+            html,
+            re.I | re.S,
+        )
+        if price_match:
+            price = _parse_price(price_match.group("price"))
+
+    articul = None
+    articul_match = re.search(
+        r'class="articul"[^>]*>\s*Артикул:\s*(?P<articul>[^\s<]+)',
+        html,
+        re.I | re.S,
+    )
+    if articul_match:
+        articul = articul_match.group("articul").strip()
+
+    price_label = price_on_request_label(html[:80_000]) if price is None else None
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=page_url.split("#")[0],
+        articul=articul,
+        price_label=price_label,
+        image_url=_extract_zarnitza_product_image(html, page_url=page_url),
+        description=_extract_zarnitza_description(html),
+    )
+
+
+def _parse_zarnitza_listing_previews(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if "cart-articul" not in html:
+        return []
+
+    products: list[CompetitorCatalogProduct] = []
+    seen: set[str] = set()
+    for match in _ZARNITZA_LISTING_BLOCK_RE.finditer(html):
+        body = match.group("body")
+        link_match = re.search(
+            r'class="info"[^>]*>\s*<a[^>]*href="(?P<url>/catalog/[^"]+)"[^>]*>(?P<name>.*?)</a>',
+            body,
+            re.I | re.S,
+        )
+        if not link_match:
+            link_match = re.search(
+                r'class="image"[^>]*>\s*<a[^>]*href="(?P<url>/catalog/[^"]+)"',
+                body,
+                re.I | re.S,
+            )
+            if not link_match:
+                continue
+            name = ""
+        else:
+            name = re.sub(r"\s+", " ", unescape(_strip_html_text(link_match.group("name")))).strip()
+
+        url = _absolute_url(domain, link_match.group("url"), page_url)
+        if not url:
+            continue
+        key = url.split("#")[0]
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if not name:
+            name_match = re.search(r'alt="([^"]+)"', body, re.I)
+            name = name_match.group(1).strip() if name_match else key.rstrip("/").split("/")[-1]
+        if len(name) < 4:
+            continue
+
+        articul_match = re.search(
+            r'class="articul"[^>]*>\s*Артикул:\s*(?P<articul>[^\s<]+)',
+            body,
+            re.I | re.S,
+        )
+        price = None
+        price_label = None
+        price_match = re.search(r'class="new-price">\s*(?P<price>[\d\s]+)', body, re.I | re.S)
+        if price_match:
+            price = _parse_price(price_match.group("price"))
+        elif re.search(r'class="query"', body, re.I):
+            price_label = "По запросу"
+
+        image_url = None
+        image_match = re.search(
+            r'(?:src|data-src)="(?P<url>/upload/[^"]+\.(?:png|jpe?g|webp))"',
+            body,
+            re.I,
+        )
+        if image_match:
+            image_url = _absolute_url(domain, image_match.group("url"), page_url)
+
+        products.append(
+            CompetitorCatalogProduct(
+                domain=domain,
+                site_label=site_label,
+                name=name[:300],
+                price=price,
+                url=key,
+                articul=articul_match.group("articul").strip() if articul_match else None,
+                price_label=price_label,
+                image_url=image_url,
+            )
+        )
+    return products
+
+
+def _parse_zarnitza_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if not _is_zarnitza_domain(domain):
+        return []
+
+    if _is_zarnitza_product_page_html(html):
+        product = _parse_zarnitza_product_html(
+            html,
+            domain=domain,
+            site_label=site_label,
+            page_url=page_url,
+        )
+        return [product] if product else []
+
+    return _parse_zarnitza_listing_previews(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+
+
+def fetch_zarnitza_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_zarnitza_product_urls()
+    if not product_urls:
+        append_index_log(site.domain, "Каталог zarnitza.ru пуст — обход seed URL", level="error")
+        return fetch_catalog_products(site, max_pages=24)
+
+    append_index_log(
+        site.domain,
+        f"Индексация zarnitza.ru: {len(product_urls)} URL товаров",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
+        request_timeout=_ZARNITZA_REQUEST_TIMEOUT,
+        max_workers=min(8, COMPETITOR_INDEX_WORKERS),
+    )
+
+
 def _parse_n72_product_previews(
     html: str,
     *,
@@ -2584,6 +3015,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if n72_products:
         return n72_products
 
+    zarnitza_products = _parse_zarnitza_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if zarnitza_products:
+        return zarnitza_products
+
     shop2_products = _parse_shop2_products(
         html,
         domain=domain,
@@ -2792,6 +3232,8 @@ def fetch_catalog_products(
         return fetch_td_school_catalog(site)
     if normalized_domain == "n-72.ru":
         return fetch_n72_catalog(site)
+    if normalized_domain == "zarnitza.ru":
+        return fetch_zarnitza_catalog(site)
 
     hints = get_domain_parsing_hints(normalized_domain)
     sample_url = hints.product_sample_url if hints else None
