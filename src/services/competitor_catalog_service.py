@@ -1991,7 +1991,7 @@ _ZARNITZA_CATEGORY_SEEDS: tuple[str, ...] = (
     "https://zarnitza.ru/catalog/oborudovanie-po-prikazu-804-ministerstva-prosveshcheniya-rf/",
 )
 _ZARNITZA_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
-_ZARNITZA_MAX_CRAWL_PAGES = 2500
+_ZARNITZA_MAX_CRAWL_PAGES = 4000
 
 
 def _is_zarnitza_domain(domain: str) -> bool:
@@ -2056,6 +2056,23 @@ def _extract_zarnitza_catalog_links(html: str, *, page_url: str) -> list[str]:
         seen.add(normalized)
         urls.append(normalized)
     return urls
+
+
+def _extract_zarnitza_pagination_urls(html: str, *, page_url: str) -> list[str]:
+    parsed = urlparse(page_url.split("#")[0])
+    if "PAGEN_1" in (parsed.query or ""):
+        base = page_url.split("?")[0].split("#")[0]
+    else:
+        base = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}/"
+    max_page = 1
+    for match in re.finditer(r"PAGEN_1=(\d+)", html):
+        try:
+            max_page = max(max_page, int(match.group(1)))
+        except ValueError:
+            continue
+    if max_page <= 1:
+        return []
+    return [f"{base}?PAGEN_1={page_num}" for page_num in range(2, max_page + 1)]
 
 
 def _discover_zarnitza_sitemap_urls() -> list[str]:
@@ -2150,7 +2167,13 @@ def _discover_zarnitza_product_urls() -> list[str]:
                 if len(product_urls) >= limit:
                     break
 
-                for link in _extract_zarnitza_catalog_links(html, page_url=final_url):
+                catalog_links = _extract_zarnitza_catalog_links(html, page_url=final_url)
+                pagination_links = _extract_zarnitza_pagination_urls(html, page_url=final_url)
+                for link in pagination_links:
+                    link_key = link.split("#")[0]
+                    if link_key not in seen_pages:
+                        queue.appendleft(link)
+                for link in catalog_links:
                     link_key = link.split("#")[0]
                     if link_key not in seen_pages:
                         queue.append(link)

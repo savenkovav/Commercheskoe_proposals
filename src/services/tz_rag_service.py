@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass
 
 from src.config import (
     RAG_CHUNK_OVERLAP,
     RAG_CHUNK_SIZE,
+    RAG_EMBED_BATCH_SIZE,
     RAG_EMBEDDING_MODEL,
     RAG_ENABLED,
     RAG_TOP_K,
@@ -138,20 +140,42 @@ class TZRagService:
         return [{**chunk, "score": 0.0} for chunk in chunks[:top_k]]
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        if not self.ai.enabled or not self.ai.client:
+        if not self.ai.enabled or not self.ai.client or not texts:
             return []
-        try:
-            response = self.ai.client.embeddings.create(
-                model=RAG_EMBEDDING_MODEL,
-                input=texts,
-            )
-            vectors = [item.embedding for item in response.data]
-            if len(vectors) != len(texts):
+        vectors: list[list[float]] = []
+        batch_size = RAG_EMBED_BATCH_SIZE
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            batch_vectors: list[list[float]] | None = None
+            for attempt in range(3):
+                try:
+                    response = self.ai.client.embeddings.create(
+                        model=RAG_EMBEDDING_MODEL,
+                        input=batch,
+                    )
+                    batch_vectors = [item.embedding for item in response.data]
+                    if len(batch_vectors) != len(batch):
+                        logger.error(
+                            "RAG embeddings batch size mismatch: expected %s got %s",
+                            len(batch),
+                            len(batch_vectors),
+                        )
+                        return []
+                    break
+                except Exception:
+                    if attempt >= 2:
+                        logger.exception(
+                            "RAG embeddings failed for batch %s-%s of %s",
+                            start,
+                            start + len(batch),
+                            len(texts),
+                        )
+                        return []
+                    time.sleep(0.5 * (attempt + 1))
+            if batch_vectors is None:
                 return []
-            return vectors
-        except Exception:
-            logger.exception("RAG embeddings failed")
-            return []
+            vectors.extend(batch_vectors)
+        return vectors
 
     @staticmethod
     def _build_chunks(
