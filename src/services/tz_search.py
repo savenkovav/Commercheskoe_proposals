@@ -27,6 +27,19 @@ _GENERIC_WORDS = frozenset(
     """.split()
 )
 
+_NAME_GENERIC = frozenset(
+    """
+    портативная портативный портативное портативные
+    лабораторный лабораторная лабораторное лабораторные
+    комплект набор модель система демонстрационный демонстрационная
+    цифровой цифровая цифровое цифровые
+    стеклянная стеклянный стеклянное
+    двухместная двухместный регулировкой регулировка
+    виртуальный виртуальная кубический кубическая
+    отечественных зарубежных художников
+    """.split()
+)
+
 _CATEGORY_CONFLICTS: tuple[tuple[str, str], ...] = (
     ("аудио", "dvd"),
     ("аудиосистем", "dvd"),
@@ -48,6 +61,23 @@ _CATEGORY_CONFLICTS: tuple[tuple[str, str], ...] = (
     ("геометрич", "калориметрич"),
     ("мольберт", "dvd"),
     ("термометр", "dvd"),
+    ("аудио", "парта"),
+    ("аудиосистем", "парта"),
+    ("partybox", "парта"),
+    ("jbl", "парта"),
+    ("behringer", "парта"),
+    ("колонк", "парта"),
+    ("микрофон", "парта"),
+    ("парта", "аудио"),
+    ("парта", "аудиосистем"),
+    ("парта", "partybox"),
+    ("парта", "jbl"),
+    ("парта", "behringer"),
+    ("парта", "колонк"),
+    ("парта", "микрофон"),
+    ("smarty", "аудио"),
+    ("smarty", "partybox"),
+    ("smarty", "jbl"),
 )
 
 
@@ -69,22 +99,36 @@ def is_kit_composition_header(spec_line: str) -> bool:
     return spec_line.rstrip().endswith(":")
 
 
+def has_meaningful_spec(tz_item: TZItem) -> bool:
+    spec_line = primary_spec_line(tz_item.specifications)
+    if not spec_line or is_kit_composition_header(spec_line):
+        return False
+    return normalize_name(spec_line) != normalize_name(tz_item.name)
+
+
+def tz_match_query(tz_item: TZItem) -> str:
+    """Приоритетный текст сопоставления: наименование + первая характеристика."""
+    name = tz_item.name.strip()
+    spec_line = primary_spec_line(tz_item.specifications)
+    if spec_line and not is_kit_composition_header(spec_line):
+        if normalize_name(spec_line) != normalize_name(name):
+            return f"{name} {spec_line}".strip()
+    return name
+
+
 def build_search_queries(tz_item: TZItem) -> list[str]:
     name = tz_item.name.strip()
-    combined = tz_item_search_text(tz_item)
+    combined = tz_match_query(tz_item)
+    spec_line = primary_spec_line(tz_item.specifications)
     queries: list[str] = []
 
     if combined:
         queries.append(combined)
     if name and normalize_name(name) != normalize_name(combined):
         queries.append(name)
-
-    spec_line = primary_spec_line(tz_item.specifications)
     if spec_line and not is_kit_composition_header(spec_line):
         if normalize_name(spec_line) != normalize_name(name):
             queries.append(spec_line)
-            if name:
-                queries.append(f"{name} {spec_line}")
 
     seen: set[str] = set()
     unique: list[str] = []
@@ -98,11 +142,11 @@ def build_search_queries(tz_item: TZItem) -> list[str]:
 
 
 def primary_search_text(tz_item: TZItem) -> str:
-    return tz_item_search_text(tz_item)
+    return tz_match_query(tz_item)
 
 
 def tz_item_search_text(tz_item: TZItem) -> str:
-    """Текст для поиска совпадений: название, характеристики, страна."""
+    """Текст для индексации/RAG: наименование, характеристика, страна."""
     name = tz_item.name.strip()
     spec_line = primary_spec_line(tz_item.specifications)
     parts = [name] if name else []
@@ -119,7 +163,27 @@ def tz_item_search_text(tz_item: TZItem) -> str:
         return name
     if len(parts) == 1:
         return parts[0]
-    return " | ".join(parts)
+    return " ".join(parts)
+
+
+def name_anchor_tokens(tz_item: TZItem) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", tz_item.name):
+        token = normalize_name(raw)
+        if len(token) < 4 or token in _GENERIC_WORDS or token in _NAME_GENERIC:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+
+    if tokens:
+        return tokens[:4]
+
+    normalized = normalize_name(tz_item.name)
+    fallback = [word for word in normalized.split() if len(word) >= 4]
+    return fallback[:2]
 
 
 def spec_required_tokens(tz_item: TZItem) -> list[str]:
@@ -146,11 +210,13 @@ def spec_required_tokens(tz_item: TZItem) -> list[str]:
     distinctive = [
         token
         for token in tokens
-        if any(ch.isdigit() for ch in token) or len(token) >= 5
+        if any(ch.isdigit() for ch in token)
+        or len(token) >= 5
+        or (len(token) >= 3 and re.search(r"[a-z]", token))
     ]
     if distinctive:
         return distinctive[:8]
-    return []
+    return tokens[:4]
 
 
 def _category_conflict(tz_item: TZItem, matched_name: str) -> bool:
@@ -176,14 +242,41 @@ def _required_tokens_present(required: list[str], matched_name: str) -> bool:
     return hits >= max(2, len(required) // 2)
 
 
-def relevance_score(tz_item: TZItem, matched_name: str) -> float:
-    spec_line = primary_spec_line(tz_item.specifications)
+def _token_matches_anchor(anchor: str, text: str) -> bool:
+    if anchor in text:
+        return True
+    if len(anchor) >= 5 and anchor[:5] in text:
+        return True
+    return False
+
+
+def _name_anchors_satisfied(tz_item: TZItem, matched_name: str) -> bool:
+    anchors = name_anchor_tokens(tz_item)
+    if not anchors:
+        return True
     choice = normalize_name(matched_name)
+    return any(_token_matches_anchor(anchor, choice) for anchor in anchors)
+
+
+def combined_match_score(tz_item: TZItem, matched_name: str) -> float:
+    choice = normalize_name(matched_name)
+    if not choice:
+        return 0.0
+
     name_score = name_match_score(normalize_name(tz_item.name), choice)
-    if spec_line and not is_kit_composition_header(spec_line):
-        spec_score = name_match_score(normalize_name(spec_line), choice)
-        return max(name_score, spec_score)
-    return name_score
+    if not has_meaningful_spec(tz_item):
+        return name_score
+
+    spec_line = primary_spec_line(tz_item.specifications)
+    spec_norm = normalize_name(spec_line)
+    combined_query = normalize_name(tz_match_query(tz_item))
+    combined_score = name_match_score(combined_query, choice)
+    spec_score = name_match_score(spec_norm, choice)
+    return max(combined_score, name_score, spec_score)
+
+
+def relevance_score(tz_item: TZItem, matched_name: str) -> float:
+    return combined_match_score(tz_item, matched_name)
 
 
 def is_relevant_match(
@@ -198,35 +291,34 @@ def is_relevant_match(
     if _category_conflict(tz_item, matched_name):
         return False
 
-    name_score = name_match_score(
-        normalize_name(tz_item.name),
-        normalize_name(matched_name),
-    )
-    effective_score = relevance_score(tz_item, matched_name)
+    spec_line = primary_spec_line(tz_item.specifications)
+    has_spec = has_meaningful_spec(tz_item)
+    choice = normalize_name(matched_name)
+    name_score = name_match_score(normalize_name(tz_item.name), choice)
+    combined_score = combined_match_score(tz_item, matched_name)
     if score is not None:
-        effective_score = min(float(score), effective_score, name_score)
-
-    if name_score >= min_score:
-        return True
+        combined_score = min(float(score), combined_score)
 
     required = spec_required_tokens(tz_item)
+    strong_spec_match = bool(
+        required and len(required) >= 2 and _required_tokens_present(required, matched_name)
+    )
+    if has_spec and not _name_anchors_satisfied(tz_item, matched_name) and not strong_spec_match:
+        return False
+
     if required and not _required_tokens_present(required, matched_name):
         return False
 
-    spec_line = primary_spec_line(tz_item.specifications)
-    if (
-        spec_line
-        and not is_kit_composition_header(spec_line)
-        and normalize_name(spec_line) != normalize_name(tz_item.name)
-    ):
-        spec_score = name_match_score(
-            normalize_name(spec_line),
-            normalize_name(matched_name),
-        )
+    if has_spec:
+        if combined_score >= min_score:
+            return True
+        spec_score = name_match_score(normalize_name(spec_line), choice)
         if spec_score >= min_score:
             return True
         if required:
             return False
-        return effective_score >= EXACT_MATCH_THRESHOLD
+        return combined_score >= EXACT_MATCH_THRESHOLD
 
-    return effective_score >= min_score
+    if name_score >= min_score:
+        return True
+    return combined_score >= min_score

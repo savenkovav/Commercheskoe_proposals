@@ -11,9 +11,9 @@ from src.services.fuzzy_scoring import name_match_score
 from src.services.meilisearch_service import meilisearch_available, search_products
 from src.services.tz_search import (
     build_search_queries,
+    combined_match_score,
     is_relevant_match,
-    primary_search_text,
-    relevance_score,
+    tz_match_query,
 )
 from src.services.models import (
     CatalogItem,
@@ -101,7 +101,7 @@ class ItemMatcher:
                 score=float(score),
             ):
                 continue
-            adjusted_score = relevance_score(tz_item, payload_name) if tz_item else float(score)
+            adjusted_score = combined_match_score(tz_item, payload_name) if tz_item else float(score)
             adjusted_score = self._adjust_score(query, choice, adjusted_score)
             detail = ""
             if source == MatchSource.PRICE_LIST and isinstance(payload, PriceListItem):
@@ -176,47 +176,46 @@ class ItemMatcher:
         merged: dict[str, FuzzyHit] = {}
         source_key = self._meili_source_key(source)
 
-        for query in build_search_queries(tz_item):
-            for meili_hit in search_products(query, source=source_key, limit=max(limit, 8)):
-                index = meili_hit.source_index
-                if index < 0 or index >= len(payloads):
-                    continue
-                payload = payloads[index]
-                payload_name = getattr(payload, "name", str(payload))
-                if not is_relevant_match(
-                    tz_item,
-                    payload_name,
-                    score=float(meili_hit.score),
-                ):
-                    continue
-                adjusted_score = (
-                    relevance_score(tz_item, payload_name)
-                    if tz_item
-                    else float(meili_hit.score)
-                )
-                adjusted_score = self._adjust_score(
-                    normalize_name(query),
-                    normalize_name(payload_name),
-                    adjusted_score,
-                )
-                detail = meili_hit.detail or ""
-                if source == MatchSource.PRICE_LIST and isinstance(payload, PriceListItem):
-                    detail = detail or f"{payload.supplier} / {payload.sheet} / код {payload.code}"
-                elif source == MatchSource.CATALOG and isinstance(payload, CatalogItem):
-                    detail = detail or payload.source_file
-                elif source == MatchSource.REGISTRY and isinstance(payload, RegistryItem):
-                    detail = detail or f"остаток: {payload.quantity} шт."
+        try:
+            for query in build_search_queries(tz_item):
+                for meili_hit in search_products(query, source=source_key, limit=max(limit, 8)):
+                    index = meili_hit.source_index
+                    if index < 0 or index >= len(payloads):
+                        continue
+                    payload = payloads[index]
+                    payload_name = getattr(payload, "name", str(payload))
+                    if not is_relevant_match(
+                        tz_item,
+                        payload_name,
+                        score=float(meili_hit.score),
+                    ):
+                        continue
+                    adjusted_score = combined_match_score(tz_item, payload_name)
+                    adjusted_score = self._adjust_score(
+                        normalize_name(query),
+                        normalize_name(payload_name),
+                        adjusted_score,
+                    )
+                    detail = meili_hit.detail or ""
+                    if source == MatchSource.PRICE_LIST and isinstance(payload, PriceListItem):
+                        detail = detail or f"{payload.supplier} / {payload.sheet} / код {payload.code}"
+                    elif source == MatchSource.CATALOG and isinstance(payload, CatalogItem):
+                        detail = detail or payload.source_file
+                    elif source == MatchSource.REGISTRY and isinstance(payload, RegistryItem):
+                        detail = detail or f"остаток: {payload.quantity} шт."
 
-                hit = FuzzyHit(
-                    name=payload_name,
-                    score=adjusted_score,
-                    payload=payload,
-                    source=source,
-                    detail=detail,
-                )
-                existing = merged.get(hit.name)
-                if existing is None or hit.score > existing.score:
-                    merged[hit.name] = hit
+                    hit = FuzzyHit(
+                        name=payload_name,
+                        score=adjusted_score,
+                        payload=payload,
+                        source=source,
+                        detail=detail,
+                    )
+                    existing = merged.get(hit.name)
+                    if existing is None or hit.score > existing.score:
+                        merged[hit.name] = hit
+        except Exception:
+            return []
 
         hits = sorted(merged.values(), key=lambda item: item.score, reverse=True)
         return hits[:limit]
@@ -288,17 +287,19 @@ class ItemMatcher:
         if len(hits) == 1:
             return hits[0]
 
-        norm_query = normalize_name(primary_search_text(tz_item))
+        norm_query = normalize_name(tz_match_query(tz_item))
         query_tokens = set(norm_query.split())
 
-        def rank_key(hit: FuzzyHit) -> tuple[float, int, int, float, int, int]:
+        def rank_key(hit: FuzzyHit) -> tuple[float, float, int, int, float, int, int]:
             norm_name = normalize_name(hit.name)
             name_tokens = set(norm_name.split())
             token_overlap = len(query_tokens & name_tokens) / max(len(query_tokens), 1)
+            combined = combined_match_score(tz_item, hit.name)
             return (
+                combined,
                 hit.score,
                 int(norm_query == norm_name),
-                int(norm_query in norm_name),
+                int(norm_query in norm_name or norm_name in norm_query),
                 token_overlap,
                 len(hit.name),
                 int(norm_name in norm_query),
@@ -495,7 +496,7 @@ class ItemMatcher:
         if not hits:
             return None
 
-        query = normalize_name(tz_item.name)
+        query = normalize_name(tz_match_query(tz_item))
         query_tokens = set(query.split())
 
         scored_hits: list[tuple[float, FuzzyHit]] = []
