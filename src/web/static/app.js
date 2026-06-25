@@ -469,13 +469,81 @@ function collectMarketEstimateQuotes(item) {
   return rows;
 }
 
-function renderMarketEstimateLink(q) {
+function isMarketEstimateLabel(label) {
+  const text = (label || "").toLowerCase();
+  return text.includes("оценка рынка") || text.includes("оценка ai");
+}
+
+function marketplaceLabelFromUrl(url) {
+  const lower = (url || "").toLowerCase();
+  if (lower.includes("ozon.ru")) return "Ozon";
+  if (lower.includes("market.yandex.ru")) return "Яндекс.Маркет";
+  if (lower.includes("wildberries.ru")) return "Wildberries";
+  return shortenUrlForDisplay(url);
+}
+
+function buildMarketplaceSearchUrl(platformLabel, query) {
+  const q = encodeURIComponent((query || "").trim());
+  if (!q) return "";
+  const lower = platformLabel.toLowerCase();
+  if (lower.includes("ozon")) return `https://www.ozon.ru/search/?text=${q}`;
+  if (lower.includes("яндекс") || lower.includes("market")) {
+    return `https://market.yandex.ru/search?text=${q}`;
+  }
+  if (lower.includes("wild")) {
+    return `https://www.wildberries.ru/catalog/0/search.aspx?search=${q}`;
+  }
+  return `https://www.ozon.ru/search/?text=${q}`;
+}
+
+function collectMarketplaceSearchLinks(item) {
+  const links = [];
+  const seen = new Set();
+  const push = (url, label) => {
+    if (!url || !isSearchListingUrl(url) || seen.has(url)) return;
+    seen.add(url);
+    links.push({ url, label: label || marketplaceLabelFromUrl(url) });
+  };
+
+  if (Array.isArray(item.marketplace_urls)) {
+    for (const url of item.marketplace_urls) push(url);
+  }
+
+  for (const q of [...(item.comparison || []), ...(item.competitors || [])]) {
+    if (q.source !== "web" || !q.url || !isSearchListingUrl(q.url)) continue;
+    const label = (q.label || "").replace(/^Интернет:\s*/i, "").trim();
+    push(q.url, label);
+  }
+
+  if (!links.length) {
+    const query = item.matched_name || item.name || "";
+    for (const platform of ["Ozon", "Яндекс.Маркет", "Wildberries"]) {
+      push(buildMarketplaceSearchUrl(platform, query), platform);
+    }
+  }
+  return links;
+}
+
+function renderMarketplaceSearchLinks(item) {
+  const links = collectMarketplaceSearchLinks(item);
+  if (!links.length) return "";
+  return links
+    .map(
+      (entry) =>
+        `<a href="${escapeHtml(entry.url)}" target="_blank" rel="noopener">${escapeHtml(entry.label)}</a>`,
+    )
+    .join(" · ");
+}
+
+function renderMarketEstimateLink(q, item) {
   const url = q.url && !isSearchListingUrl(q.url) ? q.url : null;
   const title = (q.matched_name || "").trim();
   if (url) {
     const text = title || shortenUrlForDisplay(url);
     return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`;
   }
+  const marketLinks = item ? renderMarketplaceSearchLinks(item) : "";
+  if (marketLinks) return marketLinks;
   if (title) return escapeHtml(title);
   return "—";
 }
@@ -489,7 +557,7 @@ function renderMarketEstimateInfo(item) {
       return `
     <div class="compare-block__market-estimate">
       <strong>${escapeHtml(q.label || "Интернет (оценка рынка)")}:</strong>
-      ${renderMarketEstimateLink(q)}${
+      ${renderMarketEstimateLink(q, item)}${
         q.match_score ? `<span class="muted"> · ${Math.round(q.match_score)}%</span>` : ""
       }${price != null ? `<span class="muted"> · ${fmtMoney(price)}</span>` : ""}
     </div>`;
@@ -1329,7 +1397,8 @@ function resolveItemSourceUrl(item) {
   for (const q of allWebQuotes) {
     if (q.url && !isSearchListingUrl(q.url)) return q.url;
   }
-  return null;
+  const marketLinks = collectMarketplaceSearchLinks(item);
+  return marketLinks[0]?.url || null;
 }
 
 function renderSourceDetailLine(item) {
@@ -1337,6 +1406,17 @@ function renderSourceDetailLine(item) {
   const parsed = parseSourceDetailText(item.source_detail);
   const label = parsed.label || item.source_detail;
   const url = parsed.url || resolveItemSourceUrl(item);
+  const productUrl = url && !isSearchListingUrl(url) ? url : null;
+  if (productUrl) {
+    return `<strong>Детали:</strong> <a href="${escapeHtml(productUrl)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+  }
+  const marketLinks = renderMarketplaceSearchLinks(item);
+  if (marketLinks && (isMarketEstimateLabel(label) || item.internet_priced)) {
+    const prefix = isMarketEstimateLabel(label)
+      ? "Интернет"
+      : label.replace(/\s*\([^)]*\)\s*$/, "").trim() || "Интернет";
+    return `<strong>Детали:</strong> ${escapeHtml(prefix)} · ${marketLinks}`;
+  }
   if (url) {
     return `<strong>Детали:</strong> <a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
   }

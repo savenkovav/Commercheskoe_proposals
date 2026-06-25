@@ -39,7 +39,7 @@ from src.services.markup_settings import get_markup_percent, set_markup_percent
 from src.services.pricing_rules import effective_markup_percent, format_markup_percent
 from src.services.meilisearch_service import meilisearch_health
 from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
-from src.services.web_quote_priority import resolve_price_source_url
+from src.services.web_quote_priority import pick_marketplace_search_urls, resolve_price_source_url
 from src.services.tz_parser import resolve_tz_upload_filename
 from src.services.tz_parser import extract_tz_document_text
 from src.services.tz_rag_service import RagIndex, TZRagService
@@ -303,6 +303,7 @@ def _internet_url_from_result(result: MatchResult) -> str | None:
         result.comparison,
         unit_base_price=result.unit_base_price,
         preferred=preferred,
+        product_name=result.tz_item.name,
     )
     if url:
         return url
@@ -310,7 +311,21 @@ def _internet_url_from_result(result: MatchResult) -> str | None:
     match = re.search(r"https?://[^\s|]+", detail)
     if match:
         return match.group(0).rstrip("|")
-    return None
+    fallbacks = pick_marketplace_search_urls(result.comparison, result.tz_item.name, limit=1)
+    return fallbacks[0] if fallbacks else None
+
+
+def _marketplace_urls_from_result(result: MatchResult) -> list[str]:
+    has_product_url = any(
+        quote.source == "web"
+        and quote.url
+        and "search" not in (quote.url or "").lower()
+        and "catalog/0/search" not in (quote.url or "").lower()
+        for quote in result.comparison
+    )
+    if has_product_url:
+        return []
+    return pick_marketplace_search_urls(result.comparison, result.tz_item.name, limit=3)
 
 
 def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
@@ -345,6 +360,7 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
         "applied_markup_pct": effective_markup_percent(result),
         "applied_markup_label": format_markup_percent(effective_markup_percent(result)),
         "internet_url": _internet_url_from_result(result),
+        "marketplace_urls": _marketplace_urls_from_result(result),
         "comparison": [_price_quote_to_dict(q) for q in result.comparison],
         "competitors": [_price_quote_to_dict(q) for q in result.competitors],
         "kit_components": [_kit_component_to_dict(k) for k in result.kit_components],

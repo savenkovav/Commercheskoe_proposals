@@ -286,6 +286,7 @@ class TZMatchService:
         )
         primary.comparison = sort_web_quotes(primary.comparison)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
+        self._ensure_marketplace_reference_links(primary, prefs)
         self._ensure_internet_comparison(primary)
         self._promote_internet_status(primary)
         self._ensure_internet_source_detail(primary)
@@ -1217,6 +1218,7 @@ class TZMatchService:
                 [web_quote],
                 unit_base_price=base_price,
                 preferred=web_quote,
+                product_name=tz_item.name,
             ),
             internet_priced=True,
         )
@@ -1377,6 +1379,7 @@ class TZMatchService:
                 result.comparison,
                 unit_base_price=base_price,
                 preferred=best,
+                product_name=result.tz_item.name,
             )
         else:
             result.source_detail = best.label
@@ -1505,8 +1508,6 @@ class TZMatchService:
             return None
         urls = competitor_urls_for_item([], tz_item.name, limit=1)
         url = urls[0] if urls else None
-        if url and is_search_listing_url(url):
-            url = None
         matched_name = str(web_result.get("matched_name") or tz_item.name)
         return PriceQuote(
             source="web",
@@ -1636,7 +1637,43 @@ class TZMatchService:
             result.comparison,
             unit_base_price=result.unit_base_price,
             preferred=preferred,
+            product_name=result.tz_item.name,
         )
+
+    def _ensure_marketplace_reference_links(
+        self,
+        result: MatchResult,
+        prefs: KpPreferences,
+    ) -> None:
+        if "web" in prefs.disabled_sources or not WEB_SEARCH_ENABLED:
+            return
+        has_product_url = any(
+            quote.source == "web"
+            and quote.url
+            and not is_search_listing_url(quote.url)
+            for quote in result.comparison
+        )
+        if has_product_url:
+            return
+        needs_links = result.internet_priced or any(
+            "оценка рынка" in (quote.label or "").lower()
+            or "оценка ai" in (quote.label or "").lower()
+            for quote in result.comparison
+            if quote.source == "web"
+        )
+        if not needs_links:
+            return
+        existing_search_urls = {
+            quote.url
+            for quote in result.comparison
+            if quote.source == "web" and quote.url and is_search_listing_url(quote.url)
+        }
+        if len(existing_search_urls) >= 3:
+            return
+        _, ref_quotes = self._fetch_internet_comparison_fast(result.tz_item, prefs)
+        if not ref_quotes:
+            return
+        self._extend_comparison(result, ref_quotes)
 
     @staticmethod
     def _best_web_priced_quote_with_url(

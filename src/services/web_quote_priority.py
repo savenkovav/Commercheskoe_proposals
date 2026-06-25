@@ -217,11 +217,17 @@ def resolve_price_source_url(
     *,
     unit_base_price: float | None = None,
     preferred: PriceQuote | None = None,
+    product_name: str | None = None,
 ) -> str | None:
     if preferred and preferred.url:
         return preferred.url
 
-    url = pick_internet_url(quotes, unit_base_price=unit_base_price)
+    name = product_name or (preferred.matched_name if preferred else "") or ""
+    url = pick_internet_url(
+        quotes,
+        unit_base_price=unit_base_price,
+        product_name=name or None,
+    )
     if url:
         return url
 
@@ -243,6 +249,10 @@ def resolve_price_source_url(
     for quote in quotes:
         if quote.source == "web" and quote.url and not is_search_listing_url(quote.url):
             return quote.url
+    if name:
+        fallbacks = pick_marketplace_search_urls(quotes, name, limit=1)
+        if fallbacks:
+            return fallbacks[0]
     return None
 
 
@@ -252,25 +262,61 @@ def enrich_source_detail_with_price_url(
     *,
     unit_base_price: float | None = None,
     preferred: PriceQuote | None = None,
+    product_name: str | None = None,
 ) -> str:
     label, existing_url = parse_source_detail(source_detail)
     if existing_url:
         return source_detail
 
+    name = product_name or (preferred.matched_name if preferred else "") or ""
     url = resolve_price_source_url(
         quotes,
         unit_base_price=unit_base_price,
         preferred=preferred,
+        product_name=name or None,
     )
     if preferred and preferred.label and not label:
         label = preferred.label
     return format_source_detail(label, url)
 
 
+def pick_marketplace_search_urls(
+    quotes: list[PriceQuote],
+    product_name: str,
+    *,
+    limit: int = 3,
+) -> list[str]:
+    from src.services.competitor_urls import competitor_urls_for_item
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for quote in quotes:
+        if quote.source != "web" or not quote.url:
+            continue
+        if not is_search_listing_url(quote.url):
+            continue
+        if quote.url in seen:
+            continue
+        seen.add(quote.url)
+        urls.append(quote.url)
+        if len(urls) >= limit:
+            return urls
+
+    for url in competitor_urls_for_item([], product_name, limit=limit):
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
 def pick_internet_url(
     quotes: list[PriceQuote],
     *,
     unit_base_price: float | None = None,
+    product_name: str | None = None,
 ) -> str | None:
     eligible = [
         quote
@@ -298,4 +344,8 @@ def pick_internet_url(
     for quote in quotes:
         if quote.source == "web" and quote.url and not is_search_listing_url(quote.url):
             return quote.url
+    if product_name:
+        fallbacks = pick_marketplace_search_urls(quotes, product_name, limit=1)
+        if fallbacks:
+            return fallbacks[0]
     return None
