@@ -20,7 +20,9 @@ services:
       - app-network
 
   kp-web:
-    build: .
+    build:
+      context: .
+      network: host
     container_name: comm-proposals-web
     restart: unless-stopped
     env_file:

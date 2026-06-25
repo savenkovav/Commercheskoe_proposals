@@ -18,8 +18,8 @@ fi
 
 mkdir -p /etc/docker
 
-if [[ -f "$DAEMON_JSON" ]] && grep -q 'registry-mirrors' "$DAEMON_JSON" 2>/dev/null; then
-  echo "Зеркала Docker уже настроены: $DAEMON_JSON"
+if [[ -f "$DAEMON_JSON" ]] && grep -q 'registry-mirrors' "$DAEMON_JSON" 2>/dev/null && grep -q '"dns"' "$DAEMON_JSON" 2>/dev/null; then
+  echo "Зеркала и DNS Docker уже настроены: $DAEMON_JSON"
   exit 0
 fi
 
