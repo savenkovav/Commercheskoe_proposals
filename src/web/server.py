@@ -8,14 +8,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.logging_config import setup_logging
 from src.services.app_state import get_processor, reload_processor
 from src.config import (
+    AUTH_ENABLED,
     CATALOG_PATH,
     OUTPUT_DIR,
     PROJECT_ROOT,
@@ -26,6 +27,9 @@ from src.config import (
     WEB_HOST,
     WEB_PORT,
 )
+from src.services.auth_service import AUTH_COOKIE_NAME, ensure_default_admin, resolve_user_by_token
+from src.services.user_db import get_user_database
+from src.web.auth_routes import admin_router, auth_router, history_router
 from src.services.kp_chat_service import KpChatService, WELCOME_MESSAGE
 from src.services.kp_preferences import KpPreferences
 from src.services.markup_settings import get_markup_percent, set_markup_percent
@@ -62,6 +66,15 @@ PRICE_EXTENSIONS = (".xls", ".xlsx")
 DEMO_TZ_PATH = PROJECT_ROOT / "data" / "sample_tz.docx"
 
 app = FastAPI(title="КП — коммерческие предложения", version="1.0.0")
+app.include_router(auth_router)
+app.include_router(admin_router)
+app.include_router(history_router)
+
+
+@app.on_event("startup")
+def _startup_auth() -> None:
+    if AUTH_ENABLED:
+        ensure_default_admin()
 
 
 @app.on_event("startup")
@@ -426,6 +439,92 @@ def _static_source_response(source_id: str) -> dict[str, Any]:
         "registry": len(processor.registry),
     }
     return {"entry": manager.to_dict(source_id, counts[source_id])}
+
+
+def _is_public_web_path(path: str) -> bool:
+    if path in {"/login.html"}:
+        return True
+    if path.startswith("/app.") or path.endswith((".css", ".js", ".svg", ".ico")):
+        return True
+    if path == "/api/auth/login":
+        return True
+    return False
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+    if not AUTH_ENABLED or _is_public_web_path(request.url.path):
+        return await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+
+    token = request.cookies.get(AUTH_COOKIE_NAME) or request.headers.get("X-Auth-Token")
+    user = resolve_user_by_token(token)
+    if user is None:
+        return JSONResponse({"detail": "Требуется авторизация"}, status_code=401)
+    request.state.user = user
+    request.state.auth_token = token
+    return await call_next(request)
+
+
+def _current_user(request: Request):
+    return getattr(request.state, "user", None)
+
+
+def _record_tz_upload(
+    request: Request,
+    *,
+    original_filename: str,
+    items_count: int,
+    task_mode: str,
+    session_id: str,
+) -> None:
+    user = _current_user(request)
+    if not AUTH_ENABLED or user is None:
+        return
+    get_user_database().record_tz_upload(
+        user.id,
+        filename=original_filename,
+        original_filename=original_filename,
+        items_count=items_count,
+        task_mode=task_mode,
+        session_id=session_id,
+    )
+
+
+def _record_file_export(
+    request: Request,
+    *,
+    session_id: str | None,
+    tz_filename: str | None,
+    xlsx_filename: str,
+    pdf_filename: str,
+) -> None:
+    user = _current_user(request)
+    if not AUTH_ENABLED or user is None:
+        return
+    get_user_database().record_file_export(
+        user.id,
+        session_id=session_id,
+        tz_filename=tz_filename,
+        xlsx_filename=xlsx_filename,
+        pdf_filename=pdf_filename,
+    )
+
+
+def _record_download(request: Request, filename: str) -> None:
+    user = _current_user(request)
+    if not AUTH_ENABLED or user is None:
+        return
+    db = get_user_database()
+    export = db.find_export_by_filename(filename)
+    file_type = "pdf" if filename.lower().endswith(".pdf") else "xlsx"
+    db.record_download(
+        user.id,
+        filename=filename,
+        file_type=file_type,
+        export_id=int(export["id"]) if export else None,
+    )
 
 
 def _kp_chat_service() -> KpChatService:
@@ -957,7 +1056,7 @@ def api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
 
 
 @app.post("/api/kp/form")
-def api_kp_form(body: KpFormRequest) -> dict[str, Any]:
+def api_kp_form(request: Request, body: KpFormRequest) -> dict[str, Any]:
     from src.services.kp_selection import KpSelectionItem, apply_kp_selections
     from src.services.pdf_generator import PdfGenerator
 
@@ -1012,11 +1111,19 @@ def api_kp_form(body: KpFormRequest) -> dict[str, Any]:
         "selected_count": len(selected_results),
     }
     _attach_download_info(payload, xlsx_path, pdf_path=pdf_path)
+    _record_file_export(
+        request,
+        session_id=session.session_id,
+        tz_filename=session.tz_filename,
+        xlsx_filename=xlsx_path.name,
+        pdf_filename=pdf_path.name,
+    )
     return payload
 
 
 @app.post("/api/process/upload")
 async def api_process_upload(
+    request: Request,
     file: UploadFile = File(...),
     use_ai: bool = Form(default=True),
     task_mode: str = Form(default="task1"),
@@ -1032,13 +1139,22 @@ async def api_process_upload(
         with tempfile.TemporaryDirectory() as tmpdir:
             tz_path = Path(tmpdir) / filename
             tz_path.write_bytes(content)
-            return _process_tz_path(
+            payload = _process_tz_path(
                 tz_path,
                 use_ai=use_ai,
                 task_mode=task_mode,
                 parse_only=parse_only,
                 filename=filename,
             )
+            if payload.get("session_id"):
+                _record_tz_upload(
+                    request,
+                    original_filename=filename,
+                    items_count=len(payload.get("items") or []),
+                    task_mode=str(payload.get("task_mode") or task_mode),
+                    session_id=str(payload["session_id"]),
+                )
+            return payload
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -1047,13 +1163,14 @@ async def api_process_upload(
 
 
 @app.get("/api/files/{filename}")
-def api_download_file(filename: str) -> FileResponse:
+def api_download_file(request: Request, filename: str) -> FileResponse:
     path = _safe_output_path(filename)
     media_type = (
         "application/pdf"
         if path.suffix.lower() == ".pdf"
         else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+    _record_download(request, path.name)
     return FileResponse(
         path,
         media_type=media_type,

@@ -80,6 +80,14 @@ LOCAL_MATCH_THRESHOLD = int(os.getenv("LOCAL_MATCH_THRESHOLD", "95"))
 OUTPUT_DIR = PROJECT_ROOT / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+USERS_DB_PATH = PROJECT_ROOT / os.getenv("USERS_DB_PATH", "data/users.db")
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
 PII_ANONYMIZATION_ENABLED = os.getenv("PII_ANONYMIZATION_ENABLED", "true").lower() in {
     "1",
     "true",

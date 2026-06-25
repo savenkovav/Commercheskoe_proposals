@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1419">
   <title>КП-Ассистент</title>
-  <link rel="stylesheet" href="/app.css?v=20260623a">
+  <link rel="stylesheet" href="/app.css?v=20260623c">
 </head>
 <body>
   <div class="layout">
@@ -17,7 +17,11 @@
           <p class="header__subtitle">Поиск · себестоимость · конкуренты · Excel КП</p>
         </div>
       </div>
-      <div class="header__stats" id="headerStats"></div>
+      <div class="header__actions">
+        <div class="header__stats" id="headerStats"></div>
+        <div class="header__user hidden" id="headerUser"></div>
+        <button class="btn btn--secondary btn--small hidden" type="button" id="btnLogout">Выйти</button>
+      </div>
     </header>
 
     <nav class="tabs" role="tablist">
@@ -26,6 +30,8 @@
       <button class="tabs__btn" data-tab="prices" role="tab">Прайсы</button>
       <button class="tabs__btn" data-tab="competitors" role="tab">Сайты товаров</button>
       <button class="tabs__btn" data-tab="status" role="tab">Статус</button>
+      <button class="tabs__btn hidden" data-tab="history" id="tabHistoryBtn" role="tab">История</button>
+      <button class="tabs__btn hidden" data-tab="users" id="tabUsersBtn" role="tab">Настройки пользователей</button>
     </nav>
 
     <main>
@@ -118,8 +124,13 @@
 
         <div class="card" id="kpChatCard">
           <div class="chat-header">
-            <h2>Диалог с КП-Ассистентом</h2>
-            <p class="muted">Напишите название товара — результат сразу. Для КП по ТЗ загрузите файл и выберите задачу.</p>
+            <div class="chat-header__row">
+              <div>
+                <h2>Диалог с КП-Ассистентом</h2>
+                <p class="muted">Напишите название товара — результат сразу. Для КП по ТЗ загрузите файл и выберите задачу.</p>
+              </div>
+              <button class="btn btn--secondary btn--small" type="button" id="btnKpHistory">История</button>
+            </div>
             <div class="assistant-mode" id="assistantMode">
               <span class="assistant-mode__label">Задача:</span>
               <span class="assistant-mode__value" id="taskModeLabel">не выбрана</span>
@@ -171,8 +182,13 @@
 
           <div class="chat-main card">
             <div class="chat-header">
-              <h2>Быстрый поиск позиции</h2>
-              <p class="muted">Без загрузки ТЗ: одна позиция — сразу каталог, прайсы, реестр и конкуренты. Пример: <code>мольберт</code> или <code>термометр | цена, остаток</code></p>
+              <div class="chat-header__row">
+                <div>
+                  <h2>Быстрый поиск позиции</h2>
+                  <p class="muted">Без загрузки ТЗ: одна позиция — сразу каталог, прайсы, реестр и конкуренты. Пример: <code>мольберт</code> или <code>термометр | цена, остаток</code></p>
+                </div>
+                <button class="btn btn--secondary btn--small" type="button" id="btnLookupHistory">История</button>
+              </div>
             </div>
             <div class="chat-messages" id="chatMessages" aria-live="polite">
               <div class="chat-welcome">
@@ -294,7 +310,88 @@
           <ul class="price-list" id="statusPriceList"></ul>
         </div>
       </section>
+
+      <section class="panel" id="panel-history" data-panel="history">
+        <div class="card">
+          <div class="card__head">
+            <h2>История скачиваний</h2>
+            <button class="btn btn--secondary btn--small" type="button" id="btnRefreshHistory">Обновить</button>
+          </div>
+          <p class="muted" id="historyHint"></p>
+          <div class="table-wrap">
+            <table class="data-table" id="historyDownloadsTable">
+              <thead>
+                <tr>
+                  <th>Файл</th>
+                  <th class="col-history-user hidden" id="historyUserCol">Менеджер</th>
+                  <th>ТЗ</th>
+                  <th>Дата</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h2>История загрузок ТЗ</h2>
+          <div class="table-wrap">
+            <table class="data-table" id="historyUploadsTable">
+              <thead>
+                <tr>
+                  <th>Файл</th>
+                  <th class="col-history-user hidden" id="historyUploadUserCol">Менеджер</th>
+                  <th>Позиций</th>
+                  <th>Задача</th>
+                  <th>Дата</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-users" data-panel="users">
+        <div class="card">
+          <div class="card__head">
+            <h2>Настройки пользователей</h2>
+            <button class="btn btn--primary" type="button" id="btnAddManager">Добавить менеджера</button>
+          </div>
+          <p class="muted">Менеджеры получают доступ к поиску и формированию КП. Администраторы могут управлять пользователями.</p>
+          <div class="table-wrap">
+            <table class="data-table" id="usersTable">
+              <thead>
+                <tr>
+                  <th>Логин</th>
+                  <th>Роль</th>
+                  <th>Создан</th>
+                  <th class="col-actions"></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </main>
+  </div>
+
+  <div class="modal hidden" id="userCredentialsModal" role="dialog" aria-modal="true">
+    <div class="modal__backdrop" data-close-modal></div>
+    <div class="modal__dialog">
+      <h3 id="userCredentialsTitle">Учётные данные</h3>
+      <p class="muted" id="userCredentialsHint">Сохраните логин и пароль — пароль показывается один раз.</p>
+      <div class="credentials-box" id="userCredentialsBox"></div>
+      <div class="form-stack hidden" id="userEditForm">
+        <input type="text" id="editUserLogin" class="input" placeholder="Новый логин">
+        <input type="text" id="editUserPassword" class="input" placeholder="Новый пароль">
+      </div>
+      <div class="modal__actions">
+        <button class="btn btn--secondary" type="button" data-close-modal>Закрыть</button>
+        <button class="btn btn--primary hidden" type="button" id="btnSaveUserCredentials">Сохранить</button>
+      </div>
+    </div>
   </div>
 
   <div class="toast hidden" id="toast"></div>
@@ -311,6 +408,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260623b"></script>
+  <script src="/app.js?v=20260623c"></script>
 </body>
 </html>

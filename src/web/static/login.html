@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1419">
+  <title>Вход — КП-Ассистент</title>
+  <link rel="stylesheet" href="/app.css?v=20260623c">
+</head>
+<body class="login-page">
+  <div class="login-card">
+    <div class="login-card__brand">
+      <span class="header__logo">КП</span>
+      <div>
+        <h1>КП-Ассистент</h1>
+        <p class="muted">Вход в систему</p>
+      </div>
+    </div>
+    <form class="login-form" id="loginForm">
+      <label class="login-form__field">
+        <span>Логин</span>
+        <input type="text" id="loginInput" class="input" autocomplete="username" required>
+      </label>
+      <label class="login-form__field">
+        <span>Пароль</span>
+        <input type="password" id="passwordInput" class="input" autocomplete="current-password" required>
+      </label>
+      <p class="login-form__error hidden" id="loginError"></p>
+      <button class="btn btn--primary login-form__submit" type="submit" id="btnLogin">Войти</button>
+    </form>
+  </div>
+  <script>
+    async function api(path, options = {}) {
+      const res = await fetch(path, { credentials: "include", ...options });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data.detail;
+        const message = typeof detail === "string" ? detail : detail?.msg || `Ошибка ${res.status}`;
+        throw new Error(message);
+      }
+      return data;
+    }
+
+    async function checkSession() {
+      try {
+        await api("/api/auth/me");
+        window.location.href = "/";
+      } catch {
+        /* stay on login */
+      }
+    }
+
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const errorEl = document.getElementById("loginError");
+      const btn = document.getElementById("btnLogin");
+      errorEl.classList.add("hidden");
+      btn.disabled = true;
+      try {
+        await api("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            login: document.getElementById("loginInput").value.trim(),
+            password: document.getElementById("passwordInput").value,
+          }),
+        });
+        window.location.href = "/";
+      } catch (err) {
+        errorEl.textContent = err.message || "Ошибка входа";
+        errorEl.classList.remove("hidden");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    checkSession();
+  </script>
+</body>
+</html>

@@ -10,6 +10,331 @@ function isAllowedTzFile(name) {
 const fmtMoney = (v) =>
   v == null ? "—" : `${Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2 })} ₽`;
 
+let currentUser = null;
+let openUserMenuId = null;
+let userEditTargetId = null;
+
+const ROLE_LABELS = { admin: "Администратор", manager: "Менеджер" };
+
+function formatHistoryDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function switchToTab(tabName) {
+  $$(".tabs__btn").forEach((b) => {
+    b.classList.toggle("tabs__btn--active", b.dataset.tab === tabName);
+  });
+  $$(".panel").forEach((p) => {
+    p.classList.toggle("panel--active", p.dataset.panel === tabName);
+  });
+  if (tabName === "prices") loadPrices();
+  if (tabName === "competitors") loadCompetitors();
+  if (tabName === "status") loadStatus();
+  if (tabName === "history") loadHistory();
+  if (tabName === "users") loadUsers();
+}
+
+function updateAuthUi() {
+  const isAdmin = currentUser?.role === "admin";
+  const userEl = $("#headerUser");
+  const logoutBtn = $("#btnLogout");
+  const usersTab = $("#tabUsersBtn");
+  const historyTab = $("#tabHistoryBtn");
+
+  if (currentUser && userEl) {
+    userEl.classList.remove("hidden");
+    userEl.innerHTML = `
+      <span class="header__user-login">${escapeHtml(currentUser.login)}</span>
+      <span class="header__user-role">${escapeHtml(ROLE_LABELS[currentUser.role] || currentUser.role)}</span>`;
+  }
+  logoutBtn?.classList.toggle("hidden", !currentUser);
+  usersTab?.classList.toggle("hidden", !isAdmin);
+  historyTab?.classList.toggle("hidden", !currentUser);
+}
+
+async function ensureAuth() {
+  try {
+    currentUser = await api("/api/auth/me");
+    updateAuthUi();
+    return true;
+  } catch {
+    window.location.href = "/login.html";
+    return false;
+  }
+}
+
+async function logoutUser() {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } catch {
+    /* redirect anyway */
+  }
+  window.location.href = "/login.html";
+}
+
+function closeUserMenus() {
+  openUserMenuId = null;
+  document.querySelectorAll(".user-menu").forEach((menu) => menu.classList.add("hidden"));
+}
+
+function openUserCredentialsModal({ title, hint, html, showForm = false, userId = null }) {
+  const modal = $("#userCredentialsModal");
+  const form = $("#userEditForm");
+  const saveBtn = $("#btnSaveUserCredentials");
+  $("#userCredentialsTitle").textContent = title;
+  $("#userCredentialsHint").textContent = hint || "";
+  $("#userCredentialsBox").innerHTML = html || "";
+  $("#userCredentialsBox").classList.toggle("hidden", showForm);
+  form?.classList.toggle("hidden", !showForm);
+  saveBtn?.classList.toggle("hidden", !showForm);
+  userEditTargetId = userId;
+  if (showForm) {
+    $("#editUserLogin").value = "";
+    $("#editUserPassword").value = "";
+  }
+  modal?.classList.remove("hidden");
+}
+
+function closeUserCredentialsModal() {
+  $("#userCredentialsModal")?.classList.add("hidden");
+  userEditTargetId = null;
+}
+
+async function loadUsers() {
+  if (currentUser?.role !== "admin") return;
+  try {
+    const data = await api("/api/admin/users");
+    renderUsersTable(data.items || []);
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+function renderUsersTable(users) {
+  const tbody = $("#usersTable tbody");
+  if (!tbody) return;
+  if (!users.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">Пользователи не найдены</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = users
+    .map((user) => {
+      const isSelf = user.id === currentUser?.id;
+      const roleLabel = ROLE_LABELS[user.role] || user.role;
+      const menuItems = [];
+      if (user.role === "manager") {
+        menuItems.push(`<button type="button" class="user-menu__item" data-user-action="promote" data-user-id="${user.id}">Сделать админом</button>`);
+      }
+      menuItems.push(`<button type="button" class="user-menu__item" data-user-action="edit" data-user-id="${user.id}" data-user-login="${escapeHtml(user.login)}">Изменить логин или пароль</button>`);
+      if (!isSelf) {
+        menuItems.push(`<button type="button" class="user-menu__item user-menu__item--danger" data-user-action="delete" data-user-id="${user.id}">Удалить</button>`);
+      }
+      return `
+        <tr>
+          <td><code>${escapeHtml(user.login)}</code></td>
+          <td>${escapeHtml(roleLabel)}</td>
+          <td>${formatHistoryDate(user.created_at)}</td>
+          <td class="col-actions">
+            <div class="user-actions">
+              <button type="button" class="btn btn--icon" data-user-menu="${user.id}" aria-label="Действия">⋮</button>
+              <div class="user-menu hidden" id="userMenu-${user.id}">
+                ${menuItems.join("")}
+              </div>
+            </div>
+          </td>
+        </tr>`;
+    })
+    .join("");
+}
+
+async function createManager() {
+  try {
+    const data = await api("/api/admin/users/managers", { method: "POST" });
+    const user = data.user;
+    openUserCredentialsModal({
+      title: "Новый менеджер",
+      hint: "Сохраните логин и пароль — пароль показывается один раз.",
+      html: `
+        <p><strong>Логин:</strong> <code>${escapeHtml(user.login)}</code></p>
+        <p><strong>Пароль:</strong> <code>${escapeHtml(user.password)}</code></p>`,
+    });
+    await loadUsers();
+    showToast("Менеджер создан");
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+async function handleUserAction(action, userId, login = "") {
+  if (action === "promote") {
+    if (!window.confirm("Назначить пользователя администратором?")) return;
+    try {
+      await api(`/api/admin/users/${userId}/promote`, { method: "POST" });
+      await loadUsers();
+      showToast("Пользователь назначен администратором");
+    } catch (e) {
+      showToast(e.message, true);
+    }
+    return;
+  }
+
+  if (action === "edit") {
+    openUserCredentialsModal({
+      title: "Изменить логин или пароль",
+      hint: "Заполните новый логин и/или пароль. Допустимы латинские буквы и символы _ . @ % ! /",
+      showForm: true,
+      userId,
+    });
+    if (login) $("#editUserLogin").placeholder = `Текущий: ${login}`;
+    return;
+  }
+
+  if (action === "delete") {
+    if (!window.confirm("Удалить пользователя?")) return;
+    try {
+      await api(`/api/admin/users/${userId}`, { method: "DELETE" });
+      await loadUsers();
+      showToast("Пользователь удалён");
+    } catch (e) {
+      showToast(e.message, true);
+    }
+  }
+}
+
+async function saveUserCredentials() {
+  if (!userEditTargetId) return;
+  const login = $("#editUserLogin").value.trim();
+  const password = $("#editUserPassword").value.trim();
+  if (!login && !password) {
+    showToast("Укажите новый логин или пароль", true);
+    return;
+  }
+  try {
+    await api(`/api/admin/users/${userEditTargetId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login: login || null, password: password || null }),
+    });
+    closeUserCredentialsModal();
+    await loadUsers();
+    showToast("Данные обновлены");
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+async function loadHistory() {
+  try {
+    const data = await api("/api/history");
+    renderHistory(data);
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+function renderHistory(data) {
+  const isAdmin = data.role === "admin";
+  const hint = $("#historyHint");
+  if (hint) {
+    hint.textContent = isAdmin
+      ? "Все скачивания сформированных КП по всем менеджерам."
+      : "Ваши скачивания сформированных КП.";
+  }
+  document.querySelectorAll(".col-history-user").forEach((el) => {
+    el.classList.toggle("hidden", !isAdmin);
+  });
+
+  const downloadsBody = $("#historyDownloadsTable tbody");
+  const uploads = data.uploads || [];
+  const downloads = data.downloads || [];
+
+  if (downloadsBody) {
+    if (!downloads.length) {
+      downloadsBody.innerHTML = `<tr><td colspan="5" class="muted">Скачиваний пока нет</td></tr>`;
+    } else {
+      downloadsBody.innerHTML = downloads
+        .map((row) => `
+          <tr>
+            <td>${escapeHtml(row.filename)}</td>
+            <td class="col-history-user${isAdmin ? "" : " hidden"}">${escapeHtml(row.user_login)}</td>
+            <td>${escapeHtml(row.tz_filename || "—")}</td>
+            <td>${formatHistoryDate(row.downloaded_at)}</td>
+            <td><a class="btn btn--secondary btn--small" href="${escapeHtml(row.download_url)}?t=${Date.now()}" download>Скачать</a></td>
+          </tr>`)
+        .join("");
+    }
+  }
+
+  const uploadsBody = $("#historyUploadsTable tbody");
+  if (uploadsBody) {
+    if (!uploads.length) {
+      uploadsBody.innerHTML = `<tr><td colspan="5" class="muted">Загрузок ТЗ пока нет</td></tr>`;
+    } else {
+      uploadsBody.innerHTML = uploads
+        .map((row) => `
+          <tr>
+            <td>${escapeHtml(row.original_filename)}</td>
+            <td class="col-history-user${isAdmin ? "" : " hidden"}">${escapeHtml(row.user_login)}</td>
+            <td>${row.items_count ?? "—"}</td>
+            <td>${escapeHtml(taskModeLabel(row.task_mode))}</td>
+            <td>${formatHistoryDate(row.created_at)}</td>
+          </tr>`)
+        .join("");
+    }
+  }
+}
+
+function initAuth() {
+  $("#btnLogout")?.addEventListener("click", logoutUser);
+  $("#btnAddManager")?.addEventListener("click", createManager);
+  $("#btnRefreshHistory")?.addEventListener("click", loadHistory);
+  $("#btnKpHistory")?.addEventListener("click", () => switchToTab("history"));
+  $("#btnLookupHistory")?.addEventListener("click", () => switchToTab("history"));
+  $("#btnSaveUserCredentials")?.addEventListener("click", saveUserCredentials);
+
+  document.querySelectorAll("[data-close-modal]").forEach((el) => {
+    el.addEventListener("click", closeUserCredentialsModal);
+  });
+
+  document.addEventListener("click", (event) => {
+    const menuBtn = event.target.closest("[data-user-menu]");
+    if (menuBtn) {
+      event.stopPropagation();
+      const userId = menuBtn.dataset.userMenu;
+      const menu = document.getElementById(`userMenu-${userId}`);
+      const shouldOpen = openUserMenuId !== userId;
+      closeUserMenus();
+      if (shouldOpen && menu) {
+        menu.classList.remove("hidden");
+        openUserMenuId = userId;
+      }
+      return;
+    }
+
+    const actionBtn = event.target.closest("[data-user-action]");
+    if (actionBtn) {
+      event.stopPropagation();
+      closeUserMenus();
+      handleUserAction(actionBtn.dataset.userAction, Number(actionBtn.dataset.userId), actionBtn.dataset.userLogin);
+      return;
+    }
+
+    if (!event.target.closest(".user-actions")) {
+      closeUserMenus();
+    }
+  });
+}
+
 const fmtCompetitorPrice = (item) => {
   if (item?.price_label) return item.price_label;
   if (typeof item?.price === "string" && item.price && Number.isNaN(Number(item.price))) {
@@ -565,7 +890,11 @@ function formatApiErrorDetail(detail) {
 }
 
 async function api(path, options = {}) {
-  const res = await fetch(path, options);
+  const res = await fetch(path, { credentials: "include", ...options });
+  if (res.status === 401 && !path.includes("/api/auth/login")) {
+    window.location.href = "/login.html";
+    throw new Error("Требуется авторизация");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const message = formatApiErrorDetail(data.detail) || `Ошибка ${res.status}`;
@@ -577,13 +906,7 @@ async function api(path, options = {}) {
 function initTabs() {
   $$(".tabs__btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      $$(".tabs__btn").forEach((b) => b.classList.remove("tabs__btn--active"));
-      $$(".panel").forEach((p) => p.classList.remove("panel--active"));
-      btn.classList.add("tabs__btn--active");
-      $(`#panel-${btn.dataset.tab}`).classList.add("panel--active");
-      if (btn.dataset.tab === "prices") loadPrices();
-      if (btn.dataset.tab === "competitors") loadCompetitors();
-      if (btn.dataset.tab === "status") loadStatus();
+      switchToTab(btn.dataset.tab);
     });
   });
 }
@@ -2937,7 +3260,11 @@ function initAiToggle() {
   $("#useAiUpload").addEventListener("change", refreshAiStatusUi);
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  const authed = await ensureAuth();
+  if (!authed) return;
+
+  initAuth();
   initTabs();
   initUpload();
   initMarkup();
