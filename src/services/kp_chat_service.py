@@ -450,6 +450,7 @@ class KpChatService:
                     "quantity": item.quantity,
                     "unit": item.unit,
                     "specifications": (item.specifications or "")[:200],
+                    "country_of_origin": (item.country_of_origin or "")[:120],
                     "status": result.status.value if result else "pending",
                     "matched_name": result.matched_name if result else "",
                     "unit_price_kp": result.unit_price if result else None,

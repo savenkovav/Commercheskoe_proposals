@@ -108,6 +108,7 @@ class TZItem:
     unit: str
     quantity: float
     specifications: str = ""
+    country_of_origin: str = ""
 
 
 @dataclass

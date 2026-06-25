@@ -28,6 +28,8 @@ class _ColumnMap:
     unit: int
     qty: int
     specs: int | None = None
+    country: int | None = None
+    has_number: bool = True
 
 
 def parse_tz(path: Path) -> list[TZItem]:
@@ -117,17 +119,38 @@ def _build_column_map(header_cells: list[str]) -> _ColumnMap | None:
     if not any("наимен" in cell for cell in lower):
         return None
 
-    name_idx = next(i for i, cell in enumerate(lower) if "наимен" in cell)
+    country_idx: int | None = None
+    for i, cell in enumerate(lower):
+        if "стран" in cell or "происхожд" in cell:
+            country_idx = i
+            break
+
+    name_idx: int | None = None
+    for i, cell in enumerate(lower):
+        if "наимен" not in cell:
+            continue
+        if "стран" in cell or "происхожд" in cell:
+            continue
+        name_idx = i
+        break
+    if name_idx is None:
+        return None
 
     number_idx = 0
+    has_number = False
     for i, cell in enumerate(lower):
-        if cell in {"№", "п/п", "пп", "n", "no"} or cell.startswith("№") or "номер" in cell:
+        if cell in {"№", "п/п", "пп", "n", "no"} or cell.startswith("№"):
             number_idx = i
+            has_number = True
+            break
+        if "номер" in cell and "товар" not in cell and "стран" not in cell:
+            number_idx = i
+            has_number = True
             break
 
     unit_idx = name_idx + 1
     for i, cell in enumerate(lower):
-        if "ед" in cell and ("изм" in cell or cell.startswith("ед")):
+        if ("ед" in cell and ("изм" in cell or cell.startswith("ед"))) or "единиц" in cell:
             unit_idx = i
             break
 
@@ -143,16 +166,44 @@ def _build_column_map(header_cells: list[str]) -> _ColumnMap | None:
             specs_idx = i
             break
 
-    return _ColumnMap(number_idx, name_idx, unit_idx, qty_idx, specs_idx)
+    return _ColumnMap(
+        number_idx,
+        name_idx,
+        unit_idx,
+        qty_idx,
+        specs_idx,
+        country_idx,
+        has_number,
+    )
 
 
-def _parse_row(cells: list[str], col: _ColumnMap) -> TZItem | None:
-    max_idx = max(col.number, col.name, col.unit, col.qty)
+def _parse_row(
+    cells: list[str],
+    col: _ColumnMap,
+    *,
+    fallback_number: int | None = None,
+) -> TZItem | None:
+    indices = [col.name, col.unit, col.qty]
+    if col.specs is not None:
+        indices.append(col.specs)
+    if col.country is not None:
+        indices.append(col.country)
+    max_idx = max(indices)
     if len(cells) <= max_idx:
         return None
 
-    number_raw = cells[col.number].rstrip(".")
-    if not number_raw.isdigit():
+    number: int | None = None
+    if col.has_number:
+        number_raw = cells[col.number].rstrip(".")
+        if number_raw.isdigit():
+            number = int(number_raw)
+        elif fallback_number is not None:
+            number = fallback_number
+        else:
+            return None
+    elif fallback_number is not None:
+        number = fallback_number
+    else:
         return None
 
     name = cells[col.name]
@@ -162,6 +213,11 @@ def _parse_row(cells: list[str], col: _ColumnMap) -> TZItem | None:
     unit = cells[col.unit] or "шт."
     qty_raw = cells[col.qty].replace(",", ".")
     specs = cells[col.specs] if col.specs is not None and len(cells) > col.specs else ""
+    country = (
+        cells[col.country]
+        if col.country is not None and len(cells) > col.country
+        else ""
+    )
 
     try:
         quantity = float(qty_raw)
@@ -169,11 +225,12 @@ def _parse_row(cells: list[str], col: _ColumnMap) -> TZItem | None:
         quantity = 1.0
 
     return TZItem(
-        number=int(number_raw),
+        number=number,
         name=name,
         unit=unit,
         quantity=quantity,
         specifications=specs,
+        country_of_origin=country,
     )
 
 
@@ -189,9 +246,17 @@ def _parse_tz_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
         if not col:
             continue
 
+        auto_number = 0
         for row in table[1:]:
             cells = [_cell_str(cell) for cell in row]
-            item = _parse_row(cells, col)
+            if not any(cells):
+                continue
+            item: TZItem | None = None
+            if col.has_number:
+                item = _parse_row(cells, col)
+            else:
+                auto_number += 1
+                item = _parse_row(cells, col, fallback_number=auto_number)
             if item:
                 items.append(item)
 
@@ -398,6 +463,7 @@ def _tables_from_text(text: str) -> list[list[list[str]]]:
             continue
 
         header = _split_table_line(lines[idx])
+        col = _build_column_map(header)
         rows = [header]
         idx += 1
 
@@ -406,7 +472,8 @@ def _tables_from_text(text: str) -> list[list[list[str]]]:
             if "наимен" in line.lower() and rows:
                 break
             parts = _split_table_line(line)
-            if _looks_like_data_row(parts):
+            has_number = col.has_number if col else True
+            if _looks_like_data_row(parts, has_number=has_number):
                 rows.append(parts)
                 idx += 1
                 continue
@@ -429,8 +496,10 @@ def _split_table_line(line: str) -> list[str]:
     return [part.strip() for part in line.split() if part.strip()]
 
 
-def _looks_like_data_row(parts: list[str]) -> bool:
-    if len(parts) < 3:
+def _looks_like_data_row(parts: list[str], *, has_number: bool = True) -> bool:
+    if len(parts) < 2:
         return False
+    if not has_number:
+        return bool(parts[0].strip())
     number = parts[0].rstrip(".")
     return number.isdigit() and bool(parts[1])

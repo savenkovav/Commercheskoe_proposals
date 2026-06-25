@@ -15,7 +15,7 @@ from src.config import (
     RAG_TOP_K,
 )
 from src.services.ai_agent import AIAgent
-from src.services.models import TZItem
+from src.services.tz_item_text import tz_item_rag_text
 
 logger = logging.getLogger(__name__)
 
@@ -184,22 +184,46 @@ class TZRagService:
         *,
         filename: str = "",
     ) -> list[dict[str, str | int | float]]:
-        content = document_text.strip()
-        if not content and tz_items:
-            lines = [
-                (
-                    f"{item.number}. {item.name}; кол-во: {item.quantity} {item.unit}; "
-                    f"характеристики: {item.specifications or '-'}"
+        chunks: list[dict[str, str | int | float]] = []
+
+        if tz_items:
+            for item in tz_items:
+                piece = tz_item_rag_text(item)
+                if not piece.strip():
+                    continue
+                chunks.append(
+                    {
+                        "chunk_id": len(chunks) + 1,
+                        "chunk_type": "tz_item",
+                        "tz_number": item.number,
+                        "filename": filename,
+                        "text": piece,
+                        "start": 0,
+                        "end": len(piece),
+                    }
                 )
-                for item in tz_items
-            ]
-            content = "\n".join(lines)
+            if chunks:
+                return chunks
+
+        content = document_text.strip()
         if not content:
             return []
 
+        chunks.extend(
+            TZRagService._chunk_plain_text(content, filename=filename, start_id=1)
+        )
+        return chunks
+
+    @staticmethod
+    def _chunk_plain_text(
+        content: str,
+        *,
+        filename: str = "",
+        start_id: int = 1,
+    ) -> list[dict[str, str | int | float]]:
         chunks: list[dict[str, str | int | float]] = []
         start = 0
-        chunk_id = 1
+        chunk_id = start_id
         while start < len(content):
             end = min(len(content), start + RAG_CHUNK_SIZE)
             piece = content[start:end].strip()
@@ -207,6 +231,7 @@ class TZRagService:
                 chunks.append(
                     {
                         "chunk_id": chunk_id,
+                        "chunk_type": "document",
                         "filename": filename,
                         "text": piece,
                         "start": start,

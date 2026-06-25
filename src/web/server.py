@@ -302,6 +302,7 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
         "number": result.tz_item.number,
         "name": result.tz_item.name,
         "specifications": result.tz_item.specifications,
+        "country_of_origin": result.tz_item.country_of_origin,
         "quantity": result.tz_item.quantity,
         "unit": result.tz_item.unit,
         "status": result.status.value,

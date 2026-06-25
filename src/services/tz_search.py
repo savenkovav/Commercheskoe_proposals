@@ -71,16 +71,20 @@ def is_kit_composition_header(spec_line: str) -> bool:
 
 def build_search_queries(tz_item: TZItem) -> list[str]:
     name = tz_item.name.strip()
-    spec_line = primary_spec_line(tz_item.specifications)
+    combined = tz_item_search_text(tz_item)
     queries: list[str] = []
 
-    if name:
+    if combined:
+        queries.append(combined)
+    if name and normalize_name(name) != normalize_name(combined):
         queries.append(name)
 
+    spec_line = primary_spec_line(tz_item.specifications)
     if spec_line and not is_kit_composition_header(spec_line):
         if normalize_name(spec_line) != normalize_name(name):
             queries.append(spec_line)
-            queries.append(f"{name} {spec_line}")
+            if name:
+                queries.append(f"{name} {spec_line}")
 
     seen: set[str] = set()
     unique: list[str] = []
@@ -94,12 +98,28 @@ def build_search_queries(tz_item: TZItem) -> list[str]:
 
 
 def primary_search_text(tz_item: TZItem) -> str:
+    return tz_item_search_text(tz_item)
+
+
+def tz_item_search_text(tz_item: TZItem) -> str:
+    """Текст для поиска совпадений: название, характеристики, страна."""
     name = tz_item.name.strip()
     spec_line = primary_spec_line(tz_item.specifications)
+    parts = [name] if name else []
+
     if spec_line and not is_kit_composition_header(spec_line):
         if normalize_name(spec_line) != normalize_name(name):
-            return spec_line
-    return name
+            parts.append(spec_line)
+
+    country = (tz_item.country_of_origin or "").strip()
+    if country:
+        parts.append(country)
+
+    if not parts:
+        return name
+    if len(parts) == 1:
+        return parts[0]
+    return " | ".join(parts)
 
 
 def spec_required_tokens(tz_item: TZItem) -> list[str]:
