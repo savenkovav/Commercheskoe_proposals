@@ -27,7 +27,7 @@ from src.services.competitor_sites import (
     is_competitor_product_page_url,
 )
 from src.services.data_loader import normalize_name
-from src.services.fuzzy_scoring import name_match_score
+from src.services.fuzzy_scoring import catalog_phrase_match_score, phrase_match_acceptable
 from src.services.models import PriceQuote
 from src.services.web_search_service import (
     PRICE_ON_REQUEST_LABEL,
@@ -3911,17 +3911,16 @@ def _score_catalog_products(
         key = normalize_name(product.name)
         if key in seen:
             continue
-        score = float(name_match_score(normalized_query, key))
-        query_words = normalized_query.split()
-        token_match = bool(
-            query_words and all(word in key for word in query_words if len(word) >= 3)
-        )
-        if score < COMPETITOR_SEARCH_FALLBACK_THRESHOLD and not token_match:
+        score = float(catalog_phrase_match_score(normalized_query, key))
+        phrase_match = phrase_match_acceptable(normalized_query, product.name)
+        if score < COMPETITOR_SEARCH_FALLBACK_THRESHOLD and not phrase_match:
             continue
         seen.add(key)
         if product.price is None and not product.price_label and product.url:
             product = enrich_catalog_product_price(product)
-        scored.append((max(score, 96.0 if token_match else score), product))
+        if phrase_match:
+            score = max(score, 96.0)
+        scored.append((score, product))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     quotes: list[PriceQuote] = []

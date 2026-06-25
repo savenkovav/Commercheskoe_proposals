@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rapidfuzz import fuzz, process
+from rapidfuzz import process
 
 from src.config import (
     COMPETITOR_PRODUCTS_JSON_EXPORT,
@@ -20,6 +20,10 @@ from src.services.competitor_catalog_db import (
 )
 from src.services.competitor_catalog_service import CompetitorCatalogProduct
 from src.services.data_loader import normalize_name
+from src.services.fuzzy_scoring import (
+    catalog_phrase_match_score,
+    phrase_match_acceptable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -200,8 +204,7 @@ class CompetitorProductStore:
         if query_words and len(pool) > 400:
             filtered: list[CompetitorCatalogProduct] = []
             for product in pool:
-                normalized_name = normalize_name(product.name)
-                if all(word in normalized_name for word in query_words):
+                if phrase_match_acceptable(normalized_query, product.name):
                     filtered.append(product)
             if filtered:
                 pool = filtered
@@ -218,14 +221,18 @@ class CompetitorProductStore:
         matches = process.extract(
             normalized_query,
             by_name.keys(),
-            scorer=fuzz.WRatio,
+            scorer=catalog_phrase_match_score,
             limit=max(limit, 8),
         )
         results: list[CompetitorCatalogProduct] = []
         for name_key, score, _ in matches:
-            if score < min_score:
+            product = by_name[name_key]
+            if score < min_score and not phrase_match_acceptable(
+                normalized_query,
+                product.name,
+            ):
                 continue
-            results.append(by_name[name_key])
+            results.append(product)
         return results[:limit]
 
     def stats(self) -> dict[str, int | dict[str, int]]:
