@@ -24,6 +24,8 @@ storage/
 data/prices/
 data/prices_registry.json
 data/registry_photos/
+data/users.db
+data/kp_sessions.json
 *.log
 .DS_Store
 .idea/
