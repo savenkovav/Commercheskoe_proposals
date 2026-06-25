@@ -2149,6 +2149,8 @@ code {
 
 .login-form__submit {
   width: 100%;
+  justify-content: center;
+  text-align: center;
 }
 
 .chat-header__row {
