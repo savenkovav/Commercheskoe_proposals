@@ -102,6 +102,8 @@ class ItemMatcher:
                 score=float(score),
             ):
                 continue
+            if tz_item and self.is_distinctive_mismatch(tz_item.name, payload_name):
+                continue
             adjusted_score = combined_match_score(tz_item, payload_name) if tz_item else float(score)
             adjusted_score = self._adjust_score(query, choice, adjusted_score)
             detail = ""
@@ -190,6 +192,8 @@ class ItemMatcher:
                         payload_name,
                         score=float(meili_hit.score),
                     ):
+                        continue
+                    if self.is_distinctive_mismatch(tz_item.name, payload_name):
                         continue
                     adjusted_score = combined_match_score(tz_item, payload_name)
                     adjusted_score = self._adjust_score(
@@ -468,7 +472,13 @@ class ItemMatcher:
 
         all_hits = candidates["catalog"] + candidates["registry"] + candidates["price"]
         all_hits.sort(key=lambda h: (h.score, len(h.name)), reverse=True)
-        alternatives = [h.name for h in all_hits[1:4] if h.name != best.name]
+        alternatives = [
+            h.name
+            for h in all_hits[1:4]
+            if h.name != best.name
+            and not self.is_distinctive_mismatch(tz_item.name, h.name)
+            and is_relevant_match(tz_item, h.name, score=h.score)
+        ]
 
         return MatchResult(
             tz_item=tz_item,

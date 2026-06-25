@@ -177,7 +177,7 @@ class TZMatchService:
 
         for extra_price in self._extra_price_quotes(
             candidates["price"],
-            tz_item.name,
+            tz_item,
             min_score=local_floor,
         ):
             if not any(
@@ -280,12 +280,16 @@ class TZMatchService:
                 skip_internet_search=internet_searched,
             )
         primary.comparison = filter_web_quotes(primary.comparison, prefs)
+        primary.comparison = self._sanitize_comparison_quotes(
+            primary.tz_item, primary.comparison
+        )
         primary.comparison = sort_web_quotes(primary.comparison)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
         self._ensure_internet_comparison(primary)
         self._promote_internet_status(primary)
         self._ensure_internet_source_detail(primary)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
+        self._ensure_primary_matched_name(primary)
         return primary
 
     def _apply_kit_composition_metadata(self, result: MatchResult) -> None:
@@ -387,6 +391,67 @@ class TZMatchService:
                 continue
             filtered.append(quote)
         return filtered
+
+    def _sanitize_comparison_quotes(
+        self,
+        tz_item: TZItem,
+        quotes: list[PriceQuote],
+    ) -> list[PriceQuote]:
+        typed = self._filter_comparison_quotes(tz_item, quotes)
+        local = [quote for quote in typed if quote.source != "web"]
+        web = self._filter_acceptable_web_quotes(
+            tz_item,
+            [quote for quote in typed if quote.source == "web"],
+        )
+        return local + web
+
+    def _quote_acceptable_for_tz(self, tz_item: TZItem, quote: PriceQuote) -> bool:
+        name = quote.matched_name or ""
+        if not name:
+            return quote.source != "web"
+        if product_type_conflict(tz_item, name):
+            return False
+        if self.matcher.is_distinctive_mismatch(tz_item.name, name):
+            return False
+        if quote.source == "web":
+            min_score = (
+                LOCAL_MATCH_THRESHOLD
+                if quote.url and is_competitor_url(quote.url)
+                else WEB_SEARCH_EXACT_THRESHOLD
+            )
+            if not is_relevant_match(
+                tz_item,
+                name,
+                score=float(quote.match_score or 0),
+                min_score=min_score,
+            ):
+                return False
+            return is_acceptable_web_pricing_quote(quote)
+        if quote.match_score is not None and float(quote.match_score) < LOCAL_MATCH_THRESHOLD:
+            return False
+        return is_relevant_match(
+            tz_item,
+            name,
+            score=float(quote.match_score or 0),
+        )
+
+    def _ensure_primary_matched_name(self, result: MatchResult) -> None:
+        name = result.matched_name or ""
+        if not name or name == result.tz_item.name:
+            return
+        if not product_type_conflict(result.tz_item, name) and not self.matcher.is_distinctive_mismatch(
+            result.tz_item.name, name
+        ):
+            return
+        fallback = next(
+            (
+                quote.matched_name
+                for quote in result.comparison
+                if quote.matched_name and self._quote_acceptable_for_tz(result.tz_item, quote)
+            ),
+            None,
+        )
+        result.matched_name = fallback or result.tz_item.name
 
     def _filter_acceptable_web_quotes(
         self,
@@ -656,7 +721,7 @@ class TZMatchService:
     def _extra_price_quotes(
         self,
         hits: list[FuzzyHit],
-        query: str,
+        tz_item: TZItem,
         *,
         min_score: float | None = None,
     ) -> list[PriceQuote]:
@@ -667,6 +732,15 @@ class TZMatchService:
         ranked = sorted(hits, key=lambda hit: hit.score, reverse=True)
         for hit in ranked[:5]:
             if hit.score < min_score:
+                continue
+            if not is_relevant_match(
+                tz_item,
+                hit.name,
+                score=hit.score,
+                min_score=min_score,
+            ):
+                continue
+            if self.matcher.is_distinctive_mismatch(tz_item.name, hit.name):
                 continue
             item: PriceListItem = hit.payload
             supplier_key = (item.supplier or "").lower()
@@ -1151,6 +1225,7 @@ class TZMatchService:
             extra_quotes = self.web_search.search_web_price_fallback(search_text)
             if prefs:
                 extra_quotes = filter_web_quotes(extra_quotes, prefs)
+            extra_quotes = self._filter_acceptable_web_quotes(result.tz_item, extra_quotes)
             if extra_quotes:
                 self._extend_comparison(result, extra_quotes)
                 result.competitors = [
@@ -1178,6 +1253,7 @@ class TZMatchService:
             ai_quotes = self._fetch_internet_comparison_ai(result.tz_item)
             if prefs:
                 ai_quotes = filter_web_quotes(ai_quotes, prefs)
+            ai_quotes = self._filter_acceptable_web_quotes(result.tz_item, ai_quotes)
             if ai_quotes:
                 existing_urls = {
                     q.url for q in result.comparison if q.url
@@ -1211,6 +1287,8 @@ class TZMatchService:
         *,
         unpriced_competitor_reference: bool = False,
     ) -> None:
+        if not self._quote_acceptable_for_tz(result.tz_item, best):
+            return
         base_price = best.cost if best.cost is not None else best.price
         if base_price is None:
             return
@@ -1304,6 +1382,7 @@ class TZMatchService:
                     candidates.append(ai_quote)
 
             filtered = filter_web_quotes(candidates, prefs)
+            filtered = self._filter_acceptable_web_quotes(result.tz_item, filtered)
             self._extend_comparison(result, filtered)
             result.comparison = sort_web_quotes(result.comparison)
 
@@ -1336,8 +1415,8 @@ class TZMatchService:
         del prefs
         self._sort_comparison_web_quotes(result)
 
-    @staticmethod
-    def _extend_comparison(result: MatchResult, quotes: list[PriceQuote]) -> None:
+    def _extend_comparison(self, result: MatchResult, quotes: list[PriceQuote]) -> None:
+        quotes = self._sanitize_comparison_quotes(result.tz_item, quotes)
         seen = {
             (q.source, q.url or "", q.matched_name or "", q.price, q.cost)
             for q in result.comparison
