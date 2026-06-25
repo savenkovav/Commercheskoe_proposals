@@ -54,8 +54,8 @@ function updateAuthUi() {
   if (currentUser && userEl) {
     userEl.classList.remove("hidden");
     userEl.innerHTML = `
-      <span class="header__user-login">${escapeHtml(currentUser.login)}</span>
-      <span class="header__user-role">${escapeHtml(ROLE_LABELS[currentUser.role] || currentUser.role)}</span>`;
+      <span class="site-header__user-login header__user-login">${escapeHtml(currentUser.login)}</span>
+      <span class="site-header__user-role header__user-role">${escapeHtml(ROLE_LABELS[currentUser.role] || currentUser.role)}</span>`;
   }
   logoutBtn?.classList.toggle("hidden", !currentUser);
   usersTab?.classList.toggle("hidden", !isAdmin);

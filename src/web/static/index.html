@@ -3,28 +3,46 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#0f1419">
-  <title>КП-Ассистент</title>
-  <link rel="stylesheet" href="/app.css?v=20260623c">
+  <meta name="theme-color" content="#2b825d">
+  <title>КП-Ассистент — Учтендер</title>
+  <link rel="stylesheet" href="/app.css?v=20260625a">
 </head>
 <body>
-  <div class="layout">
-    <header class="header">
-      <div class="header__brand">
-        <span class="header__logo">КП</span>
-        <div>
-          <h1>КП-Ассистент</h1>
-          <p class="header__subtitle">Поиск · себестоимость · конкуренты · Excel КП</p>
+  <header class="site-header">
+    <div class="site-header__top">
+      <div class="site-header__inner">
+        <div class="site-header__logo">
+          <a href="https://uchtender.ru/" target="_blank" rel="noopener noreferrer">
+            <img src="/img/logo.png" class="header-logo" alt="Учтендер">
+          </a>
+        </div>
+        <div class="site-header__tagline">
+          <span>Комплексное оснащение образовательных учреждений</span>
+        </div>
+        <div class="site-header__contact-icon">
+          <a href="tel:+79322399821">
+            <img src="/img/phone.png" alt="Телефон">
+          </a>
+        </div>
+        <div class="site-header__phone">
+          <a href="tel:+79322399821">+7 932 239 98 21</a>
+          <span class="site-header__phone-hours">пн-пт с 9:00 до 18:00</span>
+        </div>
+        <div class="site-header__location">
+          <img src="/img/location.png" alt="Москва">
+          <div>
+            <span class="site-header__location-city">Москва</span>
+            <a class="site-header__location-email" href="mailto:uchtender@yandex.ru">uchtender@yandex.ru</a>
+          </div>
+        </div>
+        <div class="site-header__actions">
+          <div class="header__stats" id="headerStats"></div>
+          <div class="header__user hidden site-header__user" id="headerUser"></div>
+          <button class="btn btn--secondary btn--small hidden" type="button" id="btnLogout">Выйти</button>
         </div>
       </div>
-      <div class="header__actions">
-        <div class="header__stats" id="headerStats"></div>
-        <div class="header__user hidden" id="headerUser"></div>
-        <button class="btn btn--secondary btn--small hidden" type="button" id="btnLogout">Выйти</button>
-      </div>
-    </header>
-
-    <nav class="tabs" role="tablist">
+    </div>
+    <nav class="top-nav tabs" role="tablist">
       <button class="tabs__btn tabs__btn--active" data-tab="kp" role="tab">КП-Ассистент</button>
       <button class="tabs__btn" data-tab="lookup" role="tab">Быстрый поиск</button>
       <button class="tabs__btn" data-tab="prices" role="tab">Прайсы</button>
@@ -33,6 +51,9 @@
       <button class="tabs__btn hidden" data-tab="history" id="tabHistoryBtn" role="tab">История</button>
       <button class="tabs__btn hidden" data-tab="users" id="tabUsersBtn" role="tab">Настройки пользователей</button>
     </nav>
+  </header>
+
+  <div class="layout">
 
     <main>
       <section class="panel panel--active" id="panel-kp" data-panel="kp">
@@ -408,6 +429,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260623c"></script>
+  <script src="/app.js?v=20260625a"></script>
 </body>
 </html>
