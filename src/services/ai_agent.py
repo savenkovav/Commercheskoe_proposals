@@ -15,6 +15,7 @@ from src.config import (
     PROXYAPI_BASE_URL,
 )
 from src.services.models import MatchSource, MatchStatus, TZItem
+from src.services.data_loader import normalize_name
 from src.services.pii_anonymizer import PIIAnonymizer, build_org_terms_from_config
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class AIAgent:
             redact_org_data=PII_REDACT_ORG_DATA,
             org_terms=build_org_terms_from_config() if PII_REDACT_ORG_DATA else [],
         )
+        self._validation_cache: dict[tuple[str, str], bool] = {}
         if self.enabled:
             self.client = OpenAI(
                 api_key=PROXYAPI_API_KEY,
@@ -74,6 +76,10 @@ class AIAgent:
 }}
 
 Правила:
+- Сопоставляй позицию ТЗ по паре «наименование + характеристики» вместе, а не только по общему бренду/модели
+- Тип товара должен совпадать: парта ≠ колонка ≠ аудиосистема ≠ микрофон ≠ микроскоп ≠ мольберт и т.д.
+- Микрофон и микроскоп — разные товары, даже если названия похожи
+- Если в ТЗ «колонка Smarty Blue», а в каталоге «парта Smarty Blue» — это not_found (разные товары)
 - exact: полное соответствие наименованию и ключевым характеристикам (score >= 90)
 - similar: частичное соответствие, требует проверки менеджером (score 70-89)
 - not_found: нет подходящей позиции в каталогах/прайсах
@@ -106,6 +112,70 @@ class AIAgent:
         except Exception as exc:
             logger.exception("AI match failed: %s", exc)
             return self._fallback_response()
+
+    def validate_tz_candidate(self, tz_item: TZItem, candidate_name: str) -> dict:
+        """Проверяет, что кандидат — тот же тип товара, что в ТЗ (наименование + характеристики)."""
+        from src.services.tz_search import product_type_conflict, tz_match_query
+
+        candidate = (candidate_name or "").strip()
+        if not candidate:
+            return {"accept": False, "reason": "пустой кандидат"}
+
+        if product_type_conflict(tz_item, candidate):
+            return {
+                "accept": False,
+                "reason": "разный тип товара (например, парта и колонка, микрофон и микроскоп)",
+            }
+
+        cache_key = (normalize_name(tz_match_query(tz_item)), normalize_name(candidate))
+        if cache_key in self._validation_cache:
+            accepted = self._validation_cache[cache_key]
+            return {"accept": accepted, "reason": "кэш"}
+
+        if not self.enabled or not self.client:
+            return {"accept": True, "reason": "AI недоступен — правила по типу товара"}
+
+        specs = tz_item.specifications[:1200]
+        prompt = f"""Позиция из технического задания:
+Наименование: {tz_item.name}
+Характеристики: {specs or "—"}
+
+Кандидат из каталога/прайса: {candidate}
+
+Это один и тот же товар с учётом наименования И характеристик?
+Парта, колонка, аудиосистема, микрофон, микроскоп, мольберт — разные категории.
+Микрофон и микроскоп — разные товары (похожие слова, но это не одно и то же).
+Общий бренд или модель (например Smarty Blue) НЕ делает товары одинаковыми, если категория разная.
+
+Верни JSON: {{"accept": true/false, "reason": "кратко на русском"}}"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Ты эксперт по сопоставлению позиций закупки с каталогом. "
+                            "Возвращай только JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or "{}"
+            result = json.loads(content)
+            accept = bool(result.get("accept"))
+            self._validation_cache[cache_key] = accept
+            return {
+                "accept": accept,
+                "reason": str(result.get("reason") or "").strip(),
+            }
+        except Exception as exc:
+            logger.warning("AI validate_tz_candidate failed: %s", exc)
+            return {"accept": True, "reason": "ошибка AI — оставлено правило по типу"}
 
     def estimate_web_price(self, tz_item: TZItem) -> dict:
         if not self.enabled or not self.client:

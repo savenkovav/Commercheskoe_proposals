@@ -26,7 +26,13 @@ from src.services.competitor_urls import (
 from src.services.fuzzy_scoring import name_match_score
 from src.services.kit_spec_parser import parse_kit_components_from_specs
 from src.services.local_price_match import has_local_catalog_or_price_list_price
-from src.services.tz_search import is_relevant_match, primary_search_text, relevance_score
+from src.services.tz_search import (
+    combined_match_score,
+    is_relevant_match,
+    primary_search_text,
+    relevance_score,
+    tz_match_query,
+)
 from src.services.web_quote_priority import (
     enrich_source_detail_with_price_url,
     has_acceptable_web_pricing_in_comparison,
@@ -87,8 +93,8 @@ class TZMatchService:
             search_kit_component_links=SEARCH_KIT_COMPONENT_LINKS,
         )
         candidates = self.matcher.find_candidates(tz_item)
-        catalog_hit = self._pick_hit(candidates["catalog"], tz_item)
-        direct_catalog = self._find_direct_catalog_hit(tz_item)
+        catalog_hit = self._pick_validated_hit(candidates["catalog"], tz_item, use_ai)
+        direct_catalog = self._find_direct_catalog_hit(tz_item, use_ai=use_ai)
         if direct_catalog and (
             catalog_hit is None or direct_catalog.score > catalog_hit.score
         ):
@@ -97,8 +103,8 @@ class TZMatchService:
             tz_item.name, catalog_hit.name
         ):
             catalog_hit = None
-        price_hit = self._pick_hit(candidates["price"], tz_item)
-        registry_hit = self._pick_hit(candidates["registry"], tz_item)
+        price_hit = self._pick_validated_hit(candidates["price"], tz_item, use_ai)
+        registry_hit = self._pick_validated_hit(candidates["registry"], tz_item, use_ai)
         goods_hit = self._match_goods_report(tz_item)
 
         comparison: list[PriceQuote] = []
@@ -724,6 +730,10 @@ class TZMatchService:
         local_miss: bool = False,
     ) -> MatchResult:
         local = self.matcher.match_local(tz_item)
+        if local and not self._accepted_match(
+            tz_item, local.matched_name, use_ai, score=local.match_score
+        ):
+            local = None
 
         if local and local.status == MatchStatus.EXACT and (
             local.unit_base_price is not None or local.unit_cost is not None
@@ -738,7 +748,9 @@ class TZMatchService:
         if (
             catalog_hit
             and catalog_hit.score >= LOCAL_MATCH_THRESHOLD
-            and is_relevant_match(tz_item, catalog_hit.name, score=catalog_hit.score)
+            and self._accepted_match(
+                tz_item, catalog_hit.name, use_ai, score=catalog_hit.score
+            )
             and not self.matcher.is_distinctive_mismatch(tz_item.name, catalog_hit.name)
         ):
             item = catalog_hit.payload
@@ -771,7 +783,7 @@ class TZMatchService:
         if (
             goods_hit
             and goods_hit.cost is not None
-            and is_relevant_match(tz_item, goods_hit.name)
+            and self._accepted_match(tz_item, goods_hit.name, use_ai)
         ):
             goods_score = relevance_score(tz_item, goods_hit.name)
             return MatchResult(
@@ -795,7 +807,9 @@ class TZMatchService:
         if (
             price_hit
             and price_hit.score >= LOCAL_MATCH_THRESHOLD
-            and is_relevant_match(tz_item, price_hit.name, score=price_hit.score)
+            and self._accepted_match(
+                tz_item, price_hit.name, use_ai, score=price_hit.score
+            )
         ):
             item = price_hit.payload
             if isinstance(item, PriceListItem):
@@ -857,10 +871,22 @@ class TZMatchService:
         source = AIAgent.parse_source(ai_result.get("source", "none"))
         unit_cost = ai_result.get("unit_cost")
         unit_base_price = ai_result.get("unit_price") or ai_result.get("unit_cost")
-        matched_name = ai_result.get("matched_name", "")
-        match_score = float(ai_result.get("match_score", 0) or 0)
         notes = ai_result.get("notes", "")
         alternatives = ai_result.get("alternatives") or []
+        matched_name = ai_result.get("matched_name", "")
+        match_score = float(ai_result.get("match_score", 0) or 0)
+        if matched_name and not self._accepted_match(
+            tz_item, matched_name, use_ai, score=match_score
+        ):
+            matched_name = ""
+            if status != MatchStatus.NOT_FOUND:
+                status = MatchStatus.NOT_FOUND
+                source = MatchSource.NONE
+                notes = (
+                    f"{notes} | AI-кандидат отклонён: другой тип товара"
+                    if notes
+                    else "AI-кандидат отклонён: другой тип товара"
+                )
 
         internet_priced = source == MatchSource.WEB
         if (
@@ -1427,15 +1453,76 @@ class TZMatchService:
             return None
         return self.matcher.pick_best_hit(tz_item, hits)
 
-    def _find_direct_catalog_hit(self, tz_item: TZItem) -> FuzzyHit | None:
-        query = normalize_name(tz_item.name)
+    def _accepted_match(
+        self,
+        tz_item: TZItem,
+        matched_name: str,
+        use_ai: bool,
+        *,
+        score: float | None = None,
+    ) -> bool:
+        if not matched_name:
+            return False
+        if not is_relevant_match(tz_item, matched_name, score=score):
+            return False
+        if use_ai and self.ai.enabled:
+            verdict = self.ai.validate_tz_candidate(tz_item, matched_name)
+            if not verdict.get("accept"):
+                logger.info(
+                    "AI rejected %r for TZ %r: %s",
+                    matched_name,
+                    tz_item.name,
+                    verdict.get("reason"),
+                )
+                return False
+        return True
+
+    def _pick_validated_hit(
+        self,
+        hits: list[FuzzyHit],
+        tz_item: TZItem,
+        use_ai: bool,
+    ) -> FuzzyHit | None:
+        if not hits:
+            return None
+        ranked = sorted(
+            hits,
+            key=lambda hit: (
+                combined_match_score(tz_item, hit.name),
+                hit.score,
+            ),
+            reverse=True,
+        )
+        shortlist: list[FuzzyHit] = []
+        for hit in ranked[:12]:
+            if not is_relevant_match(tz_item, hit.name, score=hit.score):
+                continue
+            if self.matcher.is_distinctive_mismatch(tz_item.name, hit.name):
+                continue
+            shortlist.append(hit)
+        for hit in shortlist[:3]:
+            if use_ai and self.ai.enabled:
+                verdict = self.ai.validate_tz_candidate(tz_item, hit.name)
+                if not verdict.get("accept"):
+                    logger.info(
+                        "AI rejected %r for TZ %r: %s",
+                        hit.name,
+                        tz_item.name,
+                        verdict.get("reason"),
+                    )
+                    continue
+            return hit
+        return None
+
+    def _find_direct_catalog_hit(
+        self, tz_item: TZItem, *, use_ai: bool = True
+    ) -> FuzzyHit | None:
         best: FuzzyHit | None = None
         best_score = -1.0
         for item in self.catalog:
             if item.entry_type not in {"item", "kit_total", "sub_kit"}:
                 continue
-            name_norm = normalize_name(item.name)
-            score = 100.0 if name_norm == query else name_match_score(query, name_norm)
+            score = combined_match_score(tz_item, item.name)
             if score < LOCAL_MATCH_THRESHOLD:
                 continue
             if not is_relevant_match(tz_item, item.name, score=score):
@@ -1451,6 +1538,16 @@ class TZMatchService:
                     source=MatchSource.CATALOG,
                     detail=item.source_file,
                 )
+        if best and use_ai and self.ai.enabled:
+            verdict = self.ai.validate_tz_candidate(tz_item, best.name)
+            if not verdict.get("accept"):
+                logger.info(
+                    "AI rejected direct catalog %r for TZ %r: %s",
+                    best.name,
+                    tz_item.name,
+                    verdict.get("reason"),
+                )
+                return None
         return best
 
     def _match_goods_report(self, tz_item: TZItem) -> GoodsReportItem | None:

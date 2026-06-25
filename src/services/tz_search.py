@@ -75,9 +75,20 @@ _CATEGORY_CONFLICTS: tuple[tuple[str, str], ...] = (
     ("парта", "behringer"),
     ("парта", "колонк"),
     ("парта", "микрофон"),
-    ("smarty", "аудио"),
-    ("smarty", "partybox"),
-    ("smarty", "jbl"),
+    ("микрофон", "микроскоп"),
+    ("микроскоп", "микрофон"),
+)
+
+_PRODUCT_TYPES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("desk", ("парта", "парты", "ученическ", "стол школьн", "двухместн")),
+    ("audio", ("колонк", "аудио", "аудиосистем", "partybox", "акустич", "динамик", "сабвуфер", "boombox")),
+    ("microscope", ("микроскоп", "окуляр", "объективн")),
+    ("microphone", ("микрофон", "радиосистем", "вокальн", "ulm300", "ulm")),
+    ("easel", ("мольберт",)),
+    ("thermometer", ("термометр",)),
+    ("planetarium", ("планетар",)),
+    ("gypsum", ("гипсов", "муляж", "натюрморт")),
+    ("glassware", ("палочк", "стеклянн", "колб", "пробирк")),
 )
 
 
@@ -111,7 +122,11 @@ def tz_match_query(tz_item: TZItem) -> str:
     name = tz_item.name.strip()
     spec_line = primary_spec_line(tz_item.specifications)
     if spec_line and not is_kit_composition_header(spec_line):
-        if normalize_name(spec_line) != normalize_name(name):
+        spec_norm = normalize_name(spec_line)
+        name_norm = normalize_name(name)
+        if spec_norm != name_norm:
+            if spec_norm.startswith(name_norm):
+                return spec_line.strip()
             return f"{name} {spec_line}".strip()
     return name
 
@@ -219,6 +234,33 @@ def spec_required_tokens(tz_item: TZItem) -> list[str]:
     return tokens[:4]
 
 
+def detect_product_types(text: str) -> set[str]:
+    normalized = normalize_name(text)
+    if not normalized:
+        return set()
+    found: set[str] = set()
+    for type_id, markers in _PRODUCT_TYPES:
+        if any(marker in normalized for marker in markers):
+            found.add(type_id)
+    return found
+
+
+def product_type_conflict(tz_item: TZItem, matched_name: str) -> bool:
+    tz_types = detect_product_types(tz_item.name)
+    spec_line = primary_spec_line(tz_item.specifications)
+    if spec_line and not is_kit_composition_header(spec_line):
+        tz_types |= detect_product_types(spec_line)
+    if not tz_types:
+        tz_types = detect_product_types(tz_match_query(tz_item))
+
+    match_types = detect_product_types(matched_name)
+    if not tz_types or not match_types:
+        return False
+    if tz_types & match_types:
+        return False
+    return True
+
+
 def _category_conflict(tz_item: TZItem, matched_name: str) -> bool:
     haystack = normalize_name(
         f"{tz_item.name} {primary_spec_line(tz_item.specifications)}"
@@ -287,6 +329,8 @@ def is_relevant_match(
     score: float | None = None,
 ) -> bool:
     if not matched_name:
+        return False
+    if product_type_conflict(tz_item, matched_name):
         return False
     if _category_conflict(tz_item, matched_name):
         return False
