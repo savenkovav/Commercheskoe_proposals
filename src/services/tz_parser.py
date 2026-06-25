@@ -194,7 +194,10 @@ def _is_valid_tz_product_name(name: str) -> bool:
     words = [word for word in re.split(r"[\s|]+", lower) if word]
     if words and all(word in _HEADER_NAME_TOKENS for word in words):
         return False
-    if len(words) < 2 and len(cleaned) < 12:
+    if len(words) == 1:
+        if words[0] in _HEADER_NAME_TOKENS or len(cleaned) < 5:
+            return False
+    elif len(words) < 2 and len(cleaned) < 12:
         return False
     if re.search(r"(?:федерация|российск)", lower):
         return False
