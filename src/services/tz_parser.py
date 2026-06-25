@@ -148,6 +148,92 @@ def _cell_str(value: object) -> str:
     return str(value).strip()
 
 
+_HEADER_NAME_TOKENS = frozenset(
+    {
+        "наименование",
+        "товара",
+        "характеристики",
+        "характеристика",
+        "характеристи",
+        "характери",
+        "единиц",
+        "единица",
+        "измерения",
+        "измерение",
+        "кол-во",
+        "количество",
+        "страны",
+        "страна",
+        "происхождения",
+        "значение",
+        "п/п",
+        "итого",
+        "стики",
+        "ние",
+    }
+)
+
+
+def _normalize_tz_product_name(name: str) -> str:
+    cleaned = name.strip().strip("|").strip()
+    cleaned = re.sub(r"^\d+\s*\|", "", cleaned).strip()
+    cleaned = cleaned.rstrip("|").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def _is_valid_tz_product_name(name: str) -> bool:
+    cleaned = _normalize_tz_product_name(name)
+    if len(cleaned) < 4:
+        return False
+
+    lower = cleaned.lower()
+    if lower in _HEADER_NAME_TOKENS:
+        return False
+
+    words = [word for word in re.split(r"[\s|]+", lower) if word]
+    if words and all(word in _HEADER_NAME_TOKENS for word in words):
+        return False
+    if cleaned.count("|") >= 2 and len(cleaned) < 40:
+        return False
+    if not re.search(r"[а-яa-zё]{3,}", lower):
+        return False
+    if any(
+        token in lower
+        for token in (
+            "госпрограмма",
+            "зарница",
+            "купить учебное",
+            "основной перечень",
+        )
+    ):
+        return False
+
+    return True
+
+
+def _is_tz_table_header(header_cells: list[str]) -> bool:
+    joined = " ".join(cell.strip().lower() for cell in header_cells if cell.strip())
+    if "наимен" not in joined:
+        return False
+    if "товар" not in joined:
+        return False
+    return _build_column_map(header_cells) is not None
+
+
+def _is_eis_tz_document(text: str) -> bool:
+    lower = text.lower()
+    if "наимен" not in lower or "характер" not in lower:
+        return False
+    if "\x07" in text and re.search(r"\d+\x07", text):
+        return True
+    if re.search(r"\d+\s*\|", text):
+        return True
+    if "\t" in text and re.search(r"\d+\t", text):
+        return True
+    return False
+
+
 def _build_column_map(header_cells: list[str]) -> _ColumnMap | None:
     lower = [c.strip().lower() for c in header_cells]
     if not any("наимен" in cell for cell in lower):
@@ -240,8 +326,8 @@ def _parse_row(
     else:
         return None
 
-    name = cells[col.name]
-    if not name:
+    name = _normalize_tz_product_name(cells[col.name])
+    if not _is_valid_tz_product_name(name):
         return None
 
     unit = cells[col.unit] or "шт."
@@ -276,6 +362,8 @@ def _parse_tz_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
             continue
 
         header_cells = [_cell_str(cell) for cell in table[0]]
+        if not _is_tz_table_header(header_cells):
+            continue
         col = _build_column_map(header_cells)
         if not col:
             continue
@@ -363,9 +451,15 @@ def _extract_doc_text(path: Path) -> str:
 
 def _parse_tz_doc(path: Path) -> list[TZItem]:
     text = _extract_doc_text(path)
-    items = _parse_zakupki_doc_cell_stream(text)
+    items = _parse_zakupki_doc_stream(text)
     if items:
         return items
+
+    if _is_eis_tz_document(text):
+        raise ValueError(
+            "Не удалось извлечь позиции из .doc в формате ЕИС. "
+            "Сохраните файл как .docx или обратитесь к администратору."
+        )
 
     items = _parse_tz_tables(_tables_from_text(text))
     if items:
@@ -434,8 +528,8 @@ def _parse_zakupki_item_parts(parts: list[str]) -> TZItem | None:
     if not number_raw.isdigit():
         return None
 
-    name = parts[1].strip()
-    if not name:
+    name = _normalize_tz_product_name(parts[1])
+    if not _is_valid_tz_product_name(name):
         return None
 
     unit = "шт."
@@ -510,28 +604,59 @@ def _parse_zakupki_item_parts(parts: list[str]) -> TZItem | None:
     )
 
 
-def _parse_zakupki_doc_cell_stream(text: str) -> list[TZItem]:
-    if "\x07" not in text:
-        return []
+def _parse_zakupki_delimited_stream(text: str, delimiter: str) -> list[TZItem]:
+    if delimiter == "\x07":
+        if "\x07" not in text:
+            return []
+        item_pattern = re.compile(r"(?:^|[\n\r])(\d+)\x07")
+        split_delimiter = "\x07"
+    elif delimiter == "|":
+        if not re.search(r"\d+\s*\|", text):
+            return []
+        item_pattern = re.compile(r"(?:^|[\n\r])(\d+)\s*\|")
+        split_delimiter = "|"
+    else:
+        if delimiter not in text:
+            return []
+        item_pattern = re.compile(rf"(?:^|[\n\r])(\d+)\s*{re.escape(delimiter)}")
+        split_delimiter = delimiter
 
     items: list[TZItem] = []
-    for match in re.finditer(r"(?:^|[\n\r])(\d+)\x07", text):
+    for match in item_pattern.finditer(text):
         tail = text[match.start(1) :]
         segment_end = len(tail)
         itogo = re.search(r"\bИТОГО\b", tail, re.IGNORECASE)
         if itogo:
             segment_end = itogo.start()
 
-        next_item = re.search(r"[\n\r](\d+)\x07", tail[len(match.group(0)) :])
+        next_item = re.search(
+            item_pattern,
+            tail[len(match.group(0)) :],
+        )
         if next_item:
             segment_end = min(segment_end, len(match.group(0)) + next_item.start())
 
-        parts = [part.strip() for part in tail[:segment_end].split("\x07")]
+        parts = [part.strip() for part in tail[:segment_end].split(split_delimiter)]
         item = _parse_zakupki_item_parts(parts)
         if item:
             items.append(item)
 
     return items
+
+
+def _parse_zakupki_doc_stream(text: str) -> list[TZItem]:
+    if not _is_eis_tz_document(text):
+        return []
+
+    for delimiter in ("\x07", "|", "\t"):
+        items = _parse_zakupki_delimited_stream(text, delimiter)
+        if items:
+            return items
+    return []
+
+
+def _parse_zakupki_doc_cell_stream(text: str) -> list[TZItem]:
+    return _parse_zakupki_doc_stream(text)
 
 
 def _parse_tz_docx(path: Path) -> list[TZItem]:
@@ -734,6 +859,9 @@ def _tables_from_text(text: str) -> list[list[list[str]]]:
             continue
 
         header = _split_table_line(lines[idx])
+        if not _is_tz_table_header(header):
+            idx += 1
+            continue
         col = _build_column_map(header)
         rows = [header]
         idx += 1
