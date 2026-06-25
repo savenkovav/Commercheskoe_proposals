@@ -568,6 +568,18 @@ a.btn.btn--disabled {
   color: var(--muted);
 }
 
+.process-summary-card h2 {
+  margin: 0 0 12px;
+}
+
+.process-summary-card .results-summary {
+  margin-bottom: 0;
+}
+
+.process-summary-note {
+  margin: 12px 0 0;
+}
+
 .results-summary {
   margin-bottom: 16px;
 }
@@ -1538,7 +1550,7 @@ a.btn.btn--disabled {
 
 .summary-metrics {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1564,6 +1576,15 @@ a.btn.btn--disabled {
 .metric--success .metric__value { color: var(--success); }
 .metric--warning .metric__value { color: var(--warning); }
 .metric--danger .metric__value { color: var(--danger); }
+.metric--accent .metric__value { color: var(--accent); }
+
+.metric__sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--muted);
+}
 
 .table-wrap { overflow-x: auto; }
 
@@ -1938,7 +1959,7 @@ code {
   }
 
   .summary-metrics {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .metric__value {

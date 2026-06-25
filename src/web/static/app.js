@@ -10,6 +10,18 @@ function isAllowedTzFile(name) {
 const fmtMoney = (v) =>
   v == null ? "—" : `${Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2 })} ₽`;
 
+const fmtPercent = (v) =>
+  v == null || !Number.isFinite(v) ? "—" : `${Number(v).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
+
+function calcMarginPercent(totalCost, totalPrice) {
+  const cost = Number(totalCost);
+  const price = Number(totalPrice);
+  if (!Number.isFinite(cost) || !Number.isFinite(price) || cost <= 0) {
+    return null;
+  }
+  return ((price - cost) / cost) * 100;
+}
+
 let currentUser = null;
 let openUserMenuId = null;
 let userEditTargetId = null;
@@ -839,19 +851,27 @@ async function formKpDocument() {
 function renderProcessSummary(data) {
   const s = data.summary;
   const summaryEl = $("#resultsSummary");
-  if (!summaryEl || !s) return;
-  summaryEl.classList.remove("hidden");
+  const summaryCard = $("#processSummaryCard");
+  if (!summaryEl || !summaryCard || !s) return;
+
+  const marginAmount = Number(s.total_price) - Number(s.total_cost);
+  const marginPercent = calcMarginPercent(s.total_cost, s.total_price);
+  const markupNote =
+    s.markup_percent != null ? ` · наценка ${fmtPercent(s.markup_percent)}` : "";
+
+  summaryCard.classList.remove("hidden");
   summaryEl.innerHTML = `
     <div class="summary-metrics">
       <div class="metric"><div class="metric__label">Позиций</div><div class="metric__value">${s.total_items}</div></div>
-      <div class="metric metric--success"><div class="metric__label">Точных</div><div class="metric__value">${s.exact_count}</div></div>
-      <div class="metric metric--warning"><div class="metric__label">Похожих</div><div class="metric__value">${s.similar_count}</div></div>
+      <div class="metric metric--success"><div class="metric__label">Полное совпадение</div><div class="metric__value">${s.exact_count}</div></div>
+      <div class="metric metric--warning"><div class="metric__label">Частичное совпадение</div><div class="metric__value">${s.similar_count}</div></div>
       <div class="metric metric--danger"><div class="metric__label">Не найдено</div><div class="metric__value">${s.not_found_count}</div></div>
       <div class="metric"><div class="metric__label">Себестоимость</div><div class="metric__value">${fmtMoney(s.total_cost)}</div></div>
+      <div class="metric metric--accent"><div class="metric__label">Общая стоимость КП</div><div class="metric__value">${fmtMoney(s.total_price)}</div></div>
+      <div class="metric"><div class="metric__label">Маржа</div><div class="metric__value">${fmtMoney(marginAmount)}<span class="metric__sub">${fmtPercent(marginPercent)}</span></div></div>
       <div class="metric"><div class="metric__label">Цена без наценки</div><div class="metric__value">${fmtMoney(s.total_base_price)}</div></div>
-      <div class="metric"><div class="metric__label">Цена КП</div><div class="metric__value">${fmtMoney(s.total_price)}</div></div>
     </div>
-    <p class="muted" style="margin-top:12px">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}${data.web_used ? " · конкуренты" : ""}${data.kp_formed ? " · КП готово" : ""}</p>
+    <p class="muted process-summary-note">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}${data.web_used ? " · конкуренты" : ""}${markupNote}${data.kp_formed ? " · КП готово" : ""}</p>
   `;
 }
 
@@ -1755,14 +1775,12 @@ function renderProcessResult(data) {
   }
   updateAssistantMode(data);
   const parsedOnly = !data.search_completed;
-  const summaryEl = $("#resultsSummary");
+  const summaryCard = $("#processSummaryCard");
 
-  if (parsedOnly || !summaryEl) {
-    summaryEl?.classList.add("hidden");
-  } else if (kpFormed && data.summary) {
-    renderProcessSummary(data);
+  if (parsedOnly || !data.summary) {
+    summaryCard?.classList.add("hidden");
   } else {
-    summaryEl.classList.add("hidden");
+    renderProcessSummary(data);
   }
 
   renderSavedSelectionList();
