@@ -1657,9 +1657,9 @@ a.btn.btn--disabled {
 .overlay p {
   color: #fff;
   margin: 0;
-  max-width: min(420px, 90vw);
   line-height: 1.45;
   font-size: 0.95rem;
+  white-space: nowrap;
 }
 
 .spinner {
