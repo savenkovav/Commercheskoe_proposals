@@ -9,6 +9,10 @@ def uses_web_discount_pricing(result: MatchResult) -> bool:
     return result.internet_priced and result.unit_base_price is not None
 
 
+def is_internet_sourced_result(result: MatchResult) -> bool:
+    return bool(result.internet_priced or result.source == MatchSource.WEB)
+
+
 def effective_markup_percent(result: MatchResult) -> float | None:
     if result.applied_markup_pct is not None:
         return result.applied_markup_pct

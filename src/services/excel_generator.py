@@ -29,7 +29,8 @@ from src.services.pricing_rules import (
     pricing_adjustment_label,
     uses_web_discount_pricing,
 )
-from src.services.models import KitComponentLine, MatchResult, MatchStatus, ProposalSummary
+from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, ProposalSummary
+from src.services.pricing_rules import is_internet_sourced_result
 from src.services.web_quote_priority import parse_source_detail, resolve_price_source_url
 
 STATUS_LABELS = {
@@ -267,7 +268,7 @@ class ExcelGenerator:
                 supplier_cell.border = _thin_border()
                 supplier_cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-                if include_links:
+                if include_links and is_internet_sourced_result(result):
                     link_url = resolve_price_source_url(
                         result.comparison,
                         unit_base_price=result.unit_base_price,
@@ -278,6 +279,8 @@ class ExcelGenerator:
                         _write_hyperlink(ws, idx, 11, link_url, link_url[:80])
                     else:
                         ws.cell(row=idx, column=11, value="—").border = _thin_border()
+                elif include_links:
+                    ws.cell(row=idx, column=11, value="—").border = _thin_border()
             else:
                 unit_price = _money(result.unit_price) if result.unit_price else None
                 line_total = _money(result.total_price) if result.total_price else None
@@ -594,7 +597,7 @@ class ExcelGenerator:
         source_detail_col = 17
         source_detail_text = result.source_detail if component is None else ""
         source_detail_label, source_detail_url = parse_source_detail(source_detail_text)
-        if component is None and not source_detail_url:
+        if component is None and not source_detail_url and is_internet_sourced_result(result):
             source_detail_url = resolve_price_source_url(
                 result.comparison,
                 unit_base_price=result.unit_base_price,
@@ -934,12 +937,14 @@ class ExcelGenerator:
             supplier_name = (result.matched_name or "").strip() or "—"
             supplier_shop = (result.supplier or "").strip() or "—"
 
-            link_url = resolve_price_source_url(
-                result.comparison,
-                unit_base_price=result.unit_base_price,
-            )
-            if not link_url:
-                _, link_url = parse_source_detail(result.source_detail or "")
+            link_url = None
+            if is_internet_sourced_result(result):
+                link_url = resolve_price_source_url(
+                    result.comparison,
+                    unit_base_price=result.unit_base_price,
+                )
+                if not link_url:
+                    _, link_url = parse_source_detail(result.source_detail or "")
 
             ws.cell(row=idx, column=1, value=result.tz_item.number).border = _thin_border()
             ws.cell(row=idx, column=2, value=result.tz_item.name).border = _thin_border()

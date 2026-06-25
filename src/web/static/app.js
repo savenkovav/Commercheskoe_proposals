@@ -497,6 +497,7 @@ function buildMarketplaceSearchUrl(platformLabel, query) {
 }
 
 function collectMarketplaceSearchLinks(item) {
+  if (!shouldShowInternetLinks(item)) return [];
   const links = [];
   const seen = new Set();
   const push = (url, label) => {
@@ -1204,10 +1205,26 @@ const SOURCE_LABELS = {
   catalog: "Каталог",
   registry: "Реестр",
   price_list: "Прайс",
+  goods_report: "Товарный отчёт",
   web: "Интернет",
   ai: "AI",
   none: "—",
 };
+
+const LOCAL_DATA_SOURCES = new Set([
+  "catalog",
+  "registry",
+  "price_list",
+  "goods_report",
+]);
+
+function isLocalDataSource(item) {
+  return LOCAL_DATA_SOURCES.has(item.source) && !item.internet_priced;
+}
+
+function shouldShowInternetLinks(item) {
+  return Boolean(item.internet_priced || item.source === "web");
+}
 
 const LOCAL_MIN_MATCH_PERCENT = 95;
 const WEB_MIN_MATCH_PERCENT = 100;
@@ -1362,8 +1379,11 @@ function parseSourceDetailText(text) {
 }
 
 function resolveItemSourceUrl(item) {
+  if (isLocalDataSource(item)) return null;
+
   const parsed = parseSourceDetailText(item.source_detail || "");
   if (parsed.url) return parsed.url;
+  if (!shouldShowInternetLinks(item)) return null;
   if (item.internet_url) return item.internet_url;
 
   const allWebQuotes = [...(item.comparison || []), ...(item.competitors || [])].filter(
@@ -1405,6 +1425,11 @@ function renderSourceDetailLine(item) {
   if (!item.source_detail) return null;
   const parsed = parseSourceDetailText(item.source_detail);
   const label = parsed.label || item.source_detail;
+
+  if (isLocalDataSource(item)) {
+    return `<strong>Детали:</strong> ${escapeHtml(label)}`;
+  }
+
   const url = parsed.url || resolveItemSourceUrl(item);
   const productUrl = url && !isSearchListingUrl(url) ? url : null;
   if (productUrl) {

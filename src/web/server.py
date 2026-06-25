@@ -36,7 +36,7 @@ from src.web.auth_routes import admin_router, auth_router, history_router
 from src.services.kp_chat_service import KpChatService, WELCOME_MESSAGE
 from src.services.kp_preferences import KpPreferences
 from src.services.markup_settings import get_markup_percent, set_markup_percent
-from src.services.pricing_rules import effective_markup_percent, format_markup_percent
+from src.services.pricing_rules import effective_markup_percent, format_markup_percent, is_internet_sourced_result
 from src.services.meilisearch_service import meilisearch_health
 from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
 from src.services.web_quote_priority import pick_marketplace_search_urls, resolve_price_source_url
@@ -290,6 +290,8 @@ def _kit_component_to_dict(line: KitComponentLine) -> dict[str, Any]:
 
 
 def _internet_url_from_result(result: MatchResult) -> str | None:
+    if not is_internet_sourced_result(result):
+        return None
     preferred = None
     if result.unit_base_price is not None:
         for quote in result.comparison:
@@ -316,6 +318,8 @@ def _internet_url_from_result(result: MatchResult) -> str | None:
 
 
 def _marketplace_urls_from_result(result: MatchResult) -> list[str]:
+    if not is_internet_sourced_result(result):
+        return []
     has_product_url = any(
         quote.source == "web"
         and quote.url
