@@ -20,6 +20,11 @@ fi
 
 mkdir -p "$APP_DIR"
 cd "$APP_DIR"
+
+if [[ -f scripts/configure_docker_mirrors.sh ]]; then
+  bash scripts/configure_docker_mirrors.sh || true
+fi
+
 mkdir -p output data
 
 if [[ ! -f .env ]]; then

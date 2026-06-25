@@ -3,7 +3,7 @@
 
 services:
   meilisearch:
-    image: getmeili/meilisearch:v1.12
+    image: ${MEILISEARCH_IMAGE:-getmeili/meilisearch:v1.12}
     container_name: comm-proposals-meilisearch
     restart: unless-stopped
     env_file:
@@ -18,7 +18,10 @@ services:
       - "7700"
 
   kp-web:
-    build: .
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-mirror.gcr.io/library/python:3.11-slim}
     container_name: comm-proposals-web
     restart: unless-stopped
     env_file:
@@ -42,7 +45,7 @@ services:
     command: ["python", "-m", "src.web.server"]
 
   nginx:
-    image: nginx:1.27-alpine
+    image: ${NGINX_IMAGE:-mirror.gcr.io/library/nginx:1.27-alpine}
     container_name: comm-proposals-nginx
     restart: unless-stopped
     profiles:
