@@ -205,6 +205,7 @@ class TZMatchService:
             skip_competitors=skip_competitors,
         )
         comparison.extend(competitors)
+        comparison = self._filter_comparison_quotes(tz_item, comparison)
 
         primary = self._resolve_primary_match(
             tz_item,
@@ -370,6 +371,22 @@ class TZMatchService:
             return False
         lower = url.lower()
         return "search" not in lower and "catalog/0/search" not in lower
+
+    def _filter_comparison_quotes(
+        self,
+        tz_item: TZItem,
+        quotes: list[PriceQuote],
+    ) -> list[PriceQuote]:
+        filtered: list[PriceQuote] = []
+        for quote in quotes:
+            name = quote.matched_name or ""
+            if name and (
+                product_type_conflict(tz_item, name)
+                or self.matcher.is_distinctive_mismatch(tz_item.name, name)
+            ):
+                continue
+            filtered.append(quote)
+        return filtered
 
     def _filter_acceptable_web_quotes(
         self,
