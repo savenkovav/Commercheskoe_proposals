@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+import re
+
 from rapidfuzz import fuzz
 
 from src.services.data_loader import normalize_name
@@ -51,17 +53,24 @@ def token_present_in_text(token: str, text: str) -> bool:
     if token in text:
         return True
 
+    if token.isdigit():
+        return bool(re.search(rf"(?<!\d){re.escape(token)}(?!\d)", text))
+
     stem = _token_stem(token)
-    if len(stem) >= 4 and stem in text:
+    if len(stem) >= 5 and re.search(rf"(?<![a-zа-яё0-9]){re.escape(stem)}", text):
         return True
 
+    if len(token) < 5:
+        return False
+
     for word in text.split():
-        if len(word) < 3:
+        if len(word) < 4:
             continue
-        if fuzz.partial_ratio(stem, word) >= 80:
+        if fuzz.ratio(token, word) >= 92:
             return True
-        if fuzz.partial_ratio(token, word) >= 85:
-            return True
+        if len(stem) >= 5 and len(word) >= max(5, len(stem) - 1):
+            if fuzz.partial_ratio(stem, word) >= 94:
+                return True
     return False
 
 

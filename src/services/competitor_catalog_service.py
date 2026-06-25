@@ -3913,12 +3913,18 @@ def _score_catalog_products(
             continue
         score = float(catalog_phrase_match_score(normalized_query, key))
         phrase_match = phrase_match_acceptable(normalized_query, product.name)
+        from src.services.models import TZItem
+        from src.services.tz_search import product_type_conflict
+
+        pseudo_tz = TZItem(number=0, name=query, unit="шт", quantity=1)
+        if product_type_conflict(pseudo_tz, product.name):
+            continue
         if score < COMPETITOR_SEARCH_FALLBACK_THRESHOLD and not phrase_match:
             continue
         seen.add(key)
         if product.price is None and not product.price_label and product.url:
             product = enrich_catalog_product_price(product)
-        if phrase_match:
+        if phrase_match and score >= 80:
             score = max(score, 96.0)
         scored.append((score, product))
 

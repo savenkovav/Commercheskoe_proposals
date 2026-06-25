@@ -31,6 +31,7 @@ from src.services.tz_search import (
     combined_match_score,
     is_relevant_match,
     primary_search_text,
+    product_type_conflict,
     relevance_score,
     tz_match_query,
 )
@@ -515,6 +516,12 @@ class TZMatchService:
             _append_quotes(self._fetch_internet_comparison_ai(tz_item))
 
         quotes = filter_web_quotes(quotes, preferences)
+        quotes = [
+            q
+            for q in quotes
+            if not q.matched_name
+            or not product_type_conflict(tz_item, q.matched_name)
+        ]
         quotes = sort_web_quotes(quotes)
         web_quote = self._pick_best_web_quote(quotes)
         return web_quote, quotes
