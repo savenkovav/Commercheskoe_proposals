@@ -1,0 +1,40 @@
+# Не копировать в образ — монтируется томами или генерируется на сервере
+data/
+output/
+logs/
+storage/
+
+# Секреты и локальная среда
+.env
+.env.*
+deploy/github-vps-dotenv.secret
+deploy/*.secret
+.venv/
+venv/
+kp_meilisearch/.venv/
+
+# Git / IDE / кэш
+.git/
+.gitignore
+.github/
+.cursor/
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.DS_Store
+
+# Артефакты сборки
+build/
+dist/
+*.log
+products.json
+
+# Документация и скрипты деплоя (не нужны в runtime-образе)
+README.md
+deploy/
+scripts/vps_*.sh
+scripts/deploy_*.sh

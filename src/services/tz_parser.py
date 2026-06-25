@@ -194,6 +194,12 @@ def _is_valid_tz_product_name(name: str) -> bool:
     words = [word for word in re.split(r"[\s|]+", lower) if word]
     if words and all(word in _HEADER_NAME_TOKENS for word in words):
         return False
+    if len(words) < 2 and len(cleaned) < 12:
+        return False
+    if re.search(r"(?:федерация|российск)", lower):
+        return False
+    if lower in {"мпиксель", "крат", "прямой", "верхнее", "нижнее", "монокулярный", "светодиод", "cmos", "usb"}:
+        return False
     if cleaned.count("|") >= 2 and len(cleaned) < 40:
         return False
     if not re.search(r"[а-яa-zё]{3,}", lower):
@@ -221,9 +227,32 @@ def _is_tz_table_header(header_cells: list[str]) -> bool:
     return _build_column_map(header_cells) is not None
 
 
+_EIS_KNOWN_CHARACTERISTICS: tuple[str, ...] = (
+    "Конструкционные особенности",
+    "Строение оптической схемы",
+    "Максимальное увеличение",
+    "Разрешение камеры",
+    "Расположение осветителя",
+    "Разъем входа/выхода",
+    "Способ наблюдения",
+    "Тип осветителя",
+    "Тип матрицы",
+    "Питание",
+)
+
+
+def _eis_characteristics_pattern() -> str:
+    return "|".join(
+        re.escape(header)
+        for header in sorted(_EIS_KNOWN_CHARACTERISTICS, key=len, reverse=True)
+    )
+
+
 def _is_eis_tz_document(text: str) -> bool:
     lower = text.lower()
-    if "наимен" not in lower or "характер" not in lower:
+    if "наимен" not in lower and "техническое задание" not in lower:
+        return False
+    if "характер" not in lower and "осветител" not in lower and "микроскоп" not in lower:
         return False
     if "\x07" in text and re.search(r"\d+\x07", text):
         return True
@@ -231,7 +260,142 @@ def _is_eis_tz_document(text: str) -> bool:
         return True
     if "\t" in text and re.search(r"\d+\t", text):
         return True
+    if re.search(r"\b1\s+[А-Яа-яA-Za-z«»]", text) and re.search(
+        r"\bШТ\s*\d+", text, re.IGNORECASE
+    ):
+        return True
+    if re.search(r"\b1[А-Яа-яA-Za-z«»]", text) and re.search(
+        r"ШТ\s*\d+", text, re.IGNORECASE
+    ):
+        return True
     return False
+
+
+def _clean_eis_char_value(raw: str) -> str:
+    cleaned = re.sub(
+        r"\b(ШТ|ШТ\.|компл|упак)\s*\d+\s*(?:Российская Федерация)?",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_eis_specifications(segment: str) -> list[str]:
+    pattern = re.compile(
+        rf"({_eis_characteristics_pattern()})",
+        re.IGNORECASE,
+    )
+    matches = list(pattern.finditer(segment))
+    spec_lines: list[str] = []
+    for index, match in enumerate(matches):
+        header = match.group(1).strip()
+        value_start = match.end()
+        value_end = (
+            matches[index + 1].start() if index + 1 < len(matches) else len(segment)
+        )
+        value = _clean_eis_char_value(segment[value_start:value_end])
+        if value:
+            spec_lines.append(f"{header}: {value}")
+    return spec_lines
+
+
+def _eis_data_section(text: str) -> str:
+    normalized = re.sub(r"[\r\n\t]+", " ", text)
+    normalized = re.sub(r"\s*\|\s*", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    lower = normalized.lower()
+    data_start = 0
+    for marker in (
+        "единица измерения характеристики",
+        "наименование характеристики",
+        "кол-во товара",
+        "наименование страны происхождения товара",
+    ):
+        idx = lower.find(marker)
+        if idx >= 0:
+            data_start = max(data_start, idx + len(marker))
+    return normalized[data_start:].strip() or normalized
+
+
+def _parse_zakupki_concatenated_text(text: str) -> list[TZItem]:
+    if not _is_eis_tz_document(text):
+        return []
+
+    scan = _eis_data_section(text)
+    if not scan:
+        return []
+
+    headers_alt = _eis_characteristics_pattern()
+    items: list[TZItem] = []
+    item_pattern = re.compile(
+        rf"\b(\d+)\s+([А-Яа-яA-Za-z«»\"][^|]+?)(?=\s+(?:{headers_alt}))",
+        re.IGNORECASE,
+    )
+    for match in item_pattern.finditer(scan):
+        number = int(match.group(1))
+        if number <= 0 or number > 200:
+            continue
+
+        name = _normalize_tz_product_name(match.group(2))
+        if not _is_valid_tz_product_name(name):
+            continue
+
+        tail = scan[match.start() :]
+        segment_end = len(tail)
+        itogo = re.search(r"\bИТОГО\b", tail, re.IGNORECASE)
+        if itogo:
+            segment_end = itogo.start()
+
+        for later in item_pattern.finditer(tail[match.end() - match.start() :]):
+            if later.start() <= 0:
+                continue
+            later_number = int(later.group(1))
+            later_name = _normalize_tz_product_name(later.group(2))
+            if later_number <= 0 or later_number > 200:
+                continue
+            if not _is_valid_tz_product_name(later_name):
+                continue
+            later_tail = tail[match.end() - match.start() + later.start() :]
+            if re.search(r"\bШТ\s*\d+", later_tail[:400], re.IGNORECASE):
+                segment_end = min(segment_end, match.end() - match.start() + later.start())
+                break
+
+        segment = tail[:segment_end]
+
+        if not re.search(r"\bШТ\s*\d+", segment, re.IGNORECASE):
+            continue
+
+        unit = "шт."
+        quantity = 1.0
+        country = ""
+        meta = re.search(
+            r"\b(ШТ|ШТ\.|компл|упак)\s*(\d+(?:[.,]\d+)?)\s*(Российская Федерация)?",
+            segment,
+            re.IGNORECASE,
+        )
+        if meta:
+            unit = meta.group(1)
+            quantity = float(meta.group(2).replace(",", "."))
+            if meta.group(3):
+                country = meta.group(3).strip()
+
+        spec_lines = _extract_eis_specifications(segment)
+        if not spec_lines:
+            continue
+
+        items.append(
+            TZItem(
+                number=number,
+                name=name,
+                unit=unit,
+                quantity=quantity,
+                specifications="; ".join(spec_lines),
+                country_of_origin=country,
+            )
+        )
+
+    return items
 
 
 def _build_column_map(header_cells: list[str]) -> _ColumnMap | None:
@@ -611,14 +775,16 @@ def _parse_zakupki_delimited_stream(text: str, delimiter: str) -> list[TZItem]:
         item_pattern = re.compile(r"(?:^|[\n\r])(\d+)\x07")
         split_delimiter = "\x07"
     elif delimiter == "|":
-        if not re.search(r"\d+\s*\|", text):
+        if not re.search(r"\d+\s*\|", text) and not re.search(r"\|\s*\d+\s*\|", text):
             return []
-        item_pattern = re.compile(r"(?:^|[\n\r])(\d+)\s*\|")
+        item_pattern = re.compile(r"(?:^|[\n\r]|\|)\s*(\d+)\s*\|")
         split_delimiter = "|"
     else:
         if delimiter not in text:
             return []
-        item_pattern = re.compile(rf"(?:^|[\n\r])(\d+)\s*{re.escape(delimiter)}")
+        item_pattern = re.compile(
+            rf"(?:^|[\n\r]|\|)\s*(\d+)\s*{re.escape(delimiter)}"
+        )
         split_delimiter = delimiter
 
     items: list[TZItem] = []
@@ -644,15 +810,34 @@ def _parse_zakupki_delimited_stream(text: str, delimiter: str) -> list[TZItem]:
     return items
 
 
+def _zakupki_items_complete(items: list[TZItem], source_text: str) -> bool:
+    if not items:
+        return False
+    for item in items:
+        if not item.specifications or len(item.specifications) < 40:
+            return False
+        if item.quantity <= 1 and re.search(r"\bШТ\s+[2-9]\d", source_text, re.IGNORECASE):
+            return False
+    return True
+
+
 def _parse_zakupki_doc_stream(text: str) -> list[TZItem]:
     if not _is_eis_tz_document(text):
         return []
 
+    best_delimited: list[TZItem] = []
     for delimiter in ("\x07", "|", "\t"):
         items = _parse_zakupki_delimited_stream(text, delimiter)
         if items:
-            return items
-    return []
+            if _zakupki_items_complete(items, text):
+                return items
+            best_delimited = items
+
+    items = _parse_zakupki_concatenated_text(text)
+    if items:
+        return items
+
+    return best_delimited
 
 
 def _parse_zakupki_doc_cell_stream(text: str) -> list[TZItem]:
