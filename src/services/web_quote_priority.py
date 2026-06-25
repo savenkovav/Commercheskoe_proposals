@@ -63,12 +63,19 @@ def is_product_page_url(url: str | None) -> bool:
     return lower.startswith(("http://", "https://"))
 
 
+def is_market_estimate_quote(quote: PriceQuote) -> bool:
+    label = (quote.label or "").lower()
+    return "оценка рынка" in label or "оценка ai" in label
+
+
 def is_acceptable_web_pricing_quote(quote: PriceQuote) -> bool:
     if quote.source != "web":
         return True
     has_price = quote.price is not None or quote.cost is not None
     if not has_price:
         return False
+    if is_market_estimate_quote(quote):
+        return True
     url = quote.url or ""
     score = float(quote.match_score or 0)
     if is_competitor_url(url):

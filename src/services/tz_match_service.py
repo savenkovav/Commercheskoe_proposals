@@ -42,6 +42,7 @@ from src.services.web_quote_priority import (
     has_unpriced_competitor_display_quote,
     is_acceptable_web_pricing_quote,
     is_competitor_url,
+    is_market_estimate_quote,
     is_marketplace_url,
     is_product_page_url,
     is_search_listing_url,
@@ -405,6 +406,7 @@ class TZMatchService:
             tz_item,
             [quote for quote in typed if quote.source == "web"],
             allow_reference_links=True,
+            local_miss=not any(quote.source != "web" for quote in typed),
         )
         return local + web
 
@@ -476,6 +478,11 @@ class TZMatchService:
             )
         for quote in quotes:
             name = quote.matched_name or ""
+            if is_market_estimate_quote(quote) and (
+                quote.price is not None or quote.cost is not None
+            ):
+                accepted.append(quote)
+                continue
             if allow_reference_links and quote.notes == "Поисковая ссылка":
                 accepted.append(quote)
                 continue
@@ -1430,7 +1437,11 @@ class TZMatchService:
                     candidates.append(ai_quote)
 
             filtered = filter_web_quotes(candidates, prefs)
-            filtered = self._filter_acceptable_web_quotes(result.tz_item, filtered)
+            filtered = self._filter_acceptable_web_quotes(
+                result.tz_item,
+                filtered,
+                local_miss=True,
+            )
             self._extend_comparison(result, filtered)
             result.comparison = sort_web_quotes(result.comparison)
 
@@ -1508,6 +1519,8 @@ class TZMatchService:
             return None
         urls = competitor_urls_for_item([], tz_item.name, limit=1)
         url = urls[0] if urls else None
+        if url and is_search_listing_url(url):
+            url = None
         matched_name = str(web_result.get("matched_name") or tz_item.name)
         return PriceQuote(
             source="web",

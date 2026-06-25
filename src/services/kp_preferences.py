@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from src.config import LOCAL_MATCH_THRESHOLD
 from src.services.competitor_sites import meets_web_display_threshold
-from src.services.web_quote_priority import is_search_listing_url
+from src.services.web_quote_priority import is_search_listing_url, is_market_estimate_quote
 
 
 @dataclass
@@ -89,10 +89,21 @@ def filter_comparison_quotes(quotes: list, preferences: KpPreferences) -> list:
             if "web" in preferences.disabled_sources:
                 continue
             is_reference_link = getattr(quote, "notes", "") == "Поисковая ссылка"
-            if not is_reference_link and not web_quote_meets_match_threshold(quote):
+            has_market_estimate_price = (
+                is_market_estimate_quote(quote)
+                and (
+                    getattr(quote, "price", None) is not None
+                    or getattr(quote, "cost", None) is not None
+                )
+            )
+            if (
+                not is_reference_link
+                and not has_market_estimate_price
+                and not web_quote_meets_match_threshold(quote)
+            ):
                 continue
             if is_search_listing_url(getattr(quote, "url", None)):
-                if not is_reference_link:
+                if not is_reference_link and not has_market_estimate_price:
                     continue
             if platform_is_excluded(
                 getattr(quote, "label", ""),
