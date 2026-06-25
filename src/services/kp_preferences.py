@@ -88,10 +88,12 @@ def filter_comparison_quotes(quotes: list, preferences: KpPreferences) -> list:
         if source == "web":
             if "web" in preferences.disabled_sources:
                 continue
-            if not web_quote_meets_match_threshold(quote):
+            is_reference_link = getattr(quote, "notes", "") == "Поисковая ссылка"
+            if not is_reference_link and not web_quote_meets_match_threshold(quote):
                 continue
             if is_search_listing_url(getattr(quote, "url", None)):
-                continue
+                if not is_reference_link:
+                    continue
             if platform_is_excluded(
                 getattr(quote, "label", ""),
                 getattr(quote, "url", None),

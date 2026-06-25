@@ -29,6 +29,7 @@ from src.services.local_price_match import has_local_catalog_or_price_list_price
 from src.services.match_tier import effective_score, meets_floor, resolve_local_floor
 from src.services.tz_search import (
     combined_match_score,
+    internet_search_text,
     is_relevant_match,
     primary_search_text,
     product_type_conflict,
@@ -402,6 +403,7 @@ class TZMatchService:
         web = self._filter_acceptable_web_quotes(
             tz_item,
             [quote for quote in typed if quote.source == "web"],
+            allow_reference_links=True,
         )
         return local + web
 
@@ -457,10 +459,25 @@ class TZMatchService:
         self,
         tz_item: TZItem,
         quotes: list[PriceQuote],
+        *,
+        local_miss: bool = False,
+        allow_reference_links: bool = False,
     ) -> list[PriceQuote]:
         accepted: list[PriceQuote] = []
+        relevance_item = tz_item
+        if local_miss:
+            relevance_item = TZItem(
+                number=tz_item.number,
+                name=tz_item.name,
+                unit=tz_item.unit,
+                quantity=tz_item.quantity,
+                specifications="",
+            )
         for quote in quotes:
             name = quote.matched_name or ""
+            if allow_reference_links and quote.notes == "Поисковая ссылка":
+                accepted.append(quote)
+                continue
             if not name:
                 accepted.append(quote)
                 continue
@@ -473,15 +490,18 @@ class TZMatchService:
                 if quote.url and is_competitor_url(quote.url)
                 else WEB_SEARCH_EXACT_THRESHOLD
             )
+            if local_miss and not (quote.url and is_competitor_url(quote.url)):
+                min_score = LOCAL_MATCH_THRESHOLD
             if not is_relevant_match(
-                tz_item,
+                relevance_item,
                 name,
                 score=float(quote.match_score or 0),
                 min_score=min_score,
             ):
                 continue
             if not is_acceptable_web_pricing_quote(quote):
-                continue
+                if not (local_miss or allow_reference_links):
+                    continue
             accepted.append(quote)
         return accepted
 
@@ -618,7 +638,7 @@ class TZMatchService:
                 quotes.append(quote)
 
         if local_miss and WEB_SEARCH_ENABLED and not skip_competitors:
-            search_text = primary_search_text(tz_item)
+            search_text = internet_search_text(tz_item)
             _append_quotes(
                 self.web_search.search_internet_cascade(
                     search_text,
@@ -631,7 +651,26 @@ class TZMatchService:
             _append_quotes(self._fetch_internet_comparison_ai(tz_item))
 
         quotes = filter_web_quotes(quotes, preferences)
-        quotes = self._filter_acceptable_web_quotes(tz_item, quotes)
+        quotes = self._filter_acceptable_web_quotes(
+            tz_item,
+            quotes,
+            local_miss=local_miss,
+        )
+        if (
+            local_miss
+            and WEB_SEARCH_ENABLED
+            and "web" not in preferences.disabled_sources
+            and not quotes
+        ):
+            _append_quotes(
+                self._fetch_internet_comparison_fast(tz_item, preferences)[1]
+            )
+            quotes = self._filter_acceptable_web_quotes(
+                tz_item,
+                filter_web_quotes(quotes, preferences),
+                local_miss=True,
+                allow_reference_links=True,
+            )
         quotes = sort_web_quotes(quotes)
         web_quote = self._pick_best_web_quote(quotes)
         return web_quote, quotes
@@ -655,6 +694,7 @@ class TZMatchService:
                     label=f"Интернет: {platform}",
                     matched_name=tz_item.name,
                     url=url,
+                    match_score=float(LOCAL_MATCH_THRESHOLD),
                     notes="Поисковая ссылка",
                 )
             )
@@ -1057,6 +1097,7 @@ class TZMatchService:
                 tz_item=tz_item,
                 status=MatchStatus.SIMILAR,
                 source=MatchSource.NONE,
+                matched_name=tz_item.name,
                 notes="Подбор цены из интернета",
             )
 
@@ -1221,11 +1262,15 @@ class TZMatchService:
             and not skip_internet_search
             and not has_acceptable_web_pricing_in_comparison(result.comparison)
         ):
-            search_text = primary_search_text(result.tz_item)
+            search_text = internet_search_text(result.tz_item)
             extra_quotes = self.web_search.search_web_price_fallback(search_text)
             if prefs:
                 extra_quotes = filter_web_quotes(extra_quotes, prefs)
-            extra_quotes = self._filter_acceptable_web_quotes(result.tz_item, extra_quotes)
+            extra_quotes = self._filter_acceptable_web_quotes(
+                result.tz_item,
+                extra_quotes,
+                local_miss=True,
+            )
             if extra_quotes:
                 self._extend_comparison(result, extra_quotes)
                 result.competitors = [
@@ -1358,7 +1403,7 @@ class TZMatchService:
                 and is_acceptable_web_pricing_quote(q)
                 for q in result.comparison
             )
-            search_text = primary_search_text(result.tz_item)
+            search_text = internet_search_text(result.tz_item)
             if not has_priced_web and not skip_internet_search:
                 candidates.extend(
                     self.web_search.search_web_price_fallback(search_text)

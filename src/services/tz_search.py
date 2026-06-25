@@ -144,10 +144,22 @@ def has_meaningful_spec(tz_item: TZItem) -> bool:
     return normalize_name(spec_line) != normalize_name(tz_item.name)
 
 
+def spec_line_is_characteristic_row(spec_line: str) -> bool:
+    """Строка вида «параметр: значение» из вертикальной таблицы ТЗ."""
+    if not spec_line or is_kit_composition_header(spec_line):
+        return False
+    if ":" not in spec_line:
+        return False
+    label, _, value = spec_line.partition(":")
+    return bool(label.strip()) and bool(value.strip()) and len(label.strip()) <= 120
+
+
 def tz_match_query(tz_item: TZItem) -> str:
     """Приоритетный текст сопоставления: наименование + первая характеристика."""
     name = tz_item.name.strip()
     spec_line = primary_spec_line(tz_item.specifications)
+    if spec_line and spec_line_is_characteristic_row(spec_line):
+        return name
     if spec_line and not is_kit_composition_header(spec_line):
         spec_norm = normalize_name(spec_line)
         name_norm = normalize_name(name)
@@ -185,6 +197,14 @@ def build_search_queries(tz_item: TZItem) -> list[str]:
 
 def primary_search_text(tz_item: TZItem) -> str:
     return tz_match_query(tz_item)
+
+
+def internet_search_text(tz_item: TZItem) -> str:
+    """Короткий запрос для интернета и конкурентов — только наименование."""
+    name = tz_item.name.strip()
+    if name:
+        return name
+    return primary_search_text(tz_item)
 
 
 def tz_item_search_text(tz_item: TZItem) -> str:
