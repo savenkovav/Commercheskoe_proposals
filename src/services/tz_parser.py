@@ -281,6 +281,43 @@ def _clean_eis_char_value(raw: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _is_readable_spec_fragment(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    if "\x00" in cleaned:
+        return False
+    if re.search(r"[\u0900-\u0dff\u0e00-\u0eff\uf000-\uffff]", cleaned):
+        return False
+    if re.fullmatch(r"[\d.,]+", cleaned):
+        return True
+    letters = len(re.findall(r"[А-Яа-яA-Za-zЁё]", cleaned))
+    return letters >= max(2, len(cleaned) // 4)
+
+
+def _is_eis_characteristic_header(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return False
+    lower = cleaned.lower()
+    for header in _EIS_KNOWN_CHARACTERISTICS:
+        if lower == header.lower():
+            return True
+    return _looks_like_characteristic_name(cleaned)
+
+
+def _sanitize_eis_delimited_text(text: str) -> str:
+    if "\x07" not in text:
+        return text
+    text = text.replace("\x00", "")
+    text = re.sub(
+        r"[^\w\s«»\-.,/():;№%\"'А-Яа-яЁё\x07]+",
+        "\x07",
+        text,
+    )
+    return re.sub(r"\x07{4,}", "\x07\x07", text)
+
+
 def _extract_eis_specifications(segment: str) -> list[str]:
     pattern = re.compile(
         rf"({_eis_characteristics_pattern()})",
@@ -295,15 +332,13 @@ def _extract_eis_specifications(segment: str) -> list[str]:
             matches[index + 1].start() if index + 1 < len(matches) else len(segment)
         )
         value = _clean_eis_char_value(segment[value_start:value_end])
-        if value:
+        if value and _is_readable_spec_fragment(value):
             spec_lines.append(f"{header}: {value}")
     return spec_lines
 
 
 def _eis_data_section(text: str) -> str:
-    normalized = re.sub(r"[\r\n\t]+", " ", text)
-    normalized = re.sub(r"\s*\|\s*", " ", normalized)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = _normalize_eis_doc_text(text)
     lower = normalized.lower()
     data_start = 0
     for marker in (
@@ -559,26 +594,161 @@ def _detect_ole_suffix(content: bytes) -> str:
     return ".xls"
 
 
+def _extract_doc_text_from_ole_utf16(path: Path) -> str:
+    """Извлекает текст из старого .doc напрямую из UTF-16LE-потока (без textutil/antiword)."""
+    data = path.read_bytes()
+    if not data.startswith(b"\xd0\xcf\x11\xe0"):
+        return ""
+
+    start = -1
+    for label in ("Техническое задание", "Наименование", "наименование"):
+        idx = data.find(label.encode("utf-16le"))
+        if idx >= 0:
+            start = idx if start < 0 else min(start, idx)
+    if start < 0:
+        return ""
+    if start % 2 == 1:
+        start += 1
+
+    end = -1
+    for end_label in ("ИТОГО",):
+        idx = data.find(end_label.encode("utf-16le"), start)
+        if idx >= 0:
+            end = idx + len(end_label.encode("utf-16le")) + 400
+            break
+    if end < 0:
+        end = min(len(data), start + 80000)
+
+    blob = data[start:end]
+    if len(blob) % 2 == 1:
+        blob = blob[:-1]
+    return blob.decode("utf-16le", errors="ignore").strip()
+
+
+def _score_doc_extraction_text(text: str) -> int:
+    if not text.strip():
+        return 0
+    lower = text.lower()
+    score = len(re.findall(r"[а-яё]", lower))
+    if "\x07" in text:
+        score += 50
+    if "наимен" in lower:
+        score += 20
+    if re.search(r"шт\s*\d+", lower):
+        score += 20
+    if "характер" in lower:
+        score += 10
+    return score
+
+
+def _normalize_eis_doc_text(text: str) -> str:
+    normalized = text.replace("\f", " ")
+    normalized = re.sub(r"[\r\n\t]+", " ", normalized)
+    normalized = re.sub(r"\s*\|\s*", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _parse_zakupki_loose_text(text: str) -> list[TZItem]:
+    normalized = _normalize_eis_doc_text(text)
+    if not normalized:
+        return []
+
+    spec_lines = _extract_eis_specifications(normalized)
+    if len(spec_lines) < 1:
+        return []
+
+    char_pattern = re.compile(rf"({_eis_characteristics_pattern()})", re.IGNORECASE)
+    first_char = char_pattern.search(normalized)
+    if not first_char:
+        return []
+
+    prefix = normalized[: first_char.start()]
+    name: str | None = None
+    number = 1
+    for match in reversed(
+        list(
+            re.finditer(
+                r"(?:^|[\s\x07])(\d+)\s*[\.\):\-–—]?\s*"
+                r"([А-Яа-яA-Za-z«»\"][\w\s«»\-]{4,})",
+                prefix,
+                re.IGNORECASE,
+            )
+        )
+    ):
+        candidate_number = int(match.group(1))
+        if candidate_number <= 0 or candidate_number > 200:
+            continue
+        candidate_name = _normalize_tz_product_name(match.group(2))
+        if not _is_valid_tz_product_name(candidate_name):
+            continue
+        number = candidate_number
+        name = candidate_name
+        break
+
+    if not name:
+        return []
+
+    unit = "шт."
+    quantity = 1.0
+    country = ""
+    meta = re.search(
+        r"\b(ШТ|ШТ\.|компл|упак)\s*(\d+(?:[.,]\d+)?)\s*(Российская Федерация)?",
+        normalized,
+        re.IGNORECASE,
+    )
+    if meta:
+        unit = meta.group(1)
+        quantity = float(meta.group(2).replace(",", "."))
+        if meta.group(3):
+            country = meta.group(3).strip()
+
+    return [
+        TZItem(
+            number=number,
+            name=name,
+            unit=unit,
+            quantity=quantity,
+            specifications="; ".join(spec_lines),
+            country_of_origin=country,
+        )
+    ]
+
+
 def _extract_doc_text(path: Path) -> str:
     errors: list[str] = []
+    candidates: list[str] = []
+
+    ole_text = _extract_doc_text_from_ole_utf16(path)
+    if ole_text:
+        candidates.append(ole_text)
 
     if shutil.which("textutil"):
         try:
-            return subprocess.check_output(
-                ["textutil", "-convert", "txt", "-stdout", str(path)],
-                stderr=subprocess.STDOUT,
-            ).decode("utf-8", errors="replace")
+            candidates.append(
+                subprocess.check_output(
+                    ["textutil", "-convert", "txt", "-stdout", str(path)],
+                    stderr=subprocess.STDOUT,
+                ).decode("utf-8", errors="replace")
+            )
         except subprocess.CalledProcessError as exc:
             errors.append(f"textutil: {exc}")
 
     if shutil.which("antiword"):
-        try:
-            return subprocess.check_output(
-                ["antiword", "-m", "UTF-8.txt", str(path)],
-                stderr=subprocess.STDOUT,
-            ).decode("utf-8", errors="replace")
-        except subprocess.CalledProcessError as exc:
-            errors.append(f"antiword: {exc}")
+        for args in (
+            ["-m", "UTF-8.txt"],
+            ["-m", "UTF-8.txt", "-w", "0"],
+            [],
+        ):
+            try:
+                raw = subprocess.check_output(
+                    ["antiword", *args, str(path)],
+                    stderr=subprocess.STDOUT,
+                )
+                candidates.append(raw.decode("utf-8", errors="replace"))
+                for encoding in ("cp1251", "cp866"):
+                    candidates.append(raw.decode(encoding, errors="replace"))
+            except subprocess.CalledProcessError as exc:
+                errors.append(f"antiword{' '.join(args)}: {exc}")
 
     if shutil.which("soffice"):
         try:
@@ -602,9 +772,15 @@ def _extract_doc_text(path: Path) -> str:
                 else:
                     txt_path = Path(tmp) / f"{path.stem}.txt"
                     if txt_path.exists():
-                        return txt_path.read_text(encoding="utf-8", errors="replace")
+                        candidates.append(
+                            txt_path.read_text(encoding="utf-8", errors="replace")
+                        )
         except OSError as exc:
             errors.append(f"soffice: {exc}")
+
+    candidates = [text for text in candidates if text and text.strip()]
+    if candidates:
+        return max(candidates, key=_score_doc_extraction_text)
 
     details = f" ({'; '.join(errors)})" if errors else ""
     raise ValueError(
@@ -619,11 +795,9 @@ def _parse_tz_doc(path: Path) -> list[TZItem]:
     if items:
         return items
 
-    if _is_eis_tz_document(text):
-        raise ValueError(
-            "Не удалось извлечь позиции из .doc в формате ЕИС. "
-            "Сохраните файл как .docx или обратитесь к администратору."
-        )
+    items = _parse_zakupki_loose_text(text)
+    if items:
+        return items
 
     items = _parse_tz_tables(_tables_from_text(text))
     if items:
@@ -733,9 +907,17 @@ def _parse_zakupki_item_parts(parts: list[str]) -> TZItem | None:
                 product_meta_found = True
                 continue
 
-        if idx + 1 < len(parts):
+        if (
+            idx + 1 < len(parts)
+            and _is_eis_characteristic_header(part)
+            and _is_readable_spec_fragment(part)
+        ):
             value = parts[idx + 1].strip()
-            if value and not value.upper().startswith("ИТОГО"):
+            if (
+                value
+                and not value.upper().startswith("ИТОГО")
+                and _is_readable_spec_fragment(value)
+            ):
                 spec_value = value
                 step = 2
                 if idx + 2 < len(parts):
@@ -746,6 +928,7 @@ def _parse_zakupki_item_parts(parts: list[str]) -> TZItem | None:
                         and _parse_quantity(char_unit) is None
                         and len(char_unit) <= 20
                         and not _looks_like_characteristic_name(char_unit)
+                        and _is_readable_spec_fragment(char_unit)
                     ):
                         spec_value = f"{value} {char_unit}"
                         step = 3
@@ -768,39 +951,70 @@ def _parse_zakupki_item_parts(parts: list[str]) -> TZItem | None:
     )
 
 
-def _parse_zakupki_delimited_stream(text: str, delimiter: str) -> list[TZItem]:
+def _iter_zakupki_product_matches(
+    text: str,
+    delimiter: str,
+) -> list[re.Match[str]]:
     if delimiter == "\x07":
         if "\x07" not in text:
             return []
-        item_pattern = re.compile(r"(?:^|[\n\r])(\d+)\x07")
-        split_delimiter = "\x07"
+        item_pattern = re.compile(
+            r"(?:^|[\n\r]|\x07)(\d+)\x07"
+            r"([А-Яа-яA-Za-z«»\"][^\x07\n\r]{2,})",
+            re.IGNORECASE,
+        )
     elif delimiter == "|":
         if not re.search(r"\d+\s*\|", text) and not re.search(r"\|\s*\d+\s*\|", text):
             return []
-        item_pattern = re.compile(r"(?:^|[\n\r]|\|)\s*(\d+)\s*\|")
-        split_delimiter = "|"
+        item_pattern = re.compile(
+            r"(?:^|[\n\r]|\|)\s*(\d+)\s*\|"
+            r"([А-Яа-яA-Za-z«»\"][^|\n\r]{2,})",
+            re.IGNORECASE,
+        )
     else:
         if delimiter not in text:
             return []
         item_pattern = re.compile(
             rf"(?:^|[\n\r]|\|)\s*(\d+)\s*{re.escape(delimiter)}"
+            rf"([А-Яа-яA-Za-z«»\"][^{re.escape(delimiter)}\n\r]{{2,}})",
+            re.IGNORECASE,
         )
+
+    matches: list[re.Match[str]] = []
+    for match in item_pattern.finditer(text):
+        number = int(match.group(1))
+        if number <= 0 or number > 200:
+            continue
+        name = _normalize_tz_product_name(match.group(2))
+        if not _is_valid_tz_product_name(name):
+            continue
+        matches.append(match)
+    return matches
+
+
+def _parse_zakupki_delimited_stream(text: str, delimiter: str) -> list[TZItem]:
+    if delimiter == "\x07":
+        split_delimiter = "\x07"
+    elif delimiter == "|":
+        split_delimiter = "|"
+    else:
         split_delimiter = delimiter
 
+    row_matches = _iter_zakupki_product_matches(text, delimiter)
+    if not row_matches:
+        return []
+
     items: list[TZItem] = []
-    for match in item_pattern.finditer(text):
+    for index, match in enumerate(row_matches):
         tail = text[match.start(1) :]
         segment_end = len(tail)
         itogo = re.search(r"\bИТОГО\b", tail, re.IGNORECASE)
         if itogo:
             segment_end = itogo.start()
-
-        next_item = re.search(
-            item_pattern,
-            tail[len(match.group(0)) :],
-        )
-        if next_item:
-            segment_end = min(segment_end, len(match.group(0)) + next_item.start())
+        if index + 1 < len(row_matches):
+            next_start = row_matches[index + 1].start(1) - match.start(1)
+            if next_start > 0:
+                segment_end = min(segment_end, next_start)
 
         parts = [part.strip() for part in tail[:segment_end].split(split_delimiter)]
         item = _parse_zakupki_item_parts(parts)
@@ -825,6 +1039,9 @@ def _parse_zakupki_doc_stream(text: str) -> list[TZItem]:
     if not _is_eis_tz_document(text):
         return []
 
+    if "\x07" in text:
+        text = _sanitize_eis_delimited_text(text)
+
     best_delimited: list[TZItem] = []
     for delimiter in ("\x07", "|", "\t"):
         items = _parse_zakupki_delimited_stream(text, delimiter)
@@ -834,6 +1051,10 @@ def _parse_zakupki_doc_stream(text: str) -> list[TZItem]:
             best_delimited = items
 
     items = _parse_zakupki_concatenated_text(text)
+    if items:
+        return items
+
+    items = _parse_zakupki_loose_text(text)
     if items:
         return items
 
