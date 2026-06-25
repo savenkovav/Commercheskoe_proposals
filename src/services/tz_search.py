@@ -44,7 +44,8 @@ _NAME_GENERIC = frozenset(
     """
     портативная портативный портативное портативные
     лабораторный лабораторная лабораторное лабораторные
-    комплект набор модель система демонстрационный демонстрационная
+    комплект набор модель модели моделей система демонстрационный демонстрационная
+    гипсовых гипсов гипсовые гипсовая
     цифровой цифровая цифровое цифровые
     стеклянная стеклянный стеклянное
     двухместная двухместный регулировкой регулировка
@@ -103,6 +104,7 @@ _PRODUCT_TYPES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("gypsum", ("гипсов", "муляж", "натюрморт")),
     ("glassware", ("палочк", "стеклянн", "колб", "пробирк")),
     ("stationery", ("скетчбук", "блокнот", "тетрад", "канцтовар", "кожзам", "бумаг", "ручк", "карандаш")),
+    ("molecular", ("молекул", "кристаллич", "решеток", "решёток", "органик", "неорганик")),
 )
 
 
@@ -265,8 +267,17 @@ def detect_product_types(text: str) -> set[str]:
 
 
 def product_type_conflict(tz_item: TZItem, matched_name: str) -> bool:
-    tz_types = detect_product_types(tz_item.name)
+    from src.services.matcher import ItemMatcher
+
+    if ItemMatcher.is_distinctive_mismatch(tz_item.name, matched_name):
+        return True
+
     spec_line = primary_spec_line(tz_item.specifications)
+    if spec_line and not is_kit_composition_header(spec_line):
+        if ItemMatcher.is_distinctive_mismatch(spec_line, matched_name):
+            return True
+
+    tz_types = detect_product_types(tz_item.name)
     if spec_line and not is_kit_composition_header(spec_line):
         tz_types |= detect_product_types(spec_line)
     if not tz_types:
@@ -316,7 +327,10 @@ def _name_anchors_satisfied(tz_item: TZItem, matched_name: str) -> bool:
     if not anchors:
         return True
     choice = normalize_name(matched_name)
-    return any(_token_matches_anchor(anchor, choice) for anchor in anchors)
+    hits = sum(1 for anchor in anchors if _token_matches_anchor(anchor, choice))
+    if len(anchors) == 1:
+        return hits >= 1
+    return hits >= len(anchors)
 
 
 def combined_match_score(tz_item: TZItem, matched_name: str) -> float:

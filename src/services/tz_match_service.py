@@ -40,6 +40,7 @@ from src.services.web_quote_priority import (
     has_acceptable_web_pricing_in_comparison,
     has_unpriced_competitor_display_quote,
     is_acceptable_web_pricing_quote,
+    is_competitor_url,
     is_marketplace_url,
     is_product_page_url,
     is_search_listing_url,
@@ -370,6 +371,38 @@ class TZMatchService:
         lower = url.lower()
         return "search" not in lower and "catalog/0/search" not in lower
 
+    def _filter_acceptable_web_quotes(
+        self,
+        tz_item: TZItem,
+        quotes: list[PriceQuote],
+    ) -> list[PriceQuote]:
+        accepted: list[PriceQuote] = []
+        for quote in quotes:
+            name = quote.matched_name or ""
+            if not name:
+                accepted.append(quote)
+                continue
+            if product_type_conflict(tz_item, name):
+                continue
+            if self.matcher.is_distinctive_mismatch(tz_item.name, name):
+                continue
+            min_score = (
+                LOCAL_MATCH_THRESHOLD
+                if quote.url and is_competitor_url(quote.url)
+                else WEB_SEARCH_EXACT_THRESHOLD
+            )
+            if not is_relevant_match(
+                tz_item,
+                name,
+                score=float(quote.match_score or 0),
+                min_score=min_score,
+            ):
+                continue
+            if not is_acceptable_web_pricing_quote(quote):
+                continue
+            accepted.append(quote)
+        return accepted
+
     def _ensure_internet_comparison(self, result: MatchResult) -> None:
         web_quotes = [q for q in result.comparison if q.source == "web"]
         if result.internet_priced and result.unit_base_price is not None:
@@ -516,12 +549,7 @@ class TZMatchService:
             _append_quotes(self._fetch_internet_comparison_ai(tz_item))
 
         quotes = filter_web_quotes(quotes, preferences)
-        quotes = [
-            q
-            for q in quotes
-            if not q.matched_name
-            or not product_type_conflict(tz_item, q.matched_name)
-        ]
+        quotes = self._filter_acceptable_web_quotes(tz_item, quotes)
         quotes = sort_web_quotes(quotes)
         web_quote = self._pick_best_web_quote(quotes)
         return web_quote, quotes
@@ -1355,13 +1383,39 @@ class TZMatchService:
 
     @staticmethod
     def _promote_internet_status(result: MatchResult) -> None:
+        from src.services.matcher import ItemMatcher
+
+        tz_item = result.tz_item
+
+        def _web_quote_ok(quote: PriceQuote) -> bool:
+            name = quote.matched_name or ""
+            if not name:
+                return is_acceptable_web_pricing_quote(quote)
+            if ItemMatcher.is_distinctive_mismatch(tz_item.name, name):
+                return False
+            if product_type_conflict(tz_item, name):
+                return False
+            min_score = (
+                LOCAL_MATCH_THRESHOLD
+                if quote.url and is_competitor_url(quote.url)
+                else WEB_SEARCH_EXACT_THRESHOLD
+            )
+            if not is_relevant_match(
+                tz_item,
+                name,
+                score=float(quote.match_score or 0),
+                min_score=min_score,
+            ):
+                return False
+            return is_acceptable_web_pricing_quote(quote)
+
         has_web_price = result.internet_priced and result.unit_base_price is not None
         web_with_url = [
             q
             for q in result.comparison
             if q.source == "web"
             and q.url
-            and is_acceptable_web_pricing_quote(q)
+            and _web_quote_ok(q)
         ]
 
         if has_web_price or web_with_url:

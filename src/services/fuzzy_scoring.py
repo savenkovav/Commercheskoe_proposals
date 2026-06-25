@@ -83,7 +83,29 @@ def phrase_token_coverage(query: str, choice: str) -> tuple[int, int, float]:
     return hits, len(tokens), hits / len(tokens)
 
 
+_KIT_GENERIC_PHRASE_TOKENS = frozenset(
+    """
+    комплект набор модель модели моделей система демонстрационный
+    гипсовых гипсов гипсовые тематических сложных составления
+    """.split()
+)
+
+
+def distinctive_phrase_tokens(query: str) -> list[str]:
+    return [
+        token
+        for token in extract_phrase_tokens(query)
+        if token not in _KIT_GENERIC_PHRASE_TOKENS and len(token) >= 4
+    ]
+
+
 def phrase_match_acceptable(query: str, choice: str) -> bool:
+    distinctive = distinctive_phrase_tokens(query)
+    if distinctive:
+        normalized_choice = normalize_name(choice)
+        if not any(token_present_in_text(token, normalized_choice) for token in distinctive):
+            return False
+
     hits, total, coverage = phrase_token_coverage(query, choice)
     if total == 0:
         return False
