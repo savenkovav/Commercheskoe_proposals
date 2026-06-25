@@ -556,6 +556,228 @@ def _parse_row(
     )
 
 
+_SPEC_UNIT_TOKENS = frozenset(
+    {
+        "шт",
+        "шт.",
+        "штука",
+        "штук",
+        "компл",
+        "компл.",
+        "комплект",
+        "упак",
+        "упак.",
+        "мм",
+        "см",
+        "м",
+        "кг",
+        "г",
+        "л",
+        "мл",
+        "вт",
+        "квт",
+        "об/мин",
+        "об",
+        "мин",
+        "час",
+        "°с",
+        "°c",
+        "мпа",
+        "гц",
+        "дб",
+        "%",
+    }
+)
+
+
+def _looks_like_spec_unit(value: str) -> bool:
+    normalized = value.strip().lower().rstrip(".")
+    if not normalized:
+        return False
+    if normalized in _SPEC_UNIT_TOKENS:
+        return True
+    if normalized in _PRODUCT_UNITS:
+        return True
+    if re.fullmatch(r"[\d°%./\-a-zа-яё]{1,12}", normalized):
+        return len(normalized) <= 8
+    return False
+
+
+def _dominant_product_name_column(rows: list[list[str]]) -> tuple[int, str] | None:
+    if len(rows) < 2:
+        return None
+
+    col_count = max(len(row) for row in rows)
+    best: tuple[int, str] | None = None
+    best_score = 0.0
+
+    for col_idx in range(col_count):
+        values: list[str] = []
+        for row in rows:
+            if col_idx >= len(row):
+                continue
+            normalized = _normalize_tz_product_name(_cell_str(row[col_idx]))
+            if normalized:
+                values.append(normalized)
+        if len(values) < 2:
+            continue
+
+        counts: dict[str, int] = {}
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+        name, repeats = max(counts.items(), key=lambda item: item[1])
+        ratio = repeats / len(rows)
+        if ratio < 0.55:
+            continue
+        if not _is_valid_tz_product_name(name):
+            continue
+        score = ratio * len(name)
+        if score > best_score:
+            best_score = score
+            best = (col_idx, name)
+
+    return best
+
+
+def _detect_vertical_spec_columns(
+    rows: list[list[str]],
+) -> tuple[int, int, int, int | None] | None:
+    dominant = _dominant_product_name_column(rows)
+    if not dominant:
+        return None
+
+    name_col, _ = dominant
+    col_count = max(len(row) for row in rows)
+    if col_count < 3:
+        return None
+
+    best_param_col: int | None = None
+    best_param_score = 0
+    for col_idx in range(col_count):
+        if col_idx == name_col:
+            continue
+        score = 0
+        for row in rows:
+            if col_idx >= len(row):
+                continue
+            text = _cell_str(row[col_idx])
+            if not text or len(text) < 3:
+                continue
+            if text.replace(" ", "").isdigit():
+                continue
+            if _looks_like_characteristic_name(text) or len(text) <= 120:
+                score += 1
+        if score > best_param_score:
+            best_param_score = score
+            best_param_col = col_idx
+
+    if best_param_col is None or best_param_score < 2:
+        return None
+
+    value_col: int | None = None
+    value_score = 0
+    for col_idx in range(col_count):
+        if col_idx in {name_col, best_param_col}:
+            continue
+        score = sum(
+            1
+            for row in rows
+            if col_idx < len(row) and _cell_str(row[col_idx]).strip()
+        )
+        if score > value_score:
+            value_score = score
+            value_col = col_idx
+
+    if value_col is None or value_score < 2:
+        return None
+
+    unit_col: int | None = None
+    for col_idx in range(col_count):
+        if col_idx in {name_col, best_param_col, value_col}:
+            continue
+        unit_hits = sum(
+            1
+            for row in rows
+            if col_idx < len(row) and _looks_like_spec_unit(_cell_str(row[col_idx]))
+        )
+        if unit_hits >= max(2, len(rows) // 4):
+            unit_col = col_idx
+            break
+
+    return name_col, best_param_col, value_col, unit_col
+
+
+def _is_vertical_spec_table(rows: list[list[str]]) -> bool:
+    if len(rows) < 3:
+        return False
+    if _is_tz_table_header([_cell_str(cell) for cell in rows[0]]):
+        return False
+    return _detect_vertical_spec_columns(rows) is not None
+
+
+def _format_vertical_spec_line(param: str, value: str, unit: str) -> str:
+    param = re.sub(r"\s+", " ", param.replace("\n", " ")).strip(" :")
+    value = re.sub(r"\s+", " ", value.replace("\n", " ")).strip()
+    unit = re.sub(r"\s+", " ", unit.replace("\n", " ")).strip()
+    if not param:
+        return ""
+    if not value:
+        return param
+    if unit and unit.lower() not in value.lower():
+        return f"{param}: {value} {unit}".strip()
+    return f"{param}: {value}"
+
+
+def _parse_vertical_spec_table(
+    rows: list[list[str]],
+    *,
+    number: int,
+) -> TZItem | None:
+    columns = _detect_vertical_spec_columns(rows)
+    if not columns:
+        return None
+
+    name_col, param_col, value_col, unit_col = columns
+    dominant = _dominant_product_name_column(rows)
+    if not dominant:
+        return None
+
+    _, name = dominant
+    spec_lines: list[str] = []
+    for row in rows:
+        cells = [_cell_str(cell) for cell in row]
+        if param_col >= len(cells):
+            continue
+        param = cells[param_col]
+        value = cells[value_col] if value_col < len(cells) else ""
+        unit = cells[unit_col] if unit_col is not None and unit_col < len(cells) else ""
+        line = _format_vertical_spec_line(param, value, unit)
+        if line:
+            spec_lines.append(line)
+
+    if not spec_lines:
+        return None
+
+    return TZItem(
+        number=number,
+        name=name,
+        unit="шт.",
+        quantity=1.0,
+        specifications="\n".join(spec_lines),
+    )
+
+
+def _parse_vertical_spec_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
+    items: list[TZItem] = []
+    for table in tables:
+        if not _is_vertical_spec_table(table):
+            continue
+        item = _parse_vertical_spec_table(table, number=len(items) + 1)
+        if item:
+            items.append(item)
+    return items
+
+
 def _parse_tz_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
     items: list[TZItem] = []
 
@@ -857,6 +1079,19 @@ def _looks_like_characteristic_name(value: str) -> bool:
         "емкост",
         "частот",
         "напряж",
+        "ротор",
+        "таймер",
+        "скорост",
+        "комплект",
+        "управл",
+        "режим",
+        "температ",
+        "вместим",
+        "дискрет",
+        "функц",
+        "поддерж",
+        "адаптер",
+        "центрифуг",
     )
     return any(keyword in lower for keyword in keywords)
 
@@ -1076,7 +1311,20 @@ def _parse_tz_docx(path: Path) -> list[TZItem]:
         rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
         tables.append(rows)
 
-    return _parse_tz_tables(tables)
+    items = _parse_tz_tables(tables)
+    if items:
+        return items
+
+    items = _parse_vertical_spec_tables(tables)
+    if items:
+        return items
+
+    text = _extract_docx_text(path)
+    items = _parse_zakupki_loose_text(text)
+    if items:
+        return items
+
+    return []
 
 
 def _extract_docx_text(path: Path) -> str:
