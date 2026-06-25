@@ -22,6 +22,8 @@ mkdir -p "$(dirname "$OUT")"
       "$SOURCE"
   grep -q '^WEB_BEHIND_PROXY=' "$SOURCE" || echo 'WEB_BEHIND_PROXY=true'
   grep -q '^PUBLIC_BASE_URL=' "$SOURCE" || echo 'PUBLIC_BASE_URL=http://195.133.73.215'
+  grep -q '^AUTH_ENABLED=' "$SOURCE" || echo 'AUTH_ENABLED=true'
+  grep -q '^USERS_DB_PATH=' "$SOURCE" || echo 'USERS_DB_PATH=data/users.db'
   grep -q '^SEARCH_KIT_COMPONENT_LINKS=' "$SOURCE" || echo 'SEARCH_KIT_COMPONENT_LINKS=false'
 } > "$OUT"
 

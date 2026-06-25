@@ -30,6 +30,8 @@ fi
 sed -i 's/^WEB_HOST=.*/WEB_HOST=0.0.0.0/' .env
 grep -q '^WEB_BEHIND_PROXY=' .env || echo 'WEB_BEHIND_PROXY=true' >> .env
 sed -i 's/^WEB_BEHIND_PROXY=.*/WEB_BEHIND_PROXY=true/' .env
+grep -q '^AUTH_ENABLED=' .env || echo 'AUTH_ENABLED=true' >> .env
+grep -q '^USERS_DB_PATH=' .env || echo 'USERS_DB_PATH=data/users.db' >> .env
 
 if grep -q '^PROCUREMENT_REPORT_PATH=\.\./' .env 2>/dev/null; then
   sed -i 's|^PROCUREMENT_REPORT_PATH=.*|PROCUREMENT_REPORT_PATH=|' .env

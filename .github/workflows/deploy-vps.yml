@@ -37,7 +37,7 @@ jobs:
           password: ${{ secrets.VPS_PASSWORD }}
           port: 22
           source: "/tmp/release.tgz"
-          target: "/tmp/comm-proposals-release.tgz"
+          target: "/tmp"
           overwrite: true
 
       - name: Deploy on VPS
@@ -53,8 +53,8 @@ jobs:
             set -euo pipefail
             APP_DIR=/opt/comm-proposals
             mkdir -p "$APP_DIR"
-            tar xzf /tmp/comm-proposals-release.tgz -C "$APP_DIR"
-            rm -f /tmp/comm-proposals-release.tgz
+            tar xzf /tmp/release.tgz -C "$APP_DIR"
+            rm -f /tmp/release.tgz
             if [ -n "${{ secrets.VPS_DOTENV }}" ]; then
               printf '%s\n' "${{ secrets.VPS_DOTENV }}" > "$APP_DIR/.env"
             fi
