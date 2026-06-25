@@ -1,4 +1,6 @@
-# Деплой на домен probizness.ru
+# Деплой на домен probizness.ru (устарело — используйте regionsnab7.ru)
+
+См. [deploy/regionsnab7.ru/README.md](../regionsnab7.ru/README.md).
 
 DNS: A-запись `probizness.ru` и `www.probizness.ru` → IP VPS.
 
@@ -9,7 +11,7 @@ DNS: A-запись `probizness.ru` и `www.probizness.ru` → IP VPS.
 ```env
 WEB_HOST=0.0.0.0
 WEB_BEHIND_PROXY=true
-PUBLIC_BASE_URL=https://probizness.ru
+PUBLIC_BASE_URL=http://regionsnab7.ru
 ```
 
 ## Запуск

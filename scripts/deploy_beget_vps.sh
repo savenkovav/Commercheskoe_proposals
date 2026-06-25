@@ -35,7 +35,7 @@ fi
 if [[ "$USE_DOCKER" == "true" ]]; then
   ssh "$REMOTE" "cd ${REMOTE_DIR} && docker compose -f docker-compose.prod.yml up -d --build"
   echo ""
-  echo "Готово. Проверьте: http://savenkoff.beget.tech"
+  echo "Готово. Проверьте: http://regionsnab7.ru/"
   echo "Логи: ssh ${REMOTE} 'cd ${REMOTE_DIR} && docker compose -f docker-compose.prod.yml logs -f'"
 else
   ssh "$REMOTE" "cd ${REMOTE_DIR} && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt"

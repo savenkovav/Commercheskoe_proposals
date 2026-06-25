@@ -18,12 +18,14 @@ trap 'rm -f "$ENV_TMP"' EXIT
 if [[ -f "$ROOT/.env" ]]; then
   sed -e 's/^WEB_HOST=.*/WEB_HOST=0.0.0.0/' \
       -e 's/^WEB_BEHIND_PROXY=.*/WEB_BEHIND_PROXY=true/' \
+      -e 's|^PUBLIC_BASE_URL=.*|PUBLIC_BASE_URL=http://regionsnab7.ru|' \
       -e 's|^PROCUREMENT_REPORT_PATH=.*|PROCUREMENT_REPORT_PATH=|' \
       "$ROOT/.env" > "$ENV_TMP"
 else
   cp "$ROOT/env.example" "$ENV_TMP"
   sed -i '' 's/^WEB_HOST=.*/WEB_HOST=0.0.0.0/' "$ENV_TMP"
   echo 'WEB_BEHIND_PROXY=true' >> "$ENV_TMP"
+  grep -q '^PUBLIC_BASE_URL=' "$ENV_TMP" || echo 'PUBLIC_BASE_URL=http://regionsnab7.ru' >> "$ENV_TMP"
 fi
 
 export VPS_PASSWORD HOST USER APP_DIR ENV_TMP ROOT

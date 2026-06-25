@@ -32,6 +32,8 @@ grep -q '^WEB_BEHIND_PROXY=' .env || echo 'WEB_BEHIND_PROXY=true' >> .env
 sed -i 's/^WEB_BEHIND_PROXY=.*/WEB_BEHIND_PROXY=true/' .env
 grep -q '^AUTH_ENABLED=' .env || echo 'AUTH_ENABLED=true' >> .env
 grep -q '^USERS_DB_PATH=' .env || echo 'USERS_DB_PATH=data/users.db' >> .env
+grep -q '^PUBLIC_BASE_URL=' .env || echo 'PUBLIC_BASE_URL=http://regionsnab7.ru' >> .env
+sed -i 's|^PUBLIC_BASE_URL=.*|PUBLIC_BASE_URL=http://regionsnab7.ru|' .env
 
 if grep -q '^PROCUREMENT_REPORT_PATH=\.\./' .env 2>/dev/null; then
   sed -i 's|^PROCUREMENT_REPORT_PATH=.*|PROCUREMENT_REPORT_PATH=|' .env

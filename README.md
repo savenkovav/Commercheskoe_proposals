@@ -103,7 +103,7 @@ GitHub → `Commercheskoe_proposals` → Settings → Secrets and variables → 
 | `VPS_HOST` | `195.133.73.215` |
 | `VPS_USER` | `root` |
 | `VPS_SSH_KEY` | приватный ключ (весь файл, включая `BEGIN/END`) |
-| `VPS_DOTENV` | production `.env` (WEB_HOST=0.0.0.0, WEB_BEHIND_PROXY=true, API-ключи) |
+| `VPS_DOTENV` | production `.env` (`WEB_HOST=0.0.0.0`, `WEB_BEHIND_PROXY=true`, `PUBLIC_BASE_URL=http://regionsnab7.ru`, API-ключи) |
 
 Опционально: `VPS_PASSWORD` (если без ключа), `VPS_PORT` (по умолчанию 22).
 
@@ -117,7 +117,7 @@ GitHub → `Commercheskoe_proposals` → Settings → Secrets and variables → 
 **4. Проверка**
 
 ```bash
-curl -I http://195.133.73.215/
+curl -I http://regionsnab7.ru/
 ssh root@195.133.73.215 'docker compose -f /opt/comm-proposals/docker-compose.prod.yml ps'
 ```
 
@@ -127,11 +127,14 @@ ssh root@195.133.73.215 'docker compose -f /opt/comm-proposals/docker-compose.pr
 VPS_HOST=195.133.73.215 VPS_PASSWORD='...' ./scripts/vps_rsync_deploy.sh
 ```
 
-### Домен savenkoff.beget.tech (Beget VPS)
+### Домен regionsnab7.ru
 
-1. **Панель Beget → DNS** — A-запись `savenkoff.beget.tech` → IP VPS (`195.133.73.215`).
-2. На VPS открыты порты 80/443.
-3. В `VPS_DOTENV` укажите `PUBLIC_BASE_URL=https://savenkoff.beget.tech`.
+1. **DNS** — A-запись `regionsnab7.ru` и `www.regionsnab7.ru` → IP VPS (`195.133.73.215`).
+2. На VPS открыты порты **80** (и **443**, если позже включите HTTPS).
+3. В `.env` / `VPS_DOTENV`: `PUBLIC_BASE_URL=http://regionsnab7.ru`, `WEB_BEHIND_PROXY=true`.
+4. Nginx: `deploy/beget/nginx-docker.conf` или `deploy/regionsnab7.ru/nginx-vhost.conf`.
+
+Публичный адрес веб-интерфейса: **http://regionsnab7.ru/**
 
 ### Docker (локально)
 
