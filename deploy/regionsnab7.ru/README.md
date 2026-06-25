@@ -1,4 +1,6 @@
-# Деплой на домен regionsnab7.ru
+# Деплой на домен regionsnab7.ru (отложено)
+
+> Сейчас используется **https://probizness.ru/** — см. [deploy/probizness.ru/README.md](../probizness.ru/README.md).
 
 Публичный URL веб-интерфейса: **http://regionsnab7.ru/**
 

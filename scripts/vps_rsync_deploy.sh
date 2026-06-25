@@ -41,4 +41,4 @@ expect {
 }
 EXPECT_EOF
 
-echo "Готово: http://regionsnab7.ru/"
+echo "Готово: https://probizness.ru/"

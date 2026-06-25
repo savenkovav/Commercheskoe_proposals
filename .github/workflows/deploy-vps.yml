@@ -69,6 +69,6 @@ jobs:
           password: ${{ secrets.VPS_PASSWORD }}
           port: 22
           script: |
-            curl -fsS -o /dev/null -H "Host: regionsnab7.ru" http://127.0.0.1/ \
+            curl -fsS -o /dev/null -H "Host: probizness.ru" http://127.0.0.1/ \
               || curl -fsS -o /dev/null http://127.0.0.1:8080/
             docker compose -f /opt/comm-proposals/docker-compose.prod.yml ps

@@ -103,7 +103,7 @@ GitHub → `Commercheskoe_proposals` → Settings → Secrets and variables → 
 | `VPS_HOST` | `195.133.73.215` |
 | `VPS_USER` | `root` |
 | `VPS_SSH_KEY` | приватный ключ (весь файл, включая `BEGIN/END`) |
-| `VPS_DOTENV` | production `.env` (`WEB_HOST=0.0.0.0`, `WEB_BEHIND_PROXY=true`, `PUBLIC_BASE_URL=http://regionsnab7.ru`, API-ключи) |
+| `VPS_DOTENV` | production `.env` (`WEB_HOST=0.0.0.0`, `WEB_BEHIND_PROXY=true`, `PUBLIC_BASE_URL=https://probizness.ru`, API-ключи) |
 
 Опционально: `VPS_PASSWORD` (если без ключа), `VPS_PORT` (по умолчанию 22).
 
@@ -117,7 +117,7 @@ GitHub → `Commercheskoe_proposals` → Settings → Secrets and variables → 
 **4. Проверка**
 
 ```bash
-curl -I http://regionsnab7.ru/
+curl -I https://probizness.ru/
 ssh root@195.133.73.215 'docker compose -f /opt/comm-proposals/docker-compose.prod.yml ps'
 ```
 
@@ -127,14 +127,16 @@ ssh root@195.133.73.215 'docker compose -f /opt/comm-proposals/docker-compose.pr
 VPS_HOST=195.133.73.215 VPS_PASSWORD='...' ./scripts/vps_rsync_deploy.sh
 ```
 
-### Домен regionsnab7.ru
+### Домен probizness.ru
 
-1. **DNS** — A-запись `regionsnab7.ru` и `www.regionsnab7.ru` → **195.133.73.215** (не другой IP).
-2. На VPS открыты порты **80** (и **443**, если позже включите HTTPS).
-3. В `.env` / `VPS_DOTENV`: `PUBLIC_BASE_URL=http://regionsnab7.ru`, `WEB_BEHIND_PROXY=true`.
-4. **target-nginx**: `bash scripts/configure_regionsnab7_nginx.sh` (прокси на `comm-proposals-web:8080`).
+1. **DNS** — A-запись `probizness.ru` и `www.probizness.ru` → **195.133.73.215**.
+2. На VPS открыты порты **80** и **443** (HTTPS через Let's Encrypt).
+3. В `.env` / `VPS_DOTENV`: `PUBLIC_BASE_URL=https://probizness.ru`, `WEB_BEHIND_PROXY=true`.
+4. **target-nginx**: vhost из `deploy/probizness.ru/nginx-vhost.conf` (прокси на `comm-proposals-web:8080`).
 
-Публичный адрес веб-интерфейса: **http://regionsnab7.ru/**
+Публичный адрес веб-интерфейса: **https://probizness.ru/**
+
+> Домен `regionsnab7.ru` — заготовка на будущее, см. `deploy/regionsnab7.ru/`.
 
 ### Docker (локально)
 

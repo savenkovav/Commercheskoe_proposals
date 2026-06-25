@@ -1,8 +1,8 @@
-# Деплой на домен probizness.ru (устарело — используйте regionsnab7.ru)
+# Деплой на домен probizness.ru
 
-См. [deploy/regionsnab7.ru/README.md](../regionsnab7.ru/README.md).
+Публичный URL веб-интерфейса: **https://probizness.ru/**
 
-DNS: A-запись `probizness.ru` и `www.probizness.ru` → IP VPS.
+DNS: A-запись `probizness.ru` и `www.probizness.ru` → IP VPS (**195.133.73.215**).
 
 На сервере с занятыми портами 80/443 приложение проксируется через основной nginx (`target-nginx`).
 
@@ -11,13 +11,13 @@ DNS: A-запись `probizness.ru` и `www.probizness.ru` → IP VPS.
 ```env
 WEB_HOST=0.0.0.0
 WEB_BEHIND_PROXY=true
-PUBLIC_BASE_URL=http://regionsnab7.ru
+PUBLIC_BASE_URL=https://probizness.ru
 ```
 
 ## Запуск
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 Контейнер `comm-proposals-web` подключается к внешней сети `root_target_network`.

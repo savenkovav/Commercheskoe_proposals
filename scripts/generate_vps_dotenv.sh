@@ -21,7 +21,7 @@ mkdir -p "$(dirname "$OUT")"
       -e 's/^USE_AI_INTERNET_SEARCH=.*/USE_AI_INTERNET_SEARCH=false/' \
       "$SOURCE"
   grep -q '^WEB_BEHIND_PROXY=' "$SOURCE" || echo 'WEB_BEHIND_PROXY=true'
-  grep -q '^PUBLIC_BASE_URL=' "$SOURCE" || echo 'PUBLIC_BASE_URL=http://regionsnab7.ru'
+  grep -q '^PUBLIC_BASE_URL=' "$SOURCE" || echo 'PUBLIC_BASE_URL=https://probizness.ru'
   grep -q '^AUTH_ENABLED=' "$SOURCE" || echo 'AUTH_ENABLED=true'
   grep -q '^USERS_DB_PATH=' "$SOURCE" || echo 'USERS_DB_PATH=data/users.db'
   grep -q '^SEARCH_KIT_COMPONENT_LINKS=' "$SOURCE" || echo 'SEARCH_KIT_COMPONENT_LINKS=false'
