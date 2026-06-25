@@ -1651,6 +1651,15 @@ a.btn.btn--disabled {
   justify-content: center;
   z-index: 100;
   gap: 16px;
+  color: #fff;
+}
+
+.overlay p {
+  color: #fff;
+  margin: 0;
+  max-width: min(420px, 90vw);
+  line-height: 1.45;
+  font-size: 0.95rem;
 }
 
 .spinner {
