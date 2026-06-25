@@ -13,6 +13,7 @@ const fmtMoney = (v) =>
 let currentUser = null;
 let openUserMenuId = null;
 let userEditTargetId = null;
+let userModalMode = "edit";
 
 const ROLE_LABELS = { admin: "Администратор", manager: "Менеджер" };
 
@@ -86,20 +87,33 @@ function closeUserMenus() {
   document.querySelectorAll(".user-menu").forEach((menu) => menu.classList.add("hidden"));
 }
 
-function openUserCredentialsModal({ title, hint, html, showForm = false, userId = null }) {
+function openUserCredentialsModal({ title, hint, html, showForm = false, userId = null, mode = "edit" }) {
   const modal = $("#userCredentialsModal");
   const form = $("#userEditForm");
   const saveBtn = $("#btnSaveUserCredentials");
+  const loginInput = $("#editUserLogin");
+  const passwordInput = $("#editUserPassword");
   $("#userCredentialsTitle").textContent = title;
   $("#userCredentialsHint").textContent = hint || "";
   $("#userCredentialsBox").innerHTML = html || "";
   $("#userCredentialsBox").classList.toggle("hidden", showForm);
   form?.classList.toggle("hidden", !showForm);
   saveBtn?.classList.toggle("hidden", !showForm);
+  if (saveBtn) {
+    saveBtn.textContent = mode === "create" ? "Создать" : "Сохранить";
+  }
   userEditTargetId = userId;
+  userModalMode = mode;
   if (showForm) {
-    $("#editUserLogin").value = "";
-    $("#editUserPassword").value = "";
+    loginInput.value = "";
+    passwordInput.value = "";
+    if (mode === "create") {
+      loginInput.placeholder = "Логин";
+      passwordInput.placeholder = "Пароль";
+    } else {
+      loginInput.placeholder = "Новый логин";
+      passwordInput.placeholder = "Новый пароль";
+    }
   }
   modal?.classList.remove("hidden");
 }
@@ -107,6 +121,7 @@ function openUserCredentialsModal({ title, hint, html, showForm = false, userId 
 function closeUserCredentialsModal() {
   $("#userCredentialsModal")?.classList.add("hidden");
   userEditTargetId = null;
+  userModalMode = "edit";
 }
 
 async function loadUsers() {
@@ -157,22 +172,13 @@ function renderUsersTable(users) {
     .join("");
 }
 
-async function createManager() {
-  try {
-    const data = await api("/api/admin/users/managers", { method: "POST" });
-    const user = data.user;
-    openUserCredentialsModal({
-      title: "Новый менеджер",
-      hint: "Сохраните логин и пароль — пароль показывается один раз.",
-      html: `
-        <p><strong>Логин:</strong> <code>${escapeHtml(user.login)}</code></p>
-        <p><strong>Пароль:</strong> <code>${escapeHtml(user.password)}</code></p>`,
-    });
-    await loadUsers();
-    showToast("Менеджер создан");
-  } catch (e) {
-    showToast(e.message, true);
-  }
+function openAddManagerForm() {
+  openUserCredentialsModal({
+    title: "Новый менеджер",
+    hint: "Введите логин и пароль. Допустимы латинские буквы и символы _ . @ % ! /",
+    showForm: true,
+    mode: "create",
+  });
 }
 
 async function handleUserAction(action, userId, login = "") {
@@ -212,9 +218,30 @@ async function handleUserAction(action, userId, login = "") {
 }
 
 async function saveUserCredentials() {
-  if (!userEditTargetId) return;
   const login = $("#editUserLogin").value.trim();
   const password = $("#editUserPassword").value.trim();
+
+  if (userModalMode === "create") {
+    if (!login || !password) {
+      showToast("Укажите логин и пароль", true);
+      return;
+    }
+    try {
+      await api("/api/admin/users/managers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ login, password }),
+      });
+      closeUserCredentialsModal();
+      await loadUsers();
+      showToast("Менеджер создан");
+    } catch (e) {
+      showToast(e.message, true);
+    }
+    return;
+  }
+
+  if (!userEditTargetId) return;
   if (!login && !password) {
     showToast("Укажите новый логин или пароль", true);
     return;
@@ -296,7 +323,7 @@ function renderHistory(data) {
 
 function initAuth() {
   $("#btnLogout")?.addEventListener("click", logoutUser);
-  $("#btnAddManager")?.addEventListener("click", createManager);
+  $("#btnAddManager")?.addEventListener("click", openAddManagerForm);
   $("#btnRefreshHistory")?.addEventListener("click", loadHistory);
   $("#btnKpHistory")?.addEventListener("click", () => switchToTab("history"));
   $("#btnLookupHistory")?.addEventListener("click", () => switchToTab("history"));

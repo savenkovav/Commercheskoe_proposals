@@ -381,11 +381,11 @@
     <div class="modal__backdrop" data-close-modal></div>
     <div class="modal__dialog">
       <h3 id="userCredentialsTitle">Учётные данные</h3>
-      <p class="muted" id="userCredentialsHint">Сохраните логин и пароль — пароль показывается один раз.</p>
+      <p class="muted" id="userCredentialsHint"></p>
       <div class="credentials-box" id="userCredentialsBox"></div>
       <div class="form-stack hidden" id="userEditForm">
-        <input type="text" id="editUserLogin" class="input" placeholder="Новый логин">
-        <input type="text" id="editUserPassword" class="input" placeholder="Новый пароль">
+        <input type="text" id="editUserLogin" class="input" placeholder="Логин" autocomplete="off">
+        <input type="text" id="editUserPassword" class="input" placeholder="Пароль" autocomplete="new-password">
       </div>
       <div class="modal__actions">
         <button class="btn btn--secondary" type="button" data-close-modal>Закрыть</button>

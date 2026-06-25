@@ -105,16 +105,20 @@ def resolve_user_by_token(token: str | None):
     return db.get_user_by_id(user_id)
 
 
-def create_manager() -> dict[str, str]:
+def create_manager(login: str, password: str) -> dict[str, str | int]:
+    login_value = login.strip()
+    if not validate_credential(login_value):
+        raise ValueError("Логин может содержать только латинские буквы и символы _ . @ % ! /")
+    if not validate_credential(password):
+        raise ValueError("Пароль может содержать только латинские буквы и символы _ . @ % ! /")
     db = get_user_database()
-    login = generate_login(db)
-    password = generate_password()
+    if db.get_user_by_login(login_value):
+        raise ValueError("Пользователь с таким логином уже существует")
     password_hash, password_salt = hash_password(password)
-    user = db.create_user(login, password_hash, password_salt, role=ROLE_MANAGER)
+    user = db.create_user(login_value, password_hash, password_salt, role=ROLE_MANAGER)
     return {
-        "id": str(user.id),
+        "id": user.id,
         "login": user.login,
-        "password": password,
         "role": user.role,
     }
 

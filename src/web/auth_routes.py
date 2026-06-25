@@ -34,6 +34,11 @@ class UpdateCredentialsRequest(BaseModel):
     password: str | None = Field(default=None, max_length=128)
 
 
+class CreateManagerRequest(BaseModel):
+    login: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
 def _user_payload(user: UserRecord) -> dict:
     return {
         "id": user.id,
@@ -120,9 +125,18 @@ def api_list_users(_: UserRecord = Depends(get_admin_user)) -> dict:
 
 
 @admin_router.post("/users/managers")
-def api_create_manager(_: UserRecord = Depends(get_admin_user)) -> dict:
-    created = create_manager()
-    return {"user": created}
+def api_create_manager(
+    body: CreateManagerRequest,
+    _: UserRecord = Depends(get_admin_user),
+) -> dict:
+    try:
+        created = create_manager(body.login, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    user = get_user_database().get_user_by_id(int(created["id"]))
+    if user is None:
+        raise HTTPException(status_code=500, detail="Не удалось создать пользователя")
+    return {"user": _user_payload(user)}
 
 
 @admin_router.post("/users/{user_id}/promote")
