@@ -3,6 +3,9 @@ from __future__ import annotations
 import io
 import logging
 import re
+import shutil
+import subprocess
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,8 +20,35 @@ from src.services.models import TZItem
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_TZ_EXTENSIONS = {".docx", ".pdf", ".xlsx", ".xls"}
-SUPPORTED_TZ_LABEL = ".docx, .pdf, .xlsx, .xls"
+SUPPORTED_TZ_EXTENSIONS = {".doc", ".docx", ".pdf", ".xlsx", ".xls"}
+SUPPORTED_TZ_LABEL = ".doc, .docx, .pdf, .xlsx, .xls"
+
+_PRODUCT_UNITS = frozenset(
+    {
+        "шт",
+        "шт.",
+        "штука",
+        "штук",
+        "компл",
+        "компл.",
+        "комплект",
+        "упак",
+        "упак.",
+        "упаковка",
+        "м",
+        "м.",
+        "метр",
+        "кг",
+        "кг.",
+        "л",
+        "л.",
+        "т",
+        "т.",
+        "пара",
+        "пар",
+        "набор",
+    }
+)
 
 
 @dataclass
@@ -34,6 +64,8 @@ class _ColumnMap:
 
 def parse_tz(path: Path) -> list[TZItem]:
     suffix = path.suffix.lower()
+    if suffix == ".doc":
+        return _parse_tz_doc(path)
     if suffix == ".docx":
         return _parse_tz_docx(path)
     if suffix == ".pdf":
@@ -48,6 +80,8 @@ def parse_tz(path: Path) -> list[TZItem]:
 
 def extract_tz_document_text(path: Path) -> str:
     suffix = path.suffix.lower()
+    if suffix == ".doc":
+        return _extract_doc_text(path)
     if suffix == ".docx":
         return _extract_docx_text(path)
     if suffix == ".pdf":
@@ -64,7 +98,7 @@ def detect_tz_suffix(content: bytes, content_type: str | None = None) -> str | N
     if content.startswith(b"%PDF"):
         return ".pdf"
     if content.startswith(b"\xd0\xcf\x11\xe0"):
-        return ".xls"
+        return _detect_ole_suffix(content)
     if content.startswith(b"PK"):
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -259,6 +293,243 @@ def _parse_tz_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
                 item = _parse_row(cells, col, fallback_number=auto_number)
             if item:
                 items.append(item)
+
+    return items
+
+
+def _detect_ole_suffix(content: bytes) -> str:
+    if b"Workbook" in content and b"MSWord" not in content and b"WordDocument" not in content:
+        return ".xls"
+    if b"MSWord" in content or b"WordDocument" in content:
+        return ".doc"
+    if b"Word" in content and b"Excel" not in content[:8192]:
+        return ".doc"
+    return ".xls"
+
+
+def _extract_doc_text(path: Path) -> str:
+    errors: list[str] = []
+
+    if shutil.which("textutil"):
+        try:
+            return subprocess.check_output(
+                ["textutil", "-convert", "txt", "-stdout", str(path)],
+                stderr=subprocess.STDOUT,
+            ).decode("utf-8", errors="replace")
+        except subprocess.CalledProcessError as exc:
+            errors.append(f"textutil: {exc}")
+
+    if shutil.which("antiword"):
+        try:
+            return subprocess.check_output(
+                ["antiword", "-m", "UTF-8.txt", str(path)],
+                stderr=subprocess.STDOUT,
+            ).decode("utf-8", errors="replace")
+        except subprocess.CalledProcessError as exc:
+            errors.append(f"antiword: {exc}")
+
+    if shutil.which("soffice"):
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                result = subprocess.run(
+                    [
+                        "soffice",
+                        "--headless",
+                        "--convert-to",
+                        "txt:Text",
+                        "--outdir",
+                        tmp,
+                        str(path),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    errors.append(f"soffice: {result.stderr.strip() or result.stdout.strip()}")
+                else:
+                    txt_path = Path(tmp) / f"{path.stem}.txt"
+                    if txt_path.exists():
+                        return txt_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            errors.append(f"soffice: {exc}")
+
+    details = f" ({'; '.join(errors)})" if errors else ""
+    raise ValueError(
+        "Не удалось прочитать .doc. Сохраните файл как .docx "
+        f"или установите LibreOffice/antiword.{details}"
+    )
+
+
+def _parse_tz_doc(path: Path) -> list[TZItem]:
+    text = _extract_doc_text(path)
+    items = _parse_zakupki_doc_cell_stream(text)
+    if items:
+        return items
+
+    items = _parse_tz_tables(_tables_from_text(text))
+    if items:
+        return items
+
+    raise ValueError(
+        "Не удалось извлечь позиции из .doc. "
+        "Убедитесь, что в файле есть таблица с колонкой «Наименование товара»."
+    )
+
+
+def _is_product_unit(value: str) -> bool:
+    normalized = value.strip().lower().rstrip(".")
+    if normalized in _PRODUCT_UNITS:
+        return True
+    upper = value.strip().upper()
+    return upper in {"ШТ", "КОМПЛ", "УПАК"}
+
+
+def _parse_quantity(value: str) -> float | None:
+    raw = value.strip().replace(" ", "").replace(",", ".")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _looks_like_characteristic_name(value: str) -> bool:
+    lower = value.lower()
+    keywords = (
+        "располож",
+        "тип",
+        "способ",
+        "размер",
+        "максим",
+        "миним",
+        "конструк",
+        "разреш",
+        "разъем",
+        "питание",
+        "строение",
+        "матриц",
+        "характер",
+        "назнач",
+        "мощност",
+        "диаметр",
+        "длина",
+        "ширин",
+        "высот",
+        "вес",
+        "объем",
+        "емкост",
+        "частот",
+        "напряж",
+    )
+    return any(keyword in lower for keyword in keywords)
+
+
+def _parse_zakupki_item_parts(parts: list[str]) -> TZItem | None:
+    if len(parts) < 2:
+        return None
+
+    number_raw = parts[0].rstrip(".")
+    if not number_raw.isdigit():
+        return None
+
+    name = parts[1].strip()
+    if not name:
+        return None
+
+    unit = "шт."
+    quantity = 1.0
+    country = ""
+    spec_lines: list[str] = []
+    product_meta_found = False
+
+    idx = 2
+    while idx < len(parts):
+        part = parts[idx].strip()
+        if not part:
+            idx += 1
+            continue
+        if part.upper().startswith("ИТОГО"):
+            break
+
+        if not product_meta_found and _is_product_unit(part):
+            qty = _parse_quantity(parts[idx + 1]) if idx + 1 < len(parts) else None
+            if qty is not None:
+                unit = part.strip() or "шт."
+                quantity = qty
+                idx += 2
+                if idx < len(parts):
+                    candidate = parts[idx].strip()
+                    if (
+                        candidate
+                        and not _is_product_unit(candidate)
+                        and _parse_quantity(candidate) is None
+                        and (
+                            not _looks_like_characteristic_name(candidate)
+                            or len(candidate) > 15
+                        )
+                    ):
+                        country = candidate
+                        idx += 1
+                product_meta_found = True
+                continue
+
+        if idx + 1 < len(parts):
+            value = parts[idx + 1].strip()
+            if value and not value.upper().startswith("ИТОГО"):
+                spec_value = value
+                step = 2
+                if idx + 2 < len(parts):
+                    char_unit = parts[idx + 2].strip()
+                    if (
+                        char_unit
+                        and not _is_product_unit(char_unit)
+                        and _parse_quantity(char_unit) is None
+                        and len(char_unit) <= 20
+                        and not _looks_like_characteristic_name(char_unit)
+                    ):
+                        spec_value = f"{value} {char_unit}"
+                        step = 3
+                spec_lines.append(f"{part}: {spec_value}")
+                idx += step
+                continue
+
+        idx += 1
+
+    if not spec_lines and not product_meta_found:
+        return None
+
+    return TZItem(
+        number=int(number_raw),
+        name=name,
+        unit=unit,
+        quantity=quantity,
+        specifications="; ".join(spec_lines),
+        country_of_origin=country,
+    )
+
+
+def _parse_zakupki_doc_cell_stream(text: str) -> list[TZItem]:
+    if "\x07" not in text:
+        return []
+
+    items: list[TZItem] = []
+    for match in re.finditer(r"(?:^|[\n\r])(\d+)\x07", text):
+        tail = text[match.start(1) :]
+        segment_end = len(tail)
+        itogo = re.search(r"\bИТОГО\b", tail, re.IGNORECASE)
+        if itogo:
+            segment_end = itogo.start()
+
+        next_item = re.search(r"[\n\r](\d+)\x07", tail[len(match.group(0)) :])
+        if next_item:
+            segment_end = min(segment_end, len(match.group(0)) + next_item.start())
+
+        parts = [part.strip() for part in tail[:segment_end].split("\x07")]
+        item = _parse_zakupki_item_parts(parts)
+        if item:
+            items.append(item)
 
     return items
 

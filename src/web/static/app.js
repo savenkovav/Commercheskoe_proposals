@@ -1,7 +1,7 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
-const ALLOWED_TZ_EXTENSIONS = [".docx", ".pdf", ".xlsx", ".xls"];
+const ALLOWED_TZ_EXTENSIONS = [".doc", ".docx", ".pdf", ".xlsx", ".xls"];
 
 function isAllowedTzFile(name) {
   const lower = name.toLowerCase();

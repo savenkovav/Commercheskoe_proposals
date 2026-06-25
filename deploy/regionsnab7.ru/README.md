@@ -2,20 +2,25 @@
 
 Публичный URL веб-интерфейса: **http://regionsnab7.ru/**
 
-DNS: A-запись `regionsnab7.ru` и `www.regionsnab7.ru` → IP VPS.
+DNS: A-запись `regionsnab7.ru` и `www.regionsnab7.ru` → **195.133.73.215** (VPS с приложением).
 
-## Переменные окружения
+Сейчас домен часто указывает на другой IP (`77.222.40.251`) — тогда сайт не откроется. Проверка:
 
-```env
-WEB_HOST=0.0.0.0
-WEB_BEHIND_PROXY=true
-PUBLIC_BASE_URL=http://regionsnab7.ru
+```bash
+dig +short regionsnab7.ru A
 ```
 
-## Nginx
+## Nginx (target-nginx на VPS)
 
-- Docker (профиль `beget-nginx`): `deploy/beget/nginx-docker.conf`
-- Внешний nginx на VPS: `deploy/regionsnab7.ru/nginx-vhost.conf`
+Приложение работает в Docker (`comm-proposals-web:8080`), снаружи его отдаёт **target-nginx** (`/root/nginx.conf`).
+
+```bash
+bash scripts/configure_regionsnab7_nginx.sh
+```
+
+Фрагмент: `deploy/regionsnab7.ru/nginx-target-vhost.conf`
+
+Альтернатива (профиль `beget-nginx` в docker-compose): `deploy/beget/nginx-docker.conf`
 
 После изменения конфигурации:
 

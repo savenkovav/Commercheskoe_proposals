@@ -129,10 +129,10 @@ VPS_HOST=195.133.73.215 VPS_PASSWORD='...' ./scripts/vps_rsync_deploy.sh
 
 ### Домен regionsnab7.ru
 
-1. **DNS** — A-запись `regionsnab7.ru` и `www.regionsnab7.ru` → IP VPS (`195.133.73.215`).
+1. **DNS** — A-запись `regionsnab7.ru` и `www.regionsnab7.ru` → **195.133.73.215** (не другой IP).
 2. На VPS открыты порты **80** (и **443**, если позже включите HTTPS).
 3. В `.env` / `VPS_DOTENV`: `PUBLIC_BASE_URL=http://regionsnab7.ru`, `WEB_BEHIND_PROXY=true`.
-4. Nginx: `deploy/beget/nginx-docker.conf` или `deploy/regionsnab7.ru/nginx-vhost.conf`.
+4. **target-nginx**: `bash scripts/configure_regionsnab7_nginx.sh` (прокси на `comm-proposals-web:8080`).
 
 Публичный адрес веб-интерфейса: **http://regionsnab7.ru/**
 
