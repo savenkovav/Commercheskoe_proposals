@@ -24,6 +24,19 @@ _GENERIC_WORDS = frozenset(
     более менее размер размеры длина диаметр
     штука штук шт
     включает следующие следующий состоит входит перечень
+    перемешивания перемешивание различных различные
+    химических химические веществ вещества
+    должна должно должны может могут
+    объем объема емкость емкости
+    использования использование применения применение
+    обеспечивает обеспечение соответствует соответствовать
+    """.split()
+)
+
+_SPEC_FILLER = frozenset(
+    """
+    для при без над под из от до применения использования
+    или либо также других другие различных различные
     """.split()
 )
 
@@ -212,7 +225,12 @@ def spec_required_tokens(tz_item: TZItem) -> list[str]:
 
     for raw in re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", spec_line):
         token = normalize_name(raw)
-        if len(token) < 3 or token in _GENERIC_WORDS or token in name_tokens:
+        if (
+            len(token) < 3
+            or token in _GENERIC_WORDS
+            or token in _SPEC_FILLER
+            or token in name_tokens
+        ):
             continue
         if token in seen:
             continue
@@ -347,10 +365,19 @@ def is_relevant_match(
     strong_spec_match = bool(
         required and len(required) >= 2 and _required_tokens_present(required, matched_name)
     )
-    if has_spec and not _name_anchors_satisfied(tz_item, matched_name) and not strong_spec_match:
+    strong_name_match = name_score >= LOCAL_MATCH_THRESHOLD
+
+    if (
+        has_spec
+        and not strong_name_match
+        and not _name_anchors_satisfied(tz_item, matched_name)
+        and not strong_spec_match
+    ):
         return False
 
-    if required and not _required_tokens_present(required, matched_name):
+    if required and not strong_name_match and not _required_tokens_present(
+        required, matched_name
+    ):
         return False
 
     if has_spec:

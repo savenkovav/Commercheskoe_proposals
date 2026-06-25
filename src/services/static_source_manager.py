@@ -9,15 +9,20 @@ from pathlib import Path
 
 from src.config import (
     CATALOG_PATH,
+    GOODS_REPORT_PATH,
+    PROCUREMENT_REPORT_PATH,
     REGISTRY_PATH,
     REGISTRY_PHOTOS_DIR,
     SOURCES_REGISTRY_PATH,
+    STOCK_BALANCE_PATH,
 )
-from src.services.data_loader import load_catalog, load_registry
+from src.services.data_loader import load_catalog, load_goods_report, load_registry
 
 logger = logging.getLogger(__name__)
 
-STATIC_SOURCE_IDS = frozenset({"catalog", "registry"})
+STATIC_SOURCE_IDS = frozenset(
+    {"catalog", "registry", "goods_report", "procurement", "stock_balance"}
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,24 @@ STATIC_SOURCES: dict[str, StaticSourceConfig] = {
         default_name="Реестр остатков",
         type_label="Реестр остатков",
         path=REGISTRY_PATH,
+    ),
+    "goods_report": StaticSourceConfig(
+        source_id="goods_report",
+        default_name="Товарный отчёт",
+        type_label="Товарный отчёт",
+        path=GOODS_REPORT_PATH,
+    ),
+    "procurement": StaticSourceConfig(
+        source_id="procurement",
+        default_name="Отчёт по закупкам",
+        type_label="Отчёт по закупкам",
+        path=PROCUREMENT_REPORT_PATH or (GOODS_REPORT_PATH.parent / "procurement_report.xlsx"),
+    ),
+    "stock_balance": StaticSourceConfig(
+        source_id="stock_balance",
+        default_name="Остатки на дату",
+        type_label="Остатки на дату",
+        path=STOCK_BALANCE_PATH or (REGISTRY_PATH.parent / "stock_balance.xlsx"),
     ),
 }
 
@@ -116,6 +139,8 @@ class StaticSourceManager:
         try:
             if config.source_id == "catalog":
                 items = load_catalog(path)
+            elif config.source_id in {"goods_report", "procurement", "stock_balance"}:
+                items = load_goods_report(path)
             else:
                 items = load_registry(path, REGISTRY_PHOTOS_DIR)
         except Exception as exc:

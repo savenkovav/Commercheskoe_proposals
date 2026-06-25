@@ -44,9 +44,13 @@ DELIVERY_DAYS = os.getenv("DELIVERY_DAYS", "15 рабочих дней посл�
 
 CATALOG_PATH = PROJECT_ROOT / os.getenv("CATALOG_PATH", "data/catalog.xlsx")
 GOODS_REPORT_PATH = PROJECT_ROOT / os.getenv("GOODS_REPORT_PATH", "data/goods_report.xlsx")
-_procurement_report_raw = os.getenv("PROCUREMENT_REPORT_PATH", "").strip()
+_procurement_report_raw = os.getenv("PROCUREMENT_REPORT_PATH", "data/procurement_report.xlsx").strip()
 PROCUREMENT_REPORT_PATH = (
     PROJECT_ROOT / _procurement_report_raw if _procurement_report_raw else None
+)
+_stock_balance_raw = os.getenv("STOCK_BALANCE_PATH", "data/stock_balance.xlsx").strip()
+STOCK_BALANCE_PATH = (
+    PROJECT_ROOT / _stock_balance_raw if _stock_balance_raw else None
 )
 USE_GOODS_REPORT = os.getenv("USE_GOODS_REPORT", "true").lower() in {
     "1",

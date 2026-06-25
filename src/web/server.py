@@ -18,10 +18,13 @@ from src.services.app_state import get_processor, reload_processor
 from src.config import (
     AUTH_ENABLED,
     CATALOG_PATH,
+    GOODS_REPORT_PATH,
     OUTPUT_DIR,
+    PROCUREMENT_REPORT_PATH,
     PROJECT_ROOT,
     REGISTRY_PATH,
     REGISTRY_PHOTOS_DIR,
+    STOCK_BALANCE_PATH,
     USE_AI_INTERNET_SEARCH,
     WEB_BEHIND_PROXY,
     WEB_HOST,
@@ -434,11 +437,22 @@ def _registry_source(processor) -> dict[str, Any]:
 def _static_source_response(source_id: str) -> dict[str, Any]:
     processor = get_processor()
     manager = get_static_source_manager()
+    from src.services.data_loader import load_goods_report, load_registry
+
     counts = {
         "catalog": len(processor.catalog),
         "registry": len(processor.registry),
+        "goods_report": len(load_goods_report(GOODS_REPORT_PATH))
+        if GOODS_REPORT_PATH.exists()
+        else 0,
+        "procurement": len(load_goods_report(PROCUREMENT_REPORT_PATH))
+        if PROCUREMENT_REPORT_PATH and PROCUREMENT_REPORT_PATH.exists()
+        else 0,
+        "stock_balance": len(load_registry(STOCK_BALANCE_PATH))
+        if STOCK_BALANCE_PATH and STOCK_BALANCE_PATH.exists()
+        else 0,
     }
-    return {"entry": manager.to_dict(source_id, counts[source_id])}
+    return {"entry": manager.to_dict(source_id, counts.get(source_id, 0))}
 
 
 def _is_public_web_path(path: str) -> bool:
@@ -1640,11 +1654,35 @@ def api_competitors_search(body: CompetitorSearchRequest) -> dict[str, Any]:
 
 @app.get("/api/prices")
 def api_prices_list() -> dict[str, Any]:
+    from src.services.data_loader import load_goods_report, load_registry
+
     processor = get_processor()
     manager = get_price_list_manager()
+    static_manager = get_static_source_manager()
     entries = manager.list_entries()
     catalog = _catalog_source(processor)
     registry = _registry_source(processor)
+    goods_report = (
+        static_manager.to_dict("goods_report", len(load_goods_report(GOODS_REPORT_PATH)))
+        if GOODS_REPORT_PATH.exists()
+        else None
+    )
+    procurement = (
+        static_manager.to_dict(
+            "procurement",
+            len(load_goods_report(PROCUREMENT_REPORT_PATH)),
+        )
+        if PROCUREMENT_REPORT_PATH and PROCUREMENT_REPORT_PATH.exists()
+        else None
+    )
+    stock_balance = (
+        static_manager.to_dict(
+            "stock_balance",
+            len(load_registry(STOCK_BALANCE_PATH)),
+        )
+        if STOCK_BALANCE_PATH and STOCK_BALANCE_PATH.exists()
+        else None
+    )
     price_items = [
         {
             "id": entry.id,
@@ -1661,10 +1699,14 @@ def api_prices_list() -> dict[str, Any]:
     return {
         "catalog": catalog,
         "registry": registry,
+        "goods_report": goods_report,
+        "procurement": procurement,
+        "stock_balance": stock_balance,
         "items": price_items,
         "catalogs": [catalog] if catalog else [],
         "prices": price_items,
-        "stock": [registry] if registry else [],
+        "stock": [item for item in [stock_balance, registry] if item],
+        "reports": [item for item in [goods_report, procurement] if item],
     }
 
 
@@ -1722,6 +1764,21 @@ async def api_upload_registry(file: UploadFile = File(...)) -> dict[str, Any]:
     return await _upload_static_source_file("registry", file)
 
 
+@app.post("/api/sources/stock_balance/upload")
+async def api_upload_stock_balance(file: UploadFile = File(...)) -> dict[str, Any]:
+    return await _upload_static_source_file("stock_balance", file)
+
+
+@app.post("/api/sources/procurement/upload")
+async def api_upload_procurement(file: UploadFile = File(...)) -> dict[str, Any]:
+    return await _upload_static_source_file("procurement", file)
+
+
+@app.post("/api/sources/goods_report/upload")
+async def api_upload_goods_report(file: UploadFile = File(...)) -> dict[str, Any]:
+    return await _upload_static_source_file("goods_report", file)
+
+
 @app.post("/api/sources/reload")
 def api_sources_reload() -> dict[str, Any]:
     """Перезагрузить каталог, реестр остатков и прайсы из data/."""
@@ -1742,6 +1799,30 @@ def api_sources_reload() -> dict[str, Any]:
             source_type="registry",
             source_name=REGISTRY_PATH.stem,
             file_path=REGISTRY_PATH,
+            force=True,
+        )
+    if STOCK_BALANCE_PATH and STOCK_BALANCE_PATH.exists():
+        rag["stock_balance"] = rag_index.index_document(
+            doc_id="margin:stock_balance",
+            source_type="margin",
+            source_name=STOCK_BALANCE_PATH.stem,
+            file_path=STOCK_BALANCE_PATH,
+            force=True,
+        )
+    if PROCUREMENT_REPORT_PATH and PROCUREMENT_REPORT_PATH.exists():
+        rag["procurement"] = rag_index.index_document(
+            doc_id="margin:procurement",
+            source_type="margin",
+            source_name=PROCUREMENT_REPORT_PATH.stem,
+            file_path=PROCUREMENT_REPORT_PATH,
+            force=True,
+        )
+    if GOODS_REPORT_PATH.exists():
+        rag["goods_report"] = rag_index.index_document(
+            doc_id="margin:goods_report",
+            source_type="margin",
+            source_name=GOODS_REPORT_PATH.stem,
+            file_path=GOODS_REPORT_PATH,
             force=True,
         )
     processor = get_processor()

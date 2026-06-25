@@ -13,6 +13,7 @@ from src.config import (
     OUTPUT_DIR,
     PROCUREMENT_REPORT_PATH,
     REGISTRY_PATH,
+    STOCK_BALANCE_PATH,
     USE_GOODS_REPORT,
 )
 from src.services.pricing_rules import apply_kp_pricing
@@ -23,6 +24,7 @@ from src.services.data_loader import (
     load_goods_report,
     load_registry,
     merge_goods_reports,
+    merge_registry,
 )
 from src.services.tz_parser import parse_tz
 from src.services.excel_generator import ExcelGenerator
@@ -39,7 +41,7 @@ class ProposalProcessor:
     def __init__(self, price_manager: PriceListManager | None = None) -> None:
         self.price_manager = price_manager or get_price_list_manager()
         self.catalog = load_catalog(CATALOG_PATH)
-        self.registry = load_registry(REGISTRY_PATH)
+        self.registry = self._load_all_registry_items()
         self.goods_report = self._load_all_goods_reports()
         self.price_lists: list = []
         self.ai = AIAgent()
@@ -77,7 +79,7 @@ class ProposalProcessor:
         return len(self.catalog)
 
     def reload_registry(self) -> int:
-        self.registry = load_registry(REGISTRY_PATH)
+        self.registry = self._load_all_registry_items()
         self._rebuild_matcher()
         return len(self.registry)
 
@@ -87,10 +89,25 @@ class ProposalProcessor:
         return len(self.goods_report)
 
     @staticmethod
+    def _load_all_registry_items() -> list:
+        sources = [load_registry(REGISTRY_PATH)]
+        if (
+            STOCK_BALANCE_PATH
+            and STOCK_BALANCE_PATH.exists()
+            and STOCK_BALANCE_PATH.resolve() != REGISTRY_PATH.resolve()
+        ):
+            sources.append(load_registry(STOCK_BALANCE_PATH))
+        return merge_registry(*sources)
+
+    @staticmethod
     def _load_all_goods_reports() -> list:
         if not USE_GOODS_REPORT:
             return []
-        sources = [load_goods_report(GOODS_REPORT_PATH)]
+        sources: list = []
+        if STOCK_BALANCE_PATH and STOCK_BALANCE_PATH.exists():
+            sources.append(load_goods_report(STOCK_BALANCE_PATH))
+        if GOODS_REPORT_PATH.exists():
+            sources.append(load_goods_report(GOODS_REPORT_PATH))
         if PROCUREMENT_REPORT_PATH and PROCUREMENT_REPORT_PATH.exists():
             sources.append(load_goods_report(PROCUREMENT_REPORT_PATH))
         return merge_goods_reports(*sources)

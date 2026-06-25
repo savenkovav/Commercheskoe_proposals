@@ -115,11 +115,20 @@ class AIAgent:
 
     def validate_tz_candidate(self, tz_item: TZItem, candidate_name: str) -> dict:
         """Проверяет, что кандидат — тот же тип товара, что в ТЗ (наименование + характеристики)."""
+        from src.config import LOCAL_MATCH_THRESHOLD
+        from src.services.fuzzy_scoring import name_match_score
         from src.services.tz_search import product_type_conflict, tz_match_query
 
         candidate = (candidate_name or "").strip()
         if not candidate:
             return {"accept": False, "reason": "пустой кандидат"}
+
+        name_score = name_match_score(
+            normalize_name(tz_item.name),
+            normalize_name(candidate),
+        )
+        if name_score >= LOCAL_MATCH_THRESHOLD:
+            return {"accept": True, "reason": "точное совпадение наименования"}
 
         if product_type_conflict(tz_item, candidate):
             return {

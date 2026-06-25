@@ -26,6 +26,7 @@ from src.services.competitor_urls import (
 from src.services.fuzzy_scoring import name_match_score
 from src.services.kit_spec_parser import parse_kit_components_from_specs
 from src.services.local_price_match import has_local_catalog_or_price_list_price
+from src.services.match_tier import effective_score, meets_floor, resolve_local_floor
 from src.services.tz_search import (
     combined_match_score,
     is_relevant_match,
@@ -93,8 +94,14 @@ class TZMatchService:
             search_kit_component_links=SEARCH_KIT_COMPONENT_LINKS,
         )
         candidates = self.matcher.find_candidates(tz_item)
-        catalog_hit = self._pick_validated_hit(candidates["catalog"], tz_item, use_ai)
-        direct_catalog = self._find_direct_catalog_hit(tz_item, use_ai=use_ai)
+        local_floor = self._compute_local_floor(tz_item, candidates)
+
+        catalog_hit = self._pick_validated_hit(
+            candidates["catalog"], tz_item, use_ai, min_score=local_floor
+        )
+        direct_catalog = self._find_direct_catalog_hit(
+            tz_item, use_ai=use_ai, min_score=local_floor
+        )
         if direct_catalog and (
             catalog_hit is None or direct_catalog.score > catalog_hit.score
         ):
@@ -103,9 +110,13 @@ class TZMatchService:
             tz_item.name, catalog_hit.name
         ):
             catalog_hit = None
-        price_hit = self._pick_validated_hit(candidates["price"], tz_item, use_ai)
-        registry_hit = self._pick_validated_hit(candidates["registry"], tz_item, use_ai)
-        goods_hit = self._match_goods_report(tz_item)
+        price_hit = self._pick_validated_hit(
+            candidates["price"], tz_item, use_ai, min_score=local_floor
+        )
+        registry_hit = self._pick_validated_hit(
+            candidates["registry"], tz_item, use_ai, min_score=local_floor
+        )
+        goods_hit = self._match_goods_report(tz_item, min_score=local_floor)
 
         comparison: list[PriceQuote] = []
         kit_components: list[KitComponentLine] = []
@@ -115,8 +126,14 @@ class TZMatchService:
         tz_kit_names = parse_kit_components_from_specs(tz_item.specifications)
         if (
             catalog_hit
-            and is_relevant_match(tz_item, catalog_hit.name, score=catalog_hit.score)
-            and relevance_score(tz_item, catalog_hit.name) >= LOCAL_MATCH_THRESHOLD
+            and local_floor is not None
+            and is_relevant_match(
+                tz_item,
+                catalog_hit.name,
+                score=catalog_hit.score,
+                min_score=local_floor,
+            )
+            and effective_score(tz_item, catalog_hit.name, catalog_hit.score) >= local_floor
         ):
             tz_kit_names = []
 
@@ -156,24 +173,24 @@ class TZMatchService:
         if price_list_check:
             comparison.append(price_list_check)
 
-        for extra_price in self._extra_price_quotes(candidates["price"], tz_item.name):
+        for extra_price in self._extra_price_quotes(
+            candidates["price"],
+            tz_item.name,
+            min_score=local_floor,
+        ):
             if not any(
                 q.source == "price_list" and q.matched_name == extra_price.matched_name
                 for q in comparison
             ):
                 comparison.append(extra_price)
 
-        local_miss = not self._has_confident_local_match(
-            tz_item,
-            catalog_hit,
-            price_hit,
-            goods_hit,
-        )
-        skip_competitors = has_local_catalog_or_price_list_price(
+        local_miss = local_floor is None
+        skip_competitors = local_floor is not None and has_local_catalog_or_price_list_price(
             tz_item,
             catalog_hit,
             price_hit,
             self.matcher,
+            min_score=local_floor,
         )
         internet_searched = (
             local_miss and WEB_SEARCH_ENABLED and not skip_competitors
@@ -191,12 +208,14 @@ class TZMatchService:
             tz_item,
             catalog_hit,
             price_hit,
+            registry_hit,
             goods_hit,
             web_quote,
             kit_components,
             use_ai=use_ai,
             candidates=candidates,
             local_miss=local_miss,
+            local_floor=local_floor,
         )
 
         if primary.supplier is None and supplier:
@@ -412,6 +431,34 @@ class TZMatchService:
     ) -> str | None:
         return pick_internet_url(web_quotes, unit_base_price=unit_base_price)
 
+    def _compute_local_floor(
+        self,
+        tz_item: TZItem,
+        candidates: dict,
+    ) -> float | None:
+        scores: list[float] = []
+        for key in ("price", "catalog", "registry"):
+            for hit in candidates.get(key, []):
+                if self.matcher.is_distinctive_mismatch(tz_item.name, hit.name):
+                    continue
+                score = effective_score(tz_item, hit.name, hit.score)
+                if is_relevant_match(
+                    tz_item,
+                    hit.name,
+                    score=hit.score,
+                    min_score=SIMILAR_MATCH_THRESHOLD,
+                ):
+                    scores.append(score)
+
+        goods_candidate = self._match_goods_report(
+            tz_item,
+            min_score=SIMILAR_MATCH_THRESHOLD,
+        )
+        if goods_candidate:
+            scores.append(relevance_score(tz_item, goods_candidate.name))
+
+        return resolve_local_floor(scores)
+
     def _has_confident_local_match(
         self,
         tz_item: TZItem,
@@ -460,6 +507,7 @@ class TZMatchService:
                 self.web_search.search_internet_cascade(
                     search_text,
                     skip_competitors=skip_competitors,
+                    competitor_fallback=False,
                 )
             )
 
@@ -557,12 +605,16 @@ class TZMatchService:
         self,
         hits: list[FuzzyHit],
         query: str,
+        *,
+        min_score: float | None = None,
     ) -> list[PriceQuote]:
+        if min_score is None:
+            return []
         quotes: list[PriceQuote] = []
         seen_suppliers: set[str] = set()
         ranked = sorted(hits, key=lambda hit: hit.score, reverse=True)
         for hit in ranked[:5]:
-            if hit.score < LOCAL_MATCH_THRESHOLD:
+            if hit.score < min_score:
                 continue
             item: PriceListItem = hit.payload
             supplier_key = (item.supplier or "").lower()
@@ -721,6 +773,7 @@ class TZMatchService:
         tz_item: TZItem,
         catalog_hit: FuzzyHit | None,
         price_hit: FuzzyHit | None,
+        registry_hit: FuzzyHit | None,
         goods_hit: GoodsReportItem | None,
         web_quote: PriceQuote | None,
         kit_components: list[KitComponentLine],
@@ -728,10 +781,12 @@ class TZMatchService:
         candidates: dict,
         *,
         local_miss: bool = False,
+        local_floor: float | None = None,
     ) -> MatchResult:
-        local = self.matcher.match_local(tz_item)
+        floor = local_floor if local_floor is not None else LOCAL_MATCH_THRESHOLD
+        local = self.matcher.match_local(tz_item, min_score=floor) if local_floor else None
         if local and not self._accepted_match(
-            tz_item, local.matched_name, use_ai, score=local.match_score
+            tz_item, local.matched_name, use_ai, score=local.match_score, min_score=floor
         ):
             local = None
 
@@ -740,16 +795,45 @@ class TZMatchService:
         ):
             return self._merge_kit_into_result(local, kit_components, goods_hit)
 
-        if local and local.match_score >= LOCAL_MATCH_THRESHOLD and (
+        if local and local.match_score >= floor and (
             local.unit_base_price is not None or local.unit_cost is not None
         ):
             return self._merge_kit_into_result(local, kit_components, goods_hit)
 
         if (
-            catalog_hit
-            and catalog_hit.score >= LOCAL_MATCH_THRESHOLD
+            price_hit
+            and local_floor is not None
+            and effective_score(tz_item, price_hit.name, price_hit.score) >= floor
             and self._accepted_match(
-                tz_item, catalog_hit.name, use_ai, score=catalog_hit.score
+                tz_item, price_hit.name, use_ai, score=price_hit.score, min_score=floor
+            )
+        ):
+            item = price_hit.payload
+            if isinstance(item, PriceListItem):
+                status = (
+                    MatchStatus.EXACT
+                    if price_hit.score >= EXACT_MATCH_THRESHOLD
+                    else MatchStatus.SIMILAR
+                )
+                return MatchResult(
+                    tz_item=tz_item,
+                    status=status,
+                    source=MatchSource.PRICE_LIST,
+                    matched_name=price_hit.name,
+                    match_score=price_hit.score,
+                    unit_cost=item.price,
+                    unit_base_price=item.price,
+                    notes="Сопоставление с прайсом",
+                    source_detail=f"Прайс: {price_hit.name}",
+                    supplier=item.supplier,
+                )
+
+        if (
+            catalog_hit
+            and local_floor is not None
+            and effective_score(tz_item, catalog_hit.name, catalog_hit.score) >= floor
+            and self._accepted_match(
+                tz_item, catalog_hit.name, use_ai, score=catalog_hit.score, min_score=floor
             )
             and not self.matcher.is_distinctive_mismatch(tz_item.name, catalog_hit.name)
         ):
@@ -781,11 +865,43 @@ class TZMatchService:
                 )
 
         if (
+            registry_hit
+            and local_floor is not None
+            and effective_score(tz_item, registry_hit.name, registry_hit.score) >= floor
+            and self._accepted_match(
+                tz_item, registry_hit.name, use_ai, score=registry_hit.score, min_score=floor
+            )
+            and not self.matcher.is_distinctive_mismatch(tz_item.name, registry_hit.name)
+        ):
+            stock_cost = self._goods_cost_for_name(registry_hit.name)
+            if stock_cost is not None:
+                return MatchResult(
+                    tz_item=tz_item,
+                    status=(
+                        MatchStatus.EXACT
+                        if registry_hit.score >= EXACT_MATCH_THRESHOLD
+                        else MatchStatus.SIMILAR
+                    ),
+                    source=MatchSource.REGISTRY,
+                    matched_name=registry_hit.name,
+                    match_score=registry_hit.score,
+                    unit_cost=stock_cost.cost,
+                    unit_base_price=stock_cost.price or stock_cost.cost,
+                    notes="Сопоставление с остатками на складе",
+                    source_detail=f"Остатки: {registry_hit.name}",
+                    supplier=stock_cost.supplier,
+                    purchase_date=stock_cost.purchase_date,
+                )
+
+        if (
             goods_hit
+            and local_floor is not None
             and goods_hit.cost is not None
-            and self._accepted_match(tz_item, goods_hit.name, use_ai)
+            and relevance_score(tz_item, goods_hit.name) >= floor
+            and self._accepted_match(tz_item, goods_hit.name, use_ai, min_score=floor)
         ):
             goods_score = relevance_score(tz_item, goods_hit.name)
+            source_label = "остатками" if (goods_hit.source_file or "").startswith("stock:") else "товарным отчётом"
             return MatchResult(
                 tz_item=tz_item,
                 status=(
@@ -798,38 +914,11 @@ class TZMatchService:
                 match_score=goods_score,
                 unit_cost=goods_hit.cost,
                 unit_base_price=goods_hit.price or goods_hit.cost,
-                notes="Сопоставление с товарным отчётом",
+                notes=f"Сопоставление с {source_label}",
                 source_detail=f"Товарный отчёт: {goods_hit.name}",
                 supplier=goods_hit.supplier,
                 purchase_date=goods_hit.purchase_date,
             )
-
-        if (
-            price_hit
-            and price_hit.score >= LOCAL_MATCH_THRESHOLD
-            and self._accepted_match(
-                tz_item, price_hit.name, use_ai, score=price_hit.score
-            )
-        ):
-            item = price_hit.payload
-            if isinstance(item, PriceListItem):
-                status = (
-                    MatchStatus.EXACT
-                    if price_hit.score >= 90
-                    else MatchStatus.SIMILAR
-                )
-                return MatchResult(
-                    tz_item=tz_item,
-                    status=status,
-                    source=MatchSource.PRICE_LIST,
-                    matched_name=price_hit.name,
-                    match_score=price_hit.score,
-                    unit_cost=item.price,
-                    unit_base_price=item.price,
-                    notes=f"Сопоставление с прайсом ({item.supplier})",
-                    source_detail=f"Прайс: {price_hit.name}",
-                    supplier=item.supplier,
-                )
 
         if not use_ai:
             if local and local.match_score >= LOCAL_MATCH_THRESHOLD and (
@@ -1460,10 +1549,16 @@ class TZMatchService:
         use_ai: bool,
         *,
         score: float | None = None,
+        min_score: float = LOCAL_MATCH_THRESHOLD,
     ) -> bool:
         if not matched_name:
             return False
-        if not is_relevant_match(tz_item, matched_name, score=score):
+        if not is_relevant_match(
+            tz_item,
+            matched_name,
+            score=score,
+            min_score=min_score,
+        ):
             return False
         if use_ai and self.ai.enabled:
             verdict = self.ai.validate_tz_candidate(tz_item, matched_name)
@@ -1482,20 +1577,30 @@ class TZMatchService:
         hits: list[FuzzyHit],
         tz_item: TZItem,
         use_ai: bool,
+        *,
+        min_score: float | None = LOCAL_MATCH_THRESHOLD,
     ) -> FuzzyHit | None:
-        if not hits:
+        if min_score is None or not hits:
             return None
         ranked = sorted(
             hits,
             key=lambda hit: (
-                combined_match_score(tz_item, hit.name),
+                effective_score(tz_item, hit.name, hit.score),
                 hit.score,
             ),
             reverse=True,
         )
         shortlist: list[FuzzyHit] = []
         for hit in ranked[:12]:
-            if not is_relevant_match(tz_item, hit.name, score=hit.score):
+            score = effective_score(tz_item, hit.name, hit.score)
+            if score < min_score:
+                continue
+            if not is_relevant_match(
+                tz_item,
+                hit.name,
+                score=hit.score,
+                min_score=min_score,
+            ):
                 continue
             if self.matcher.is_distinctive_mismatch(tz_item.name, hit.name):
                 continue
@@ -1515,17 +1620,19 @@ class TZMatchService:
         return None
 
     def _find_direct_catalog_hit(
-        self, tz_item: TZItem, *, use_ai: bool = True
+        self, tz_item: TZItem, *, use_ai: bool = True, min_score: float | None = LOCAL_MATCH_THRESHOLD
     ) -> FuzzyHit | None:
+        if min_score is None:
+            return None
         best: FuzzyHit | None = None
         best_score = -1.0
         for item in self.catalog:
             if item.entry_type not in {"item", "kit_total", "sub_kit"}:
                 continue
             score = combined_match_score(tz_item, item.name)
-            if score < LOCAL_MATCH_THRESHOLD:
+            if score < min_score:
                 continue
-            if not is_relevant_match(tz_item, item.name, score=score):
+            if not is_relevant_match(tz_item, item.name, score=score, min_score=min_score):
                 continue
             if self.matcher.is_distinctive_mismatch(tz_item.name, item.name):
                 continue
@@ -1550,8 +1657,46 @@ class TZMatchService:
                 return None
         return best
 
-    def _match_goods_report(self, tz_item: TZItem) -> GoodsReportItem | None:
-        if not self.goods_report:
+    @staticmethod
+    def _goods_source_priority(item: GoodsReportItem) -> int:
+        source_file = item.source_file or ""
+        if source_file.startswith("stock:"):
+            return 3
+        if source_file.startswith("procurement:"):
+            return 1
+        return 2
+
+    def _goods_cost_for_name(self, name: str) -> GoodsReportItem | None:
+        query = normalize_name(name)
+        if not query or not self.goods_report:
+            return None
+        results = process.extract(
+            query,
+            self._goods_names,
+            scorer=name_match_score,
+            limit=3,
+        )
+        best: GoodsReportItem | None = None
+        best_rank = (-1.0, -1)
+        for _, score, idx in results:
+            item = self.goods_report[idx]
+            if item.cost is None:
+                continue
+            if normalize_name(item.name) != query and score < LOCAL_MATCH_THRESHOLD:
+                continue
+            rank = (score, self._goods_source_priority(item))
+            if rank > best_rank:
+                best_rank = rank
+                best = item
+        return best
+
+    def _match_goods_report(
+        self,
+        tz_item: TZItem,
+        *,
+        min_score: float | None = LOCAL_MATCH_THRESHOLD,
+    ) -> GoodsReportItem | None:
+        if min_score is None or not self.goods_report:
             return None
         query = normalize_name(tz_item.name)
         results = process.extract(
@@ -1561,18 +1706,24 @@ class TZMatchService:
             limit=3,
         )
         best: GoodsReportItem | None = None
-        best_score = -1.0
+        best_rank = (-1.0, -1)
         for _, score, idx in results:
             item = self.goods_report[idx]
             item_score = relevance_score(tz_item, item.name)
-            if item_score < LOCAL_MATCH_THRESHOLD:
+            if item_score < min_score:
                 continue
-            if not is_relevant_match(tz_item, item.name, score=item_score):
+            if not is_relevant_match(
+                tz_item,
+                item.name,
+                score=item_score,
+                min_score=min_score,
+            ):
                 continue
             if self.matcher.is_distinctive_mismatch(tz_item.name, item.name):
                 continue
-            if item_score > best_score:
-                best_score = item_score
+            rank = (item_score, self._goods_source_priority(item))
+            if rank > best_rank:
+                best_rank = rank
                 best = item
         return best
 

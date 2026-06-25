@@ -221,6 +221,107 @@ def _is_procurement_report(ws) -> bool:
     return False
 
 
+def _is_stock_balance_report(ws) -> bool:
+    for row in ws.iter_rows(min_row=1, max_row=10, values_only=True):
+        for cell in row[:3]:
+            if cell and "остатки на дату" in str(cell).lower():
+                return True
+    return False
+
+
+def _is_stock_balance_report_rows(rows: list[tuple]) -> bool:
+    for row in rows:
+        for cell in row[:3]:
+            if cell and "остатки на дату" in str(cell).lower():
+                return True
+    return False
+
+
+_TENDER_HEADER = re.compile(
+    r"^(?:\d+\.\s*)?(?:тендер|тендеры)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_stock_section_row(name: str) -> bool:
+    lower = name.lower().strip()
+    if not lower:
+        return True
+    if _looks_like_supplier(name):
+        return True
+    if _TENDER_HEADER.search(lower):
+        return True
+    if re.fullmatch(r"\d{2}-\d{2}(?:\.\s.*)?", lower):
+        return True
+    if lower.startswith("построен:"):
+        return True
+    return False
+
+
+def _parse_stock_balance_unit(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or len(text) > 12:
+        return None
+    return text
+
+
+def _load_stock_balance_report(ws, source_file: str) -> list[GoodsReportItem]:
+    items: list[GoodsReportItem] = []
+    for row in ws.iter_rows(min_row=13, values_only=True):
+        if not row:
+            continue
+        name = str(row[0]).strip() if row[0] else ""
+        if not name or _looks_like_stock_section_row(name):
+            continue
+
+        unit = _parse_stock_balance_unit(row[3] if len(row) > 3 else None)
+        cost = _parse_optional_number(row[4] if len(row) > 4 else None)
+        if not unit or cost is None or cost <= 0:
+            continue
+
+        items.append(
+            GoodsReportItem(
+                name=name,
+                supplier=None,
+                purchase_date=None,
+                cost=float(cost),
+                price=float(cost),
+                unit=unit,
+                source_file=f"stock:{source_file}",
+            )
+        )
+    return items
+
+
+def _load_stock_balance_registry(ws) -> list[RegistryItem]:
+    items: list[RegistryItem] = []
+    for row in ws.iter_rows(min_row=13, values_only=True):
+        if not row:
+            continue
+        name = str(row[0]).strip() if row[0] else ""
+        if not name or _looks_like_stock_section_row(name):
+            continue
+
+        unit = _parse_stock_balance_unit(row[3] if len(row) > 3 else None)
+        cost = _parse_optional_number(row[4] if len(row) > 4 else None)
+        if not unit or cost is None or cost <= 0:
+            continue
+
+        qty = row[2] if len(row) > 2 and isinstance(row[2], (int, float)) else 0.0
+        items.append(
+            RegistryItem(
+                name=name,
+                quantity=float(qty),
+                condition=None,
+                link=None,
+                photo_files=[],
+            )
+        )
+    return items
+
+
 def _load_standard_goods_report(ws, source_file: str) -> list[GoodsReportItem]:
     items: list[GoodsReportItem] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -304,7 +405,9 @@ def load_goods_report(path: Path) -> list[GoodsReportItem]:
 
     wb = load_workbook(path, data_only=True)
     ws = wb[wb.sheetnames[0]]
-    if _is_procurement_report(ws):
+    if _is_stock_balance_report(ws):
+        items = _load_stock_balance_report(ws, path.name)
+    elif _is_procurement_report(ws):
         items = _load_procurement_report(ws, path.name)
     else:
         items = _load_standard_goods_report(ws, path.name)
@@ -314,6 +417,19 @@ def load_goods_report(path: Path) -> list[GoodsReportItem]:
 
 def merge_goods_reports(*sources: list[GoodsReportItem]) -> list[GoodsReportItem]:
     merged: list[GoodsReportItem] = []
+    seen: set[str] = set()
+    for items in sources:
+        for item in items:
+            key = normalize_name(item.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+def merge_registry(*sources: list[RegistryItem]) -> list[RegistryItem]:
+    merged: list[RegistryItem] = []
     seen: set[str] = set()
     for items in sources:
         for item in items:
@@ -390,6 +506,20 @@ def load_registry(path: Path, photos_dir: Path | None = None) -> list[RegistryIt
         return []
 
     cache_dir = photos_dir or REGISTRY_PHOTOS_DIR
+
+    probe_wb = load_workbook(path, read_only=True, data_only=True)
+    probe_ws = probe_wb[probe_wb.sheetnames[0]]
+    header_rows = list(probe_ws.iter_rows(min_row=1, max_row=10, values_only=True))
+    is_stock = _is_stock_balance_report_rows(header_rows)
+    probe_wb.close()
+
+    if is_stock:
+        wb = load_workbook(path, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        items = _load_stock_balance_registry(ws)
+        wb.close()
+        return items
+
     _extract_registry_photos(path, cache_dir)
 
     items: list[RegistryItem] = []

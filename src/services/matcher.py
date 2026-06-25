@@ -9,6 +9,7 @@ from src.config import EXACT_MATCH_THRESHOLD, LOCAL_MATCH_THRESHOLD, SIMILAR_MAT
 from src.services.data_loader import format_catalog_supplier, normalize_name
 from src.services.fuzzy_scoring import name_match_score
 from src.services.meilisearch_service import meilisearch_available, search_products
+from src.services.match_tier import effective_score
 from src.services.tz_search import (
     build_search_queries,
     combined_match_score,
@@ -267,14 +268,26 @@ class ItemMatcher:
                 return True
         return False
 
-    def pick_best_hit(self, tz_item: TZItem, hits: list[FuzzyHit]) -> FuzzyHit | None:
+    def pick_best_hit(
+        self,
+        tz_item: TZItem,
+        hits: list[FuzzyHit],
+        *,
+        min_score: float = LOCAL_MATCH_THRESHOLD,
+    ) -> FuzzyHit | None:
         if not hits:
             return None
 
         filtered = [
             hit
             for hit in hits
-            if is_relevant_match(tz_item, hit.name, score=hit.score)
+            if effective_score(tz_item, hit.name, hit.score) >= min_score
+            and is_relevant_match(
+                tz_item,
+                hit.name,
+                score=hit.score,
+                min_score=min_score,
+            )
             and not (
                 hit.source == MatchSource.CATALOG
                 and self.is_distinctive_mismatch(tz_item.name, hit.name)
@@ -366,44 +379,65 @@ class ItemMatcher:
             "price": price_hits,
         }
 
-    def match_local(self, tz_item: TZItem) -> Optional[MatchResult]:
+    def match_local(
+        self,
+        tz_item: TZItem,
+        *,
+        min_score: float | None = None,
+    ) -> Optional[MatchResult]:
+        floor = float(min_score if min_score is not None else LOCAL_MATCH_THRESHOLD)
         candidates = self.find_candidates(tz_item)
 
         prioritized: list[FuzzyHit] = []
-        for key in ("catalog", "price", "registry"):
+        for key in ("price", "catalog", "registry"):
             hits = candidates[key]
             if hits:
-                prioritized.append(self.pick_best_hit(tz_item, hits) or hits[0])
+                best = self.pick_best_hit(tz_item, hits, min_score=floor)
+                if best:
+                    prioritized.append(best)
 
         if not prioritized:
             return None
 
-        prioritized.sort(key=lambda h: (h.score, len(h.name)), reverse=True)
+        prioritized.sort(key=lambda h: (effective_score(tz_item, h.name, h.score), len(h.name)), reverse=True)
         best = prioritized[0]
 
-        # При сопоставимом качестве совпадения предпочитаем каталог с себестоимостью
+        # При сопоставимом качестве предпочитаем прайс, затем каталог с себестоимостью
+        price_best = self.pick_best_hit(tz_item, candidates["price"], min_score=floor)
+        if (
+            price_best
+            and not self.is_distinctive_mismatch(tz_item.name, price_best.name)
+            and effective_score(tz_item, price_best.name, price_best.score) >= floor
+            and isinstance(price_best.payload, PriceListItem)
+            and price_best.payload.price is not None
+            and price_best.score >= best.score - 5
+        ):
+            best = price_best
+
         catalog_best = self._best_catalog_hit(candidates["catalog"], tz_item)
         if (
             catalog_best
             and not self.is_distinctive_mismatch(tz_item.name, catalog_best.name)
-            and catalog_best.score >= LOCAL_MATCH_THRESHOLD
+            and effective_score(tz_item, catalog_best.name, catalog_best.score) >= floor
             and isinstance(catalog_best.payload, CatalogItem)
             and catalog_best.payload.cost is not None
             and catalog_best.score >= best.score - 5
+            and (not isinstance(best.payload, PriceListItem) or best.score <= catalog_best.score)
         ):
             best = catalog_best
 
         if self.is_distinctive_mismatch(tz_item.name, best.name):
             return None
-        if not is_relevant_match(tz_item, best.name, score=best.score):
+        if not is_relevant_match(
+            tz_item,
+            best.name,
+            score=best.score,
+            min_score=floor,
+        ):
             return None
 
-        min_score = (
-            LOCAL_MATCH_THRESHOLD
-            if best.source in (MatchSource.CATALOG, MatchSource.PRICE_LIST)
-            else SIMILAR_MATCH_THRESHOLD
-        )
-        if best.score < min_score:
+        min_required = floor
+        if best.score < min_required and effective_score(tz_item, best.name, best.score) < min_required:
             return None
 
         status = (

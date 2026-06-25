@@ -2564,7 +2564,13 @@ function renderDataSourceRow(row) {
 }
 
 function isStaticSource(id) {
-  return id === "catalog" || id === "registry";
+  return (
+    id === "catalog"
+    || id === "registry"
+    || id === "goods_report"
+    || id === "procurement"
+    || id === "stock_balance"
+  );
 }
 
 function fileAcceptForSource(id) {
@@ -2573,7 +2579,10 @@ function fileAcceptForSource(id) {
 
 function sourceLabel(id) {
   if (id === "catalog") return "каталог";
-  if (id === "registry") return "остатки на складе";
+  if (id === "registry") return "реестр остатков";
+  if (id === "stock_balance") return "остатки на дату";
+  if (id === "goods_report") return "товарный отчёт";
+  if (id === "procurement") return "отчёт по закупкам";
   return id;
 }
 
@@ -2581,7 +2590,12 @@ function collectDataSources(data) {
   return {
     catalogs: data.catalogs?.length ? data.catalogs : data.catalog ? [data.catalog] : [],
     prices: data.prices?.length ? data.prices : data.items || [],
-    stock: data.stock?.length ? data.stock : data.registry ? [data.registry] : [],
+    stock: data.stock?.length
+      ? data.stock
+      : [data.stock_balance, data.registry].filter(Boolean),
+    reports: data.reports?.length
+      ? data.reports
+      : [data.goods_report, data.procurement].filter(Boolean),
   };
 }
 
@@ -2628,6 +2642,7 @@ async function loadPrices() {
       renderDataSourceSection("Каталоги", groups.catalogs),
       renderDataSourceSection("Прайсы", groups.prices),
       renderDataSourceSection("Остатки на складе", groups.stock),
+      renderDataSourceSection("Товарные отчёты", groups.reports),
     ].join("");
 
     container.querySelectorAll("[data-replace]").forEach((btn) => {
@@ -2721,7 +2736,7 @@ async function uploadStock() {
   form.append("file", file);
 
   try {
-    const data = await api("/api/sources/registry/upload", { method: "POST", body: form });
+    const data = await api("/api/sources/stock_balance/upload", { method: "POST", body: form });
     const entry = data.entry || {};
     showToast(
       `Остатки обновлены: ${entry.items_count ?? "—"} поз.${ragUploadMessage(data.rag)}`,

@@ -502,6 +502,7 @@ class WebSearchService:
         limit: int | None = None,
         exact_threshold: int | None = None,
         deadline: _SearchDeadline | None = None,
+        allow_fallback: bool = True,
     ) -> list[PriceQuote]:
         if not COMPETITOR_SEARCH_ENABLED:
             return []
@@ -568,7 +569,8 @@ class WebSearchService:
             return self._finalize_competitor_quotes(quotes, max_results)
 
         if (
-            COMPETITOR_SEARCH_FALLBACK_THRESHOLD < strict_threshold
+            allow_fallback
+            and COMPETITOR_SEARCH_FALLBACK_THRESHOLD < strict_threshold
             and not (deadline and deadline.expired())
             and (deadline is None or (deadline.remaining() or 0) >= 4)
         ):
@@ -1053,6 +1055,7 @@ class WebSearchService:
         limit: int | None = None,
         skip_competitors: bool = False,
         deadline: _SearchDeadline | None = None,
+        competitor_fallback: bool = True,
     ) -> list[PriceQuote]:
         """Сначала сайты конкурентов, затем прочий интернет, затем маркетплейсы."""
         query = product_name.strip()
@@ -1081,6 +1084,7 @@ class WebSearchService:
                 query,
                 limit=max_results,
                 deadline=deadline,
+                allow_fallback=competitor_fallback,
             )
             _extend(competitor_quotes)
             if has_priced_competitor_quote(quotes):

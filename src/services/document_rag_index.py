@@ -11,6 +11,7 @@ from src.config import (
     PROCUREMENT_REPORT_PATH,
     RAG_DOCS_INDEX_DIR,
     REGISTRY_PATH,
+    STOCK_BALANCE_PATH,
 )
 from src.services.data_loader import build_catalog_rag_text, load_catalog
 from src.services.price_list_manager import PriceListManager
@@ -175,7 +176,9 @@ class DocumentRagIndexService:
             ("registry:main", "registry", REGISTRY_PATH),
             ("margin:goods_report", "margin", GOODS_REPORT_PATH),
         ]
-        if PROCUREMENT_REPORT_PATH:
+        if STOCK_BALANCE_PATH and STOCK_BALANCE_PATH.exists():
+            sources.append(("margin:stock_balance", "margin", STOCK_BALANCE_PATH))
+        if PROCUREMENT_REPORT_PATH and PROCUREMENT_REPORT_PATH.exists():
             sources.append(("margin:procurement", "margin", PROCUREMENT_REPORT_PATH))
 
         for doc_id, source_type, path in sources:
