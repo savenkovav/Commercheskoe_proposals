@@ -1893,7 +1893,7 @@ function renderPrimaryMatchBlock(item) {
       ? `<strong>Источник:</strong> Интернет · цена КП −5% от найденной`
       : null,
     item.matched_name
-      ? `<strong>Выбрано:</strong> ${escapeHtml(item.matched_name)} (${Math.round(item.match_score || 0)}%)`
+      ? `<strong>Выбрано:</strong> ${escapeHtml(item.matched_name)}`
       : null,
     !item.internet_priced && item.source
       ? `<strong>Источник:</strong> ${escapeHtml(SOURCE_LABELS[item.source] || item.source)}`
