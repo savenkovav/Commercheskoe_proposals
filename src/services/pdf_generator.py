@@ -86,7 +86,6 @@ def _footer_block_height(*, has_stamp: bool, stamp_display_height: int = 0) -> f
     height += 11.0 + 6.0
     if has_stamp:
         height += 6.0 + stamp_display_height + 12.0
-    height += 9.0 + 6.0
     return height
 
 
@@ -467,8 +466,6 @@ class PdfGenerator:
                 filename=str(stamp_path),
             )
             y = stamp_y + stamp_display_height + 12
-
-        write_line("* — позиции, требующие проверки менеджером", size=9)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path)
