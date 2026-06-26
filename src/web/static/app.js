@@ -477,7 +477,7 @@ function quotePricingFromItem(item, selection) {
     quote = quotes[index];
   } else if (selection.variant.startsWith("web:")) {
     const index = Number.parseInt(selection.variant.split(":")[1], 10);
-    const quotes = collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
+    const quotes = collectWebProductEntries(item);
     quote = quotes[index];
   }
 
@@ -569,6 +569,19 @@ function getKitIndicesFromUI(itemNumber) {
   return boxes.filter((box) => box.checked).map((box) => Number(box.dataset.kitIndex));
 }
 
+function getWebIndicesFromUI(itemNumber) {
+  const boxes = [...document.querySelectorAll(`.kp-web-include[data-item="${itemNumber}"]:checked`)];
+  return boxes.map((box) => Number(box.dataset.webIndex));
+}
+
+function isWebQuoteChecked(itemNumber, index) {
+  const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
+  if (saved?.web_indices) {
+    return saved.web_indices.includes(index);
+  }
+  return false;
+}
+
 function isKitComponentChecked(itemNumber, index) {
   const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
   if (saved?.kit_indices) {
@@ -585,33 +598,42 @@ function computeItemPricing(item, selection = {}) {
     selection.kit_indices !== undefined
       ? selection.kit_indices
       : getKitIndicesFromUI(item.number);
+  const webIndices =
+    selection.web_indices !== undefined
+      ? selection.web_indices
+      : getWebIndicesFromUI(item.number);
+  let base;
   if (item.kit_components?.length && kitIndices !== null) {
     const kitPricing = aggregateKitPricing(item, kitIndices);
     if (kitPricing) {
-      return {
+      base = {
         status: item.status,
         internetPriced: item.internet_priced,
         ...kitPricing,
       };
     }
   }
-  const pricing = quotePricingFromItem(item, selection);
-  const totals = pricingTotalsFromLine({
-    unitCost: pricing.unitCost,
-    unitBasePrice: pricing.unitBasePrice,
-    quantity: item.quantity,
-    internetPriced: pricing.internetPriced,
-  });
-  return {
-    status: pricing.status,
-    internetPriced: pricing.internetPriced,
-    unitCost: pricing.unitCost,
-    unitBasePrice: pricing.unitBasePrice,
-    unitPrice: totals.unitPrice,
-    totalCost: totals.totalCost,
-    totalBasePrice: totals.totalBasePrice,
-    totalPrice: totals.totalPrice,
-  };
+  if (!base) {
+    const pricing = quotePricingFromItem(item, selection);
+    const totals = pricingTotalsFromLine({
+      unitCost: pricing.unitCost,
+      unitBasePrice: pricing.unitBasePrice,
+      quantity: item.quantity,
+      internetPriced: pricing.internetPriced,
+    });
+    base = {
+      status: pricing.status,
+      internetPriced: pricing.internetPriced,
+      unitCost: pricing.unitCost,
+      unitBasePrice: pricing.unitBasePrice,
+      unitPrice: totals.unitPrice,
+      totalCost: totals.totalCost,
+      totalBasePrice: totals.totalBasePrice,
+      totalPrice: totals.totalPrice,
+    };
+  }
+  const webAddon = aggregateWebAddonPricing(item, webIndices);
+  return mergeItemPricing(base, webAddon);
 }
 
 function syncKitSelectAll(itemNumber) {
@@ -621,6 +643,14 @@ function syncKitSelectAll(itemNumber) {
   const checkedCount = boxes.filter((box) => box.checked).length;
   selectAll.checked = checkedCount === boxes.length;
   selectAll.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
+}
+
+function updateWebAddonTotal(itemNumber) {
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  const totalEl = document.querySelector(`.kp-web-total[data-item="${itemNumber}"]`);
+  if (!item || !totalEl) return;
+  const addon = aggregateWebAddonPricing(item, getWebIndicesFromUI(itemNumber));
+  totalEl.textContent = fmtMoney(addon.totalPrice);
 }
 
 function updateTzRowPricing(itemNumber) {
@@ -826,11 +856,9 @@ function listItemVariants(item) {
         headerOnly: false,
       });
     });
-  collectWebEntries(item)
-    .filter((q) => !isMarketEstimateQuote(q))
-    .forEach((q, index) => {
-      variants.push({
-        id: `web:${index}`,
+  collectWebProductEntries(item).forEach((q, index) => {
+    variants.push({
+      id: `web:${index}`,
         label: q.label || "Интернет",
         name: q.matched_name || "—",
         meta: q.match_score ? `${Math.round(q.match_score)}%` : "",
@@ -926,7 +954,7 @@ function resolveSelectionPreview(item, selection) {
             (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
           )[Number.parseInt(selection.variant.split(":")[1], 10)]?.label || "Источник"
         : selection.variant.startsWith("web:")
-          ? collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q))[
+          ? collectWebProductEntries(item)[
               Number.parseInt(selection.variant.split(":")[1], 10)
             ]?.label || "Интернет"
           : SOURCE_LABELS[item.source] || item.source || "—";
@@ -940,7 +968,7 @@ function resolveSelectionPreview(item, selection) {
     if (quote?.matched_name) matched = quote.matched_name;
   } else if (selection.variant.startsWith("web:")) {
     const index = Number.parseInt(selection.variant.split(":")[1], 10);
-    const quote = collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q))[index];
+    const quote = collectWebProductEntries(item)[index];
     if (quote?.matched_name) matched = quote.matched_name;
   }
 
@@ -950,6 +978,15 @@ function resolveSelectionPreview(item, selection) {
       .filter(Boolean);
     if (parts.length) {
       matched = `${matched} (${parts.length}/${item.kit_components.length} в составе)`;
+    }
+  }
+
+  if (selection.web_indices?.length) {
+    const webParts = selection.web_indices
+      .map((index) => collectWebProductEntries(item)[index]?.matched_name)
+      .filter(Boolean);
+    if (webParts.length) {
+      matched = `${matched} (+${webParts.length} из интернета)`;
     }
   }
 
@@ -1124,6 +1161,9 @@ function getSelectionsFromUI() {
     if (item.kit_components?.length && kitIndices !== null) {
       selection.kit_indices = kitIndices;
     }
+    if (collectWebProductEntries(item).length) {
+      selection.web_indices = getWebIndicesFromUI(item.number);
+    }
     return selection;
   });
 }
@@ -1159,12 +1199,22 @@ function bindKpSelectionHandlers() {
         });
       }
       $$(`.kp-kit-row[data-item="${itemNumber}"]`).forEach((row) => {
-        const index = Number(row.dataset.kitIndex);
         const box = row.querySelector(".kp-kit-include");
         row.classList.toggle("kp-kit-row--excluded", box ? !box.checked : false);
       });
       resetKpSavedSelection();
       updateTzRowPricing(itemNumber);
+      return;
+    }
+    if (target.classList.contains("kp-web-include")) {
+      const itemNumber = Number(target.dataset.item);
+      const row = target.closest(".kp-web-row");
+      if (row) {
+        row.classList.toggle("kp-web-row--excluded", !target.checked);
+      }
+      resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
+      updateWebAddonTotal(itemNumber);
       return;
     }
   });
@@ -1182,7 +1232,7 @@ function bindKpSelectionHandlers() {
       resetKpSavedSelection();
       return;
     }
-    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell")) {
+    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell")) {
       event.stopPropagation();
     }
   });
@@ -1673,6 +1723,70 @@ function collectWebEntries(item) {
   return rows;
 }
 
+function collectWebProductEntries(item) {
+  return collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
+}
+
+function webQuoteKpUnitPrice(quote) {
+  const base = quote.price ?? quote.cost;
+  if (base == null) return null;
+  return roundMoney(base * (1 - WEB_PRICE_DISCOUNT_PERCENT / 100));
+}
+
+function aggregateWebAddonPricing(item, webIndices) {
+  const entries = collectWebProductEntries(item);
+  if (!entries.length || !webIndices?.length) {
+    return {
+      unitCost: 0,
+      unitBasePrice: 0,
+      unitPrice: 0,
+      totalCost: 0,
+      totalBasePrice: 0,
+      totalPrice: 0,
+    };
+  }
+  const selected = webIndices
+    .filter((index) => index >= 0 && index < entries.length)
+    .map((index) => entries[index]);
+  let unitCost = 0;
+  let unitBasePrice = 0;
+  let unitPrice = 0;
+  for (const quote of selected) {
+    const base = quote.price ?? quote.cost;
+    const cost = quote.cost ?? quote.price;
+    if (base != null) unitBasePrice += roundMoney(base);
+    if (cost != null) unitCost += roundMoney(cost);
+    const kp = webQuoteKpUnitPrice(quote);
+    if (kp != null) unitPrice += kp;
+  }
+  const qty = item.quantity || 1;
+  return {
+    unitCost: unitCost || null,
+    unitBasePrice: unitBasePrice || null,
+    unitPrice: unitPrice || null,
+    totalCost: unitCost ? roundMoney(unitCost * qty) : 0,
+    totalBasePrice: unitBasePrice ? roundMoney(unitBasePrice * qty) : 0,
+    totalPrice: unitPrice ? roundMoney(unitPrice * qty) : 0,
+  };
+}
+
+function mergeItemPricing(base, addon) {
+  if (!addon?.totalPrice) return base;
+  const merge = (left, right) => {
+    if (left == null && right == null) return null;
+    return roundMoney((left || 0) + (right || 0));
+  };
+  return {
+    ...base,
+    unitCost: merge(base.unitCost, addon.unitCost),
+    unitBasePrice: merge(base.unitBasePrice, addon.unitBasePrice),
+    unitPrice: merge(base.unitPrice, addon.unitPrice),
+    totalCost: roundMoney((base.totalCost || 0) + (addon.totalCost || 0)),
+    totalBasePrice: roundMoney((base.totalBasePrice || 0) + (addon.totalBasePrice || 0)),
+    totalPrice: roundMoney((base.totalPrice || 0) + (addon.totalPrice || 0)),
+  };
+}
+
 function hasItemDetails(item) {
   return (
     item.internet_priced ||
@@ -1803,24 +1917,31 @@ function renderPrimaryMatchBlock(item) {
   return `<div class="compare-block__primary">${lines.join("<br>")}</div>`;
 }
 
-function renderWebComparisonRows(webEntries, item) {
-  const productEntries = webEntries.filter((q) => !isMarketEstimateQuote(q));
+function renderWebComparisonRows(item) {
+  const productEntries = collectWebProductEntries(item);
   if (!productEntries.length) return "";
+  const savedWebIndices = kpSavedSelections?.find((selection) => selection.number === item.number)
+    ?.web_indices;
+  const initialAddon = aggregateWebAddonPricing(
+    item,
+    savedWebIndices?.length ? savedWebIndices : [],
+  );
   const rows = productEntries
-    .map((q) => {
+    .map((q, webIndex) => {
+      const checked = isWebQuoteChecked(item.number, webIndex);
       const webPrice = q.price ?? q.cost;
-      const isSelected =
-        item.internet_priced &&
-        item.unit_base_price != null &&
-        webPrice != null &&
-        Math.abs(webPrice - item.unit_base_price) < 0.01;
-      const kpPrice = isSelected
-        ? item.unit_price
-        : webPrice != null && item.internet_priced
-          ? Math.round(webPrice * 0.95 * 100) / 100
-          : webPrice;
+      const kpPrice = webQuoteKpUnitPrice(q) ?? webPrice;
       return `
-      <tr class="compare-row--competitor${isSelected ? " compare-row--selected" : ""}">
+      <tr class="kp-web-row compare-row--competitor${checked ? "" : " kp-web-row--excluded"}" data-item="${item.number}" data-web-index="${webIndex}">
+        <td class="kp-web-select-cell">
+          <input
+            type="checkbox"
+            class="kp-web-include"
+            data-item="${item.number}"
+            data-web-index="${webIndex}"
+            ${checked ? "checked" : ""}
+          >
+        </td>
         <td>${escapeHtml(q.label || "Интернет")}</td>
         <td>${escapeHtml(q.matched_name || "—")}</td>
         <td>${fmtMoney(webPrice)}</td>
@@ -1838,9 +1959,11 @@ function renderWebComparisonRows(webEntries, item) {
     .join("");
   return `
       <h4 class="compare-block__subtitle">Интернет</h4>
+      <p class="muted compare-block__kit-note">Отметьте позиции из интернета, чтобы добавить их стоимость в расчёт КП.</p>
       <table class="compare-table compare-table--web">
         <thead>
           <tr>
+            <th class="kp-web-select-cell"></th>
             <th>Источник</th>
             <th>Найдено</th>
             <th>Цена в интернете</th>
@@ -1852,6 +1975,12 @@ function renderWebComparisonRows(webEntries, item) {
           </tr>
         </thead>
         <tbody>${rows}</tbody>
+        <tfoot>
+          <tr class="compare-row--web-total">
+            <td colspan="4"><strong>Сумма выбранных:</strong></td>
+            <td colspan="5"><strong class="kp-web-total" data-item="${item.number}">${fmtMoney(initialAddon.totalPrice)}</strong></td>
+          </tr>
+        </tfoot>
       </table>`;
 }
 
@@ -1941,7 +2070,7 @@ function renderComparisonTable(item) {
       ${renderMarketEstimateInfo(item)}
       ${primaryBlock}
       ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
-      ${renderWebComparisonRows(webEntries, item)}
+      ${renderWebComparisonRows(item)}
       ${
         comparisonRows
           ? `

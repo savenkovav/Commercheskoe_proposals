@@ -194,6 +194,7 @@ class KpSelectionItemRequest(BaseModel):
     included: bool = True
     variant: str = Field(default="primary", max_length=64)
     kit_indices: list[int] | None = None
+    web_indices: list[int] | None = None
 
 
 class KpFormRequest(BaseModel):
@@ -1099,6 +1100,7 @@ def _kp_selection_items(body: KpFormRequest) -> list:
             included=item.included,
             variant=item.variant,
             kit_indices=tuple(item.kit_indices) if item.kit_indices is not None else None,
+            web_indices=tuple(item.web_indices) if item.web_indices is not None else None,
         )
         for item in body.selections
     ]

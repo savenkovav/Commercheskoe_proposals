@@ -5,8 +5,10 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
+from src.config import WEB_PRICE_DISCOUNT_PERCENT
 from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
 from src.services.pricing_rules import apply_kp_pricing
+from src.services.web_quote_priority import is_search_listing_url, meets_web_display_threshold, web_quote_rank_key
 
 
 @dataclass(frozen=True)
@@ -15,6 +17,7 @@ class KpSelectionItem:
     included: bool = True
     variant: str = "primary"
     kit_indices: tuple[int, ...] | None = None
+    web_indices: tuple[int, ...] | None = None
 
 
 def _is_market_estimate_quote(quote: PriceQuote) -> bool:
@@ -40,6 +43,22 @@ def _web_comparison_quotes(result: MatchResult) -> list[PriceQuote]:
     return quotes
 
 
+def _web_product_quotes(result: MatchResult) -> list[PriceQuote]:
+    quotes: list[PriceQuote] = []
+    for quote in _web_comparison_quotes(result):
+        if is_search_listing_url(quote.url):
+            continue
+        score = float(quote.match_score or 0)
+        if quote.match_score is not None and not meets_web_display_threshold(
+            quote.url,
+            score,
+        ):
+            continue
+        quotes.append(quote)
+    quotes.sort(key=web_quote_rank_key)
+    return quotes
+
+
 def _quote_by_variant(result: MatchResult, variant: str) -> PriceQuote | None:
     if variant == "primary":
         return None
@@ -51,7 +70,7 @@ def _quote_by_variant(result: MatchResult, variant: str) -> PriceQuote | None:
         return None
     if variant.startswith("web:"):
         index = int(variant.split(":", 1)[1])
-        quotes = _web_comparison_quotes(result)
+        quotes = _web_product_quotes(result)
         if 0 <= index < len(quotes):
             return quotes[index]
         return None
@@ -146,6 +165,44 @@ def apply_kit_component_selection(
     return cloned
 
 
+def apply_web_addon_selection(
+    result: MatchResult,
+    web_indices: list[int] | None,
+) -> MatchResult:
+    quotes = _web_product_quotes(result)
+    if not web_indices or not quotes:
+        return result
+
+    cloned = copy.deepcopy(result)
+    valid = sorted({i for i in web_indices if 0 <= i < len(quotes)})
+    if not valid:
+        return cloned
+
+    addon_cost = 0.0
+    addon_base = 0.0
+    addon_kp = 0.0
+    for index in valid:
+        quote = quotes[index]
+        cost = quote.cost if quote.cost is not None else quote.price
+        base = quote.price if quote.price is not None else quote.cost
+        if cost is not None:
+            addon_cost += float(cost)
+        if base is not None:
+            addon_base += float(base)
+            addon_kp += round(base * (1 - WEB_PRICE_DISCOUNT_PERCENT / 100), 2)
+
+    qty = cloned.tz_item.quantity
+    if addon_cost:
+        cloned.unit_cost = round((cloned.unit_cost or 0) + addon_cost, 2)
+        cloned.total_cost = round(cloned.unit_cost * qty, 2)
+    if addon_base:
+        cloned.unit_base_price = round((cloned.unit_base_price or 0) + addon_base, 2)
+    if addon_kp:
+        cloned.unit_price = round((cloned.unit_price or 0) + addon_kp, 2)
+        cloned.total_price = round(cloned.unit_price * qty, 2)
+    return cloned
+
+
 def apply_kp_selections(
     results: list[MatchResult],
     selections: list[KpSelectionItem],
@@ -164,5 +221,7 @@ def apply_kp_selections(
             continue
         applied = apply_variant_to_result(result, selection.variant)
         kit_indices = list(selection.kit_indices) if selection.kit_indices is not None else None
-        selected.append(apply_kit_component_selection(applied, kit_indices))
+        web_indices = list(selection.web_indices) if selection.web_indices is not None else None
+        with_kit = apply_kit_component_selection(applied, kit_indices)
+        selected.append(apply_web_addon_selection(with_kit, web_indices))
     return selected
