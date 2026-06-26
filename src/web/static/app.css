@@ -471,6 +471,29 @@ a.btn.btn--disabled {
   color: var(--accent);
 }
 
+.kp-web-price-input {
+  width: 100%;
+  min-width: 88px;
+  max-width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: right;
+}
+
+.kp-web-price-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(43, 130, 93, 0.15);
+}
+
+.kp-web-kp-price {
+  white-space: nowrap;
+}
+
 .compare-block__kit-note {
   margin: 0 0 10px;
   font-size: 0.88rem;

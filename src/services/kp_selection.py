@@ -18,6 +18,7 @@ class KpSelectionItem:
     variant: str = "primary"
     kit_indices: tuple[int, ...] | None = None
     web_indices: tuple[int, ...] | None = None
+    web_manual_prices: tuple[tuple[int, float], ...] | None = None
 
 
 def _is_market_estimate_quote(quote: PriceQuote) -> bool:
@@ -168,6 +169,7 @@ def apply_kit_component_selection(
 def apply_web_addon_selection(
     result: MatchResult,
     web_indices: list[int] | None,
+    web_manual_prices: dict[int, float] | None = None,
 ) -> MatchResult:
     quotes = _web_product_quotes(result)
     if not web_indices or not quotes:
@@ -178,13 +180,19 @@ def apply_web_addon_selection(
     if not valid:
         return cloned
 
+    manual = {int(key): float(value) for key, value in (web_manual_prices or {}).items()}
+
     addon_cost = 0.0
     addon_base = 0.0
     addon_kp = 0.0
     for index in valid:
         quote = quotes[index]
-        cost = quote.cost if quote.cost is not None else quote.price
-        base = quote.price if quote.price is not None else quote.cost
+        if index in manual:
+            base = manual[index]
+            cost = manual[index]
+        else:
+            cost = quote.cost if quote.cost is not None else quote.price
+            base = quote.price if quote.price is not None else quote.cost
         if cost is not None:
             addon_cost += float(cost)
         if base is not None:
@@ -222,6 +230,11 @@ def apply_kp_selections(
         applied = apply_variant_to_result(result, selection.variant)
         kit_indices = list(selection.kit_indices) if selection.kit_indices is not None else None
         web_indices = list(selection.web_indices) if selection.web_indices is not None else None
+        manual_prices = (
+            {index: price for index, price in selection.web_manual_prices}
+            if selection.web_manual_prices
+            else None
+        )
         with_kit = apply_kit_component_selection(applied, kit_indices)
-        selected.append(apply_web_addon_selection(with_kit, web_indices))
+        selected.append(apply_web_addon_selection(with_kit, web_indices, manual_prices))
     return selected

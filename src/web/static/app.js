@@ -585,7 +585,11 @@ function hasPositionDetailSelection(item, selection = {}) {
       : getWebIndicesFromUI(item.number);
   const hasKitSelection = Boolean(item.kit_components?.length && kitIndices?.length);
   const hasWebSelection = Boolean(
-    collectWebProductEntries(item).length && webIndices?.length,
+    collectWebProductEntries(item).length &&
+      webIndices?.some((index) => {
+        const quote = collectWebProductEntries(item)[index];
+        return quote && resolveWebQuoteBasePrice(item, index, quote) != null;
+      }),
   );
   return hasKitSelection || hasWebSelection;
 }
@@ -665,7 +669,7 @@ function computeItemPricing(item, selection = {}) {
       totalPrice: totals.totalPrice,
     };
   }
-  const webAddon = aggregateWebAddonPricing(item, webIndices);
+  const webAddon = aggregateWebAddonPricing(item, webIndices, selection);
   return mergeItemPricing(base, webAddon);
 }
 
@@ -1118,6 +1122,18 @@ async function saveKpSelection() {
       );
       return;
     }
+    const webIndices = selection.web_indices ?? getWebIndicesFromUI(item.number);
+    for (const index of webIndices) {
+      const quote = collectWebProductEntries(item)[index];
+      if (!quote) continue;
+      if (resolveWebQuoteBasePrice(item, index, quote) == null) {
+        showToast(
+          `Позиция ${selection.number}: укажите цену в интернете для выбранной строки`,
+          true,
+        );
+        return;
+      }
+    }
   }
 
   try {
@@ -1198,6 +1214,10 @@ function getSelectionsFromUI() {
     }
     if (collectWebProductEntries(item).length) {
       selection.web_indices = getWebIndicesFromUI(item.number);
+      const manualPrices = collectWebManualPricesForSelection(item, selection.web_indices);
+      if (manualPrices) {
+        selection.web_manual_prices = manualPrices;
+      }
     }
     return selection;
   });
@@ -1256,6 +1276,34 @@ function bindKpSelectionHandlers() {
     }
   });
 
+  tbody?.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    if (!target.classList.contains("kp-web-price-input")) return;
+    const itemNumber = Number(target.dataset.item);
+    const webIndex = Number(target.dataset.webIndex);
+    const price = parseMoneyInput(target.value);
+    setWebManualPrice(itemNumber, webIndex, price);
+    updateWebRowKpPrice(itemNumber, webIndex);
+    resetKpSavedSelection();
+    updateTzRowPricing(itemNumber);
+    updateWebAddonTotal(itemNumber);
+  });
+
+  tbody?.addEventListener(
+    "blur",
+    (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (!target.classList.contains("kp-web-price-input")) return;
+      const price = parseMoneyInput(target.value);
+      if (price != null) {
+        target.value = formatMoneyInputValue(price);
+      }
+    },
+    true,
+  );
+
   tbody?.addEventListener("click", (event) => {
     const variantBtn = event.target.closest(".kp-variant-line");
     if (variantBtn) {
@@ -1269,7 +1317,7 @@ function bindKpSelectionHandlers() {
       resetKpSavedSelection();
       return;
     }
-    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell")) {
+    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell")) {
       event.stopPropagation();
     }
   });
@@ -1299,6 +1347,18 @@ async function formKpDocument() {
         true,
       );
       return;
+    }
+    const webIndices = selection.web_indices ?? getWebIndicesFromUI(selection.number);
+    for (const index of webIndices) {
+      const quote = collectWebProductEntries(item)[index];
+      if (!quote) continue;
+      if (resolveWebQuoteBasePrice(item, index, quote) == null) {
+        showToast(
+          `Позиция ${selection.number}: укажите цену в интернете для выбранной строки`,
+          true,
+        );
+        return;
+      }
     }
   }
   showOverlay("Формирую КП (Excel и PDF)...");
@@ -1763,13 +1823,83 @@ function collectWebProductEntries(item) {
   return collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
 }
 
-function webQuoteKpUnitPrice(quote) {
-  const base = quote.price ?? quote.cost;
+let kpWebManualPrices = {};
+
+function parseMoneyInput(value) {
+  const cleaned = String(value ?? "")
+    .replace(/\s/g, "")
+    .replace(",", ".")
+    .replace(/[^\d.]/g, "");
+  if (!cleaned) return null;
+  const num = Number(cleaned);
+  return Number.isFinite(num) && num >= 0 ? roundMoney(num) : null;
+}
+
+function formatMoneyInputValue(value) {
+  if (value == null) return "";
+  return Number(value).toLocaleString("ru-RU", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function getWebManualPrice(itemNumber, webIndex) {
+  const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
+  const savedPrice = saved?.web_manual_prices?.[webIndex] ?? saved?.web_manual_prices?.[String(webIndex)];
+  if (savedPrice != null) return roundMoney(savedPrice);
+  return kpWebManualPrices[itemNumber]?.[webIndex] ?? null;
+}
+
+function setWebManualPrice(itemNumber, webIndex, price) {
+  if (!kpWebManualPrices[itemNumber]) {
+    kpWebManualPrices[itemNumber] = {};
+  }
+  if (price == null) {
+    delete kpWebManualPrices[itemNumber][webIndex];
+    return;
+  }
+  kpWebManualPrices[itemNumber][webIndex] = roundMoney(price);
+}
+
+function resolveWebQuoteBasePrice(item, webIndex, quote, selection = null) {
+  const fromSelection =
+    selection?.web_manual_prices?.[webIndex] ??
+    selection?.web_manual_prices?.[String(webIndex)];
+  if (fromSelection != null) return roundMoney(fromSelection);
+  const manual = getWebManualPrice(item.number, webIndex);
+  if (manual != null) return manual;
+  return quote.price ?? quote.cost ?? null;
+}
+
+function webQuoteKpUnitPriceFromBase(base) {
   if (base == null) return null;
   return roundMoney(base * (1 - WEB_PRICE_DISCOUNT_PERCENT / 100));
 }
 
-function aggregateWebAddonPricing(item, webIndices) {
+function collectWebManualPricesForSelection(item, webIndices) {
+  const entries = collectWebProductEntries(item);
+  const manual = {};
+  for (const index of webIndices || []) {
+    const quote = entries[index];
+    if (!quote) continue;
+    const hasApiPrice = quote.price != null || quote.cost != null;
+    const resolved = resolveWebQuoteBasePrice(item, index, quote);
+    if (!hasApiPrice && resolved != null) {
+      manual[index] = resolved;
+    }
+  }
+  return Object.keys(manual).length ? manual : undefined;
+}
+
+function webQuoteKpUnitPrice(quote, item = null, webIndex = null) {
+  const base =
+    item != null && webIndex != null
+      ? resolveWebQuoteBasePrice(item, webIndex, quote)
+      : quote.price ?? quote.cost;
+  return webQuoteKpUnitPriceFromBase(base);
+}
+
+function aggregateWebAddonPricing(item, webIndices, selection = null) {
   const entries = collectWebProductEntries(item);
   if (!entries.length || !webIndices?.length) {
     return {
@@ -1783,16 +1913,16 @@ function aggregateWebAddonPricing(item, webIndices) {
   }
   const selected = webIndices
     .filter((index) => index >= 0 && index < entries.length)
-    .map((index) => entries[index]);
+    .map((index) => ({ index, quote: entries[index] }));
   let unitCost = 0;
   let unitBasePrice = 0;
   let unitPrice = 0;
-  for (const quote of selected) {
-    const base = quote.price ?? quote.cost;
-    const cost = quote.cost ?? quote.price;
-    if (base != null) unitBasePrice += roundMoney(base);
-    if (cost != null) unitCost += roundMoney(cost);
-    const kp = webQuoteKpUnitPrice(quote);
+  for (const { index, quote } of selected) {
+    const base = resolveWebQuoteBasePrice(item, index, quote, selection);
+    if (base == null) continue;
+    unitBasePrice += roundMoney(base);
+    unitCost += roundMoney(base);
+    const kp = webQuoteKpUnitPriceFromBase(base);
     if (kp != null) unitPrice += kp;
   }
   const qty = item.quantity || 1;
@@ -1953,6 +2083,17 @@ function renderPrimaryMatchBlock(item) {
   return `<div class="compare-block__primary">${lines.join("<br>")}</div>`;
 }
 
+function updateWebRowKpPrice(itemNumber, webIndex) {
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  const quote = item ? collectWebProductEntries(item)[webIndex] : null;
+  const kpEl = document.querySelector(
+    `.kp-web-kp-price[data-item="${itemNumber}"][data-web-index="${webIndex}"]`,
+  );
+  if (!kpEl || !quote) return;
+  const base = resolveWebQuoteBasePrice(item, webIndex, quote);
+  kpEl.textContent = fmtMoney(webQuoteKpUnitPriceFromBase(base));
+}
+
 function renderWebComparisonRows(item) {
   const productEntries = collectWebProductEntries(item);
   if (!productEntries.length) return "";
@@ -1965,8 +2106,21 @@ function renderWebComparisonRows(item) {
   const rows = productEntries
     .map((q, webIndex) => {
       const checked = isWebQuoteChecked(item.number, webIndex);
-      const webPrice = q.price ?? q.cost;
-      const kpPrice = webQuoteKpUnitPrice(q) ?? webPrice;
+      const hasApiPrice = q.price != null || q.cost != null;
+      const webPrice = resolveWebQuoteBasePrice(item, webIndex, q);
+      const kpPrice = webQuoteKpUnitPriceFromBase(webPrice);
+      const manualValue = getWebManualPrice(item.number, webIndex);
+      const priceCell = hasApiPrice
+        ? fmtMoney(webPrice)
+        : `<input
+            type="text"
+            class="kp-web-price-input"
+            data-item="${item.number}"
+            data-web-index="${webIndex}"
+            inputmode="decimal"
+            placeholder="0,00"
+            value="${manualValue != null ? escapeHtml(formatMoneyInputValue(manualValue)) : ""}"
+          >`;
       return `
       <tr class="kp-web-row compare-row--competitor${checked ? "" : " kp-web-row--excluded"}" data-item="${item.number}" data-web-index="${webIndex}">
         <td class="kp-web-select-cell">
@@ -1980,8 +2134,14 @@ function renderWebComparisonRows(item) {
         </td>
         <td>${escapeHtml(q.label || "Интернет")}</td>
         <td>${escapeHtml(q.matched_name || "—")}</td>
-        <td>${fmtMoney(webPrice)}</td>
-        <td>${fmtMoney(kpPrice)}</td>
+        <td class="kp-web-price-cell">${priceCell}</td>
+        <td>
+          <span
+            class="kp-web-kp-price"
+            data-item="${item.number}"
+            data-web-index="${webIndex}"
+          >${fmtMoney(kpPrice)}</span>
+        </td>
         <td>—</td>
         <td>—</td>
         <td>${q.match_score ? `${Math.round(q.match_score)}%` : "—"}</td>
@@ -1995,7 +2155,7 @@ function renderWebComparisonRows(item) {
     .join("");
   return `
       <h4 class="compare-block__subtitle">Интернет</h4>
-      <p class="muted compare-block__kit-note">Отметьте позиции из интернета, чтобы добавить их стоимость в расчёт КП.</p>
+      <p class="muted compare-block__kit-note">Отметьте позиции из интернета, чтобы добавить их стоимость в расчёт КП. Если цена не найдена — введите её вручную.</p>
       <table class="compare-table compare-table--web">
         <thead>
           <tr>
