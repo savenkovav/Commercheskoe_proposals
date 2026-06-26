@@ -517,9 +517,9 @@ function aggregateKitPricing(item, kitIndices) {
   const components = item.kit_components || [];
   if (!components.length) return null;
   const indices =
-    kitIndices && kitIndices.length
-      ? kitIndices
-      : components.map((_, index) => index);
+    kitIndices === null || kitIndices === undefined
+      ? components.map((_, index) => index)
+      : kitIndices;
   const selected = indices
     .filter((index) => index >= 0 && index < components.length)
     .map((index) => components[index]);
@@ -572,6 +572,39 @@ function getKitIndicesFromUI(itemNumber) {
 function getWebIndicesFromUI(itemNumber) {
   const boxes = [...document.querySelectorAll(`.kp-web-include[data-item="${itemNumber}"]:checked`)];
   return boxes.map((box) => Number(box.dataset.webIndex));
+}
+
+function hasPositionDetailSelection(item, selection = {}) {
+  const kitIndices =
+    selection.kit_indices !== undefined
+      ? selection.kit_indices
+      : getKitIndicesFromUI(item.number);
+  const webIndices =
+    selection.web_indices !== undefined
+      ? selection.web_indices
+      : getWebIndicesFromUI(item.number);
+  const hasKitSelection = Boolean(item.kit_components?.length && kitIndices?.length);
+  const hasWebSelection = Boolean(
+    collectWebProductEntries(item).length && webIndices?.length,
+  );
+  return hasKitSelection || hasWebSelection;
+}
+
+function kitSelectedBaseTotal(item, itemNumber = item.number) {
+  if (!item.kit_components?.length) return 0;
+  const indices = getKitIndicesFromUI(itemNumber);
+  const pricing = aggregateKitPricing(
+    item,
+    indices === null ? item.kit_components.map((_, index) => index) : indices,
+  );
+  return pricing?.unitBasePrice ?? 0;
+}
+
+function updateKitComponentTotal(itemNumber) {
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  const kitTotalEl = document.querySelector(`.kp-kit-total[data-item="${itemNumber}"]`);
+  if (!item || !kitTotalEl) return;
+  kitTotalEl.textContent = fmtMoney(kitSelectedBaseTotal(item, itemNumber));
 }
 
 function isWebQuoteChecked(itemNumber, index) {
@@ -661,6 +694,7 @@ function updateTzRowPricing(itemNumber) {
   const pricing = computeItemPricing(item, {
     variant: savedVariantIdForItem(itemNumber),
     kit_indices: getKitIndicesFromUI(itemNumber),
+    web_indices: getWebIndicesFromUI(itemNumber),
   });
   const unitBaseCell = row.querySelector(".tz-row__price-base");
   const unitKpCell = row.querySelector(".tz-row__price-kp");
@@ -681,7 +715,7 @@ function updateTzRowPricing(itemNumber) {
 
   const kitTotalEl = document.querySelector(`.kp-kit-total[data-item="${itemNumber}"]`);
   if (kitTotalEl) {
-    kitTotalEl.textContent = fmtMoney(pricing.unitBasePrice);
+    kitTotalEl.textContent = fmtMoney(kitSelectedBaseTotal(item, itemNumber));
   }
   syncKitSelectAll(itemNumber);
 }
@@ -1075,10 +1109,11 @@ async function saveKpSelection() {
 
   for (const selection of included) {
     const item = kpProcessData.items.find((row) => row.number === selection.number);
-    if (!item?.kit_components?.length) continue;
-    if (!selection.kit_indices?.length) {
+    if (!item) continue;
+    if (!item.kit_components?.length && !collectWebProductEntries(item).length) continue;
+    if (!hasPositionDetailSelection(item, selection)) {
       showToast(
-        `Позиция ${selection.number}: выберите хотя бы одну составляющую комплекта`,
+        `Позиция ${selection.number}: выберите состав комплекта и/или позиции из интернета`,
         true,
       );
       return;
@@ -1204,6 +1239,7 @@ function bindKpSelectionHandlers() {
       });
       resetKpSavedSelection();
       updateTzRowPricing(itemNumber);
+      updateKitComponentTotal(itemNumber);
       return;
     }
     if (target.classList.contains("kp-web-include")) {
@@ -1215,6 +1251,7 @@ function bindKpSelectionHandlers() {
       resetKpSavedSelection();
       updateTzRowPricing(itemNumber);
       updateWebAddonTotal(itemNumber);
+      updateKitComponentTotal(itemNumber);
       return;
     }
   });
@@ -1254,12 +1291,11 @@ async function formKpDocument() {
   }
   for (const selection of included) {
     const item = kpProcessData?.items?.find((row) => row.number === selection.number);
-    if (!item?.kit_components?.length) continue;
-    const kitIndices =
-      selection.kit_indices ?? getKitIndicesFromUI(selection.number) ?? [];
-    if (!kitIndices.length) {
+    if (!item) continue;
+    if (!item.kit_components?.length && !collectWebProductEntries(item).length) continue;
+    if (!hasPositionDetailSelection(item, selection)) {
       showToast(
-        `Позиция ${selection.number}: выберите хотя бы одну составляющую комплекта`,
+        `Позиция ${selection.number}: выберите состав комплекта и/или позиции из интернета`,
         true,
       );
       return;
@@ -2121,7 +2157,7 @@ function renderComparisonTable(item) {
         <tfoot>
           <tr class="compare-row--kit-total">
             <td colspan="4"><strong>Сумма выбранных:</strong></td>
-            <td colspan="5"><strong class="kp-kit-total" data-item="${item.number}">${fmtMoney(item.unit_base_price)}</strong></td>
+            <td colspan="5"><strong class="kp-kit-total" data-item="${item.number}">${fmtMoney(kitSelectedBaseTotal(item))}</strong></td>
           </tr>
         </tfoot>
       </table>`
