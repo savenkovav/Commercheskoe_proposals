@@ -41,6 +41,7 @@ from src.services.web_quote_priority import (
     has_acceptable_web_pricing_in_comparison,
     has_unpriced_competitor_display_quote,
     is_acceptable_web_pricing_quote,
+    is_competitor_display_quote,
     is_competitor_url,
     is_market_estimate_quote,
     is_marketplace_url,
@@ -196,9 +197,7 @@ class TZMatchService:
             self.matcher,
             min_score=local_floor,
         )
-        internet_searched = (
-            local_miss and WEB_SEARCH_ENABLED and not skip_competitors
-        )
+        internet_searched = WEB_SEARCH_ENABLED and not skip_competitors
         web_quote, competitors = self._fetch_internet_comparison(
             tz_item,
             prefs,
@@ -528,6 +527,9 @@ class TZMatchService:
             ):
                 continue
             if not is_acceptable_web_pricing_quote(quote):
+                if is_competitor_display_quote(quote):
+                    accepted.append(quote)
+                    continue
                 if not (local_miss or allow_reference_links):
                     continue
             accepted.append(quote)
@@ -665,7 +667,7 @@ class TZMatchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
-        if local_miss and WEB_SEARCH_ENABLED and not skip_competitors:
+        if WEB_SEARCH_ENABLED and not skip_competitors:
             search_text = internet_search_text(tz_item)
             _append_quotes(
                 self.web_search.search_internet_cascade(

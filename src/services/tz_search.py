@@ -249,6 +249,8 @@ def name_anchor_tokens(tz_item: TZItem) -> list[str]:
 
 
 def spec_required_tokens(tz_item: TZItem) -> list[str]:
+    from src.services.matcher import ItemMatcher
+
     spec_line = primary_spec_line(tz_item.specifications)
     if not spec_line or is_kit_composition_header(spec_line):
         return []
@@ -265,6 +267,8 @@ def spec_required_tokens(tz_item: TZItem) -> list[str]:
             or token in _SPEC_FILLER
             or token in name_tokens
         ):
+            continue
+        if ItemMatcher.is_distinctive_mismatch(token, tz_item.name):
             continue
         if token in seen:
             continue
@@ -303,13 +307,19 @@ def product_type_conflict(tz_item: TZItem, matched_name: str) -> bool:
     if ItemMatcher.is_distinctive_mismatch(tz_item.name, matched_name):
         return True
 
+    name_distinctive_agreement = ItemMatcher.distinctive_markers_agree(
+        tz_item.name, matched_name
+    )
+
     spec_line = primary_spec_line(tz_item.specifications)
     if spec_line and not is_kit_composition_header(spec_line):
-        if ItemMatcher.is_distinctive_mismatch(spec_line, matched_name):
+        if not name_distinctive_agreement and ItemMatcher.is_distinctive_mismatch(
+            spec_line, matched_name
+        ):
             return True
 
     tz_types = detect_product_types(tz_item.name)
-    if spec_line and not is_kit_composition_header(spec_line):
+    if spec_line and not is_kit_composition_header(spec_line) and not name_distinctive_agreement:
         tz_types |= detect_product_types(spec_line)
     if not tz_types:
         tz_types = detect_product_types(tz_match_query(tz_item))

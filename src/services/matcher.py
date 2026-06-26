@@ -272,6 +272,16 @@ class ItemMatcher:
                 return True
         return False
 
+    @staticmethod
+    def distinctive_markers_agree(query: str, choice: str) -> bool:
+        """Наименование ТЗ и кандидат согласованы по отличительным маркерам."""
+        q = normalize_name(query)
+        c = normalize_name(choice)
+        tz_markers = [marker for marker, _ in _CATALOG_DISTINCTIVE_MARKERS if marker in q]
+        if not tz_markers:
+            return False
+        return all(marker in c for marker in tz_markers)
+
     def pick_best_hit(
         self,
         tz_item: TZItem,
