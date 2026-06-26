@@ -36,6 +36,9 @@ PAGE_HEIGHT = 842
 MARGIN_X = 42
 MARGIN_RIGHT = 553
 TABLE_BOTTOM_Y = 760
+PAGE_BOTTOM_MARGIN = 36
+PAGE_MAX_Y = PAGE_HEIGHT - PAGE_BOTTOM_MARGIN
+STAMP_DISPLAY_WIDTH = 150
 
 ROW_FONT_SIZE = 9
 HEADER_FONT_SIZE = 9
@@ -60,6 +63,31 @@ def resolve_kp_stamp_image() -> Path | None:
         logger.warning("KP stamp image not found: %s", stamp_path)
         return None
     return stamp_path
+
+
+def _stamp_display_size(stamp_path: Path) -> tuple[int, int]:
+    from PIL import Image
+
+    with Image.open(stamp_path) as stamp_image:
+        stamp_w, stamp_h = stamp_image.size
+    display_width = STAMP_DISPLAY_WIDTH
+    display_height = max(80, int(display_width * stamp_h / max(stamp_w, 1)))
+    return display_width, display_height
+
+
+def _footer_block_height(*, has_stamp: bool, stamp_display_height: int = 0) -> float:
+    height = 4.0 + 12.0
+    height += 11.0 + 6.0
+    height += 8.0
+    height += (10.0 + 6.0) * 3
+    height += 10.0
+    height += 9.0 + 6.0
+    height += 18.0
+    height += 11.0 + 6.0
+    if has_stamp:
+        height += 6.0 + stamp_display_height + 12.0
+    height += 9.0 + 6.0
+    return height
 
 
 def _first_existing_path(candidates: list[Path]) -> Path | None:
@@ -294,6 +322,22 @@ class PdfGenerator:
             y = 48
             draw_table_header()
 
+        def start_footer_page() -> None:
+            nonlocal page, y
+            page = doc.new_page(width=PAGE_WIDTH, height=PAGE_HEIGHT)
+            ensure_page_fonts(page)
+            y = 48
+
+        stamp_path = resolve_kp_stamp_image()
+        stamp_display_width = 0
+        stamp_display_height = 0
+        if stamp_path:
+            stamp_display_width, stamp_display_height = _stamp_display_size(stamp_path)
+        footer_height = _footer_block_height(
+            has_stamp=stamp_path is not None,
+            stamp_display_height=stamp_display_height,
+        )
+
         write_line("КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ", size=16, bold=True, center=True)
         write_line(f"на запрос {request_number} от {today} г.", size=11, center=True)
 
@@ -311,6 +355,7 @@ class PdfGenerator:
         y += 8
         draw_table_header()
 
+        total_rows = len(results)
         for row_num, result in enumerate(results, start=1):
             qty = result.tz_item.quantity
             name = result.tz_item.name
@@ -330,8 +375,18 @@ class PdfGenerator:
             )
             row_height = max(ROW_FONT_SIZE + 2, len(name_lines) * LINE_HEIGHT + 2)
 
-            if y + row_height > TABLE_BOTTOM_Y:
+            is_last_row = row_num == total_rows
+            row_limit_y = (
+                min(TABLE_BOTTOM_Y, PAGE_MAX_Y - footer_height)
+                if is_last_row
+                else TABLE_BOTTOM_Y
+            )
+            if y + row_height > row_limit_y:
                 start_new_page()
+                if is_last_row:
+                    row_limit_y = min(TABLE_BOTTOM_Y, PAGE_MAX_Y - footer_height)
+                    if y + row_height > row_limit_y:
+                        start_footer_page()
 
             row_top = y
             _draw_wrapped_cell(
@@ -380,6 +435,9 @@ class PdfGenerator:
 
             y = row_top + row_height + ROW_GAP
 
+        if y + footer_height > PAGE_MAX_Y:
+            start_footer_page()
+
         y += 4
         page.draw_line(fitz.Point(MARGIN_X, y), fitz.Point(MARGIN_RIGHT, y), width=0.8)
         y += 12
@@ -396,26 +454,19 @@ class PdfGenerator:
         y += 18
         write_line(COMPANY_DIRECTOR, size=11)
 
-        stamp_path = resolve_kp_stamp_image()
         if stamp_path:
-            from PIL import Image
-
-            with Image.open(stamp_path) as stamp_image:
-                stamp_w, stamp_h = stamp_image.size
-            display_width = 150
-            display_height = max(80, int(display_width * stamp_h / max(stamp_w, 1)))
             stamp_x = 305
             stamp_y = y + 6
             page.insert_image(
                 fitz.Rect(
                     stamp_x,
                     stamp_y,
-                    stamp_x + display_width,
-                    stamp_y + display_height,
+                    stamp_x + stamp_display_width,
+                    stamp_y + stamp_display_height,
                 ),
                 filename=str(stamp_path),
             )
-            y = stamp_y + display_height + 12
+            y = stamp_y + stamp_display_height + 12
 
         write_line("* — позиции, требующие проверки менеджером", size=9)
 
