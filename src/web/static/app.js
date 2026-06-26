@@ -669,8 +669,10 @@ function listItemVariants(item) {
     {
       id: "primary",
       label: "Основное совпадение",
-      name: item.matched_name || item.name,
-      meta: item.match_score ? `${Math.round(item.match_score)}%` : "",
+      name: "",
+      meta: "",
+      price: item.unit_base_price ?? item.unit_price ?? null,
+      headerOnly: true,
     },
   ];
   (item.comparison || [])
@@ -681,6 +683,8 @@ function listItemVariants(item) {
         label: q.label || "Источник",
         name: q.matched_name || "—",
         meta: q.match_score ? `${Math.round(q.match_score)}%` : "",
+        price: q.price ?? q.cost ?? null,
+        headerOnly: false,
       });
     });
   collectWebEntries(item)
@@ -691,33 +695,43 @@ function listItemVariants(item) {
         label: q.label || "Интернет",
         name: q.matched_name || "—",
         meta: q.match_score ? `${Math.round(q.match_score)}%` : "",
+        price: q.price ?? q.cost ?? null,
+        headerOnly: false,
       });
     });
   return variants;
 }
 
+function formatVariantLine(variant) {
+  if (variant.headerOnly) {
+    return `<strong>${escapeHtml(variant.label)}:</strong>`;
+  }
+  const details = [variant.name, variant.meta].filter(Boolean).map(escapeHtml).join(" · ");
+  const price = variant.price != null ? ` — ${fmtMoney(variant.price)}` : "";
+  return `<strong>${escapeHtml(variant.label)}:</strong> ${details}${price}`;
+}
+
+function savedVariantIdForItem(itemNumber) {
+  const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
+  return saved?.variant || "primary";
+}
+
 function renderVariantChoices(item) {
   const variants = listItemVariants(item);
   if (variants.length <= 1) return "";
-  return `
-    <div class="kp-variant-list">
-      <div class="kp-variant-list__title">Вариант для КП:</div>
-      ${variants
-        .map(
-          (variant) => `
-        <button
-          type="button"
-          class="kp-variant${variant.id === "primary" ? " kp-variant--selected" : ""}"
-          data-item="${item.number}"
-          data-variant="${variant.id}"
-        >
-          <span class="kp-variant__text">${escapeHtml(variant.label)}: ${escapeHtml(variant.name)}${
-            variant.meta ? ` · ${escapeHtml(variant.meta)}` : ""
-          }</span>
-        </button>`,
-        )
-        .join("")}
-    </div>`;
+
+  const selectedId = savedVariantIdForItem(item.number);
+  const lines = variants.map((variant) => {
+    const isSelected = variant.id === selectedId;
+    return `<button
+      type="button"
+      class="kp-variant-line${isSelected ? " kp-variant-line--selected" : ""}"
+      data-item="${item.number}"
+      data-variant="${variant.id}"
+    >${formatVariantLine(variant)}</button>`;
+  });
+
+  return `<div class="compare-block__primary kp-variant-block"><strong>Вариант для КП:</strong><br>${lines.join("<br>")}</div>`;
 }
 
 function disableDownloadLink(link) {
@@ -956,7 +970,7 @@ function getSelectionsFromUI() {
     const includeEl = document.querySelector(`.kp-item-include[data-item="${item.number}"]`);
     const include = includeEl ? includeEl.checked : true;
     const checkedVariant = document.querySelector(
-      `.kp-variant--selected[data-item="${item.number}"]`,
+      `.kp-variant-line--selected[data-item="${item.number}"]`,
     );
     return {
       number: item.number,
@@ -990,19 +1004,19 @@ function bindKpSelectionHandlers() {
   });
 
   tbody?.addEventListener("click", (event) => {
-    const variantBtn = event.target.closest(".kp-variant");
+    const variantBtn = event.target.closest(".kp-variant-line");
     if (variantBtn) {
       event.stopPropagation();
       const itemNumber = variantBtn.dataset.item;
-      $$(".kp-variant").forEach((btn) => {
+      $$(".kp-variant-line").forEach((btn) => {
         if (btn.dataset.item === itemNumber) {
-          btn.classList.toggle("kp-variant--selected", btn === variantBtn);
+          btn.classList.toggle("kp-variant-line--selected", btn === variantBtn);
         }
       });
       resetKpSavedSelection();
       return;
     }
-    if (event.target.closest(".kp-select-cell, .kp-variant-list")) {
+    if (event.target.closest(".kp-select-cell, .kp-variant-block")) {
       event.stopPropagation();
     }
   });

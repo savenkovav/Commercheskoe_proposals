@@ -442,46 +442,33 @@ a.btn.btn--disabled {
   text-decoration: underline;
 }
 
-.kp-variant-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.kp-variant-block {
   margin-bottom: 12px;
 }
 
-.kp-variant-list__title {
-  font-weight: 600;
-  font-size: 0.92rem;
-}
-
-.kp-variant {
-  display: block;
-  width: 100%;
+.kp-variant-line {
+  display: inline;
   margin: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  padding: 0;
+  border: none;
+  background: none;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
+  line-height: 1.6;
 }
 
-.kp-variant:hover {
-  border-color: var(--accent);
+.kp-variant-line:hover {
+  color: var(--accent);
 }
 
-.kp-variant--selected {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
-  box-shadow: inset 3px 0 0 var(--accent);
+.kp-variant-line--selected {
+  color: var(--text);
 }
 
-.kp-variant__text {
-  display: block;
-  line-height: 1.45;
-  font-size: 0.92rem;
+.kp-variant-line--selected strong {
+  color: var(--accent);
 }
 
 .muted { color: var(--muted); font-size: 0.9rem; margin: 0 0 16px; }
