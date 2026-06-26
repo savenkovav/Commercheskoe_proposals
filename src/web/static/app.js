@@ -668,9 +668,29 @@ function getKitIndicesFromUI(itemNumber) {
   return boxes.filter((box) => box.checked).map((box) => Number(box.dataset.kitIndex));
 }
 
+function shouldAutoSelectSingleWebRow(item) {
+  if (!shouldDeferInternetRowPrice(item)) return false;
+  return collectWebProductEntries(item).length === 1;
+}
+
+function getDefaultWebIndices(item) {
+  const saved = kpSavedSelections?.find((selection) => selection.number === item.number);
+  if (saved?.web_indices) {
+    return [...saved.web_indices];
+  }
+  if (shouldAutoSelectSingleWebRow(item)) {
+    return [0];
+  }
+  return [];
+}
+
 function getWebIndicesFromUI(itemNumber) {
-  const boxes = [...document.querySelectorAll(`.kp-web-include[data-item="${itemNumber}"]:checked`)];
-  return boxes.map((box) => Number(box.dataset.webIndex));
+  const boxes = [...document.querySelectorAll(`.kp-web-include[data-item="${itemNumber}"]`)];
+  if (boxes.length) {
+    return boxes.filter((box) => box.checked).map((box) => Number(box.dataset.webIndex));
+  }
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  return item ? getDefaultWebIndices(item) : [];
 }
 
 function hasPositionDetailSelection(item, selection = {}) {
@@ -715,7 +735,8 @@ function isWebQuoteChecked(itemNumber, index) {
   if (saved?.web_indices) {
     return saved.web_indices.includes(index);
   }
-  return false;
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  return Boolean(item && shouldAutoSelectSingleWebRow(item) && index === 0);
 }
 
 function isKitComponentChecked(itemNumber, index) {
@@ -2229,12 +2250,7 @@ function updateWebRowKpPrice(itemNumber, webIndex) {
 function renderWebComparisonRows(item) {
   const productEntries = collectWebProductEntries(item);
   if (!productEntries.length) return "";
-  const savedWebIndices = kpSavedSelections?.find((selection) => selection.number === item.number)
-    ?.web_indices;
-  const initialAddon = aggregateWebAddonPricing(
-    item,
-    savedWebIndices?.length ? savedWebIndices : [],
-  );
+  const initialAddon = aggregateWebAddonPricing(item, getDefaultWebIndices(item));
   const rows = productEntries
     .map((q, webIndex) => {
       const checked = isWebQuoteChecked(item.number, webIndex);
