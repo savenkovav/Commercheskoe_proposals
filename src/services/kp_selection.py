@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
-from src.services.models import MatchResult, MatchSource, MatchStatus, PriceQuote
+from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
 from src.services.pricing_rules import apply_kp_pricing
 
 
@@ -14,6 +14,7 @@ class KpSelectionItem:
     number: int
     included: bool = True
     variant: str = "primary"
+    kit_indices: tuple[int, ...] | None = None
 
 
 def _is_market_estimate_quote(quote: PriceQuote) -> bool:
@@ -99,6 +100,44 @@ def apply_variant_to_result(result: MatchResult, variant: str) -> MatchResult:
     return cloned
 
 
+def _aggregate_kit_components(
+    components: list[KitComponentLine],
+) -> tuple[float | None, float | None]:
+    costs = [line.unit_cost for line in components if line.unit_cost is not None]
+    prices = [line.unit_price for line in components if line.unit_price is not None]
+    total_cost = round(sum(costs), 2) if costs else None
+    total_price = round(sum(prices), 2) if prices else None
+    return total_cost, total_price
+
+
+def apply_kit_component_selection(
+    result: MatchResult,
+    kit_indices: list[int] | None,
+) -> MatchResult:
+    if not result.is_kit or not result.kit_components or kit_indices is None:
+        return result
+
+    cloned = copy.deepcopy(result)
+    valid = sorted({i for i in kit_indices if 0 <= i < len(cloned.kit_components)})
+    if not valid:
+        cloned.kit_components = []
+        cloned.unit_cost = None
+        cloned.unit_base_price = None
+        cloned.unit_price = None
+        cloned.total_cost = None
+        cloned.total_price = None
+        return cloned
+
+    cloned.kit_components = [cloned.kit_components[i] for i in valid]
+    agg_cost, agg_price = _aggregate_kit_components(cloned.kit_components)
+    if agg_cost is not None:
+        cloned.unit_cost = agg_cost
+    if agg_price is not None:
+        cloned.unit_base_price = agg_price
+    apply_kp_pricing(cloned)
+    return cloned
+
+
 def apply_kp_selections(
     results: list[MatchResult],
     selections: list[KpSelectionItem],
@@ -115,5 +154,7 @@ def apply_kp_selections(
             continue
         if not selection.included:
             continue
-        selected.append(apply_variant_to_result(result, selection.variant))
+        applied = apply_variant_to_result(result, selection.variant)
+        kit_indices = list(selection.kit_indices) if selection.kit_indices is not None else None
+        selected.append(apply_kit_component_selection(applied, kit_indices))
     return selected

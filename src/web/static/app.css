@@ -471,6 +471,26 @@ a.btn.btn--disabled {
   color: var(--accent);
 }
 
+.kp-kit-select-cell {
+  width: 36px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.compare-block__kit-note {
+  margin: 0 0 10px;
+  font-size: 0.88rem;
+}
+
+.kp-kit-row--excluded td {
+  opacity: 0.45;
+}
+
+.compare-row--kit-total td {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
 .muted { color: var(--muted); font-size: 0.9rem; margin: 0 0 16px; }
 
 .upload-zone {

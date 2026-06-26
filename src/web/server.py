@@ -193,6 +193,7 @@ class KpSelectionItemRequest(BaseModel):
     number: int = Field(ge=1)
     included: bool = True
     variant: str = Field(default="primary", max_length=64)
+    kit_indices: list[int] | None = None
 
 
 class KpFormRequest(BaseModel):
@@ -1093,7 +1094,12 @@ def _kp_selection_items(body: KpFormRequest) -> list:
     from src.services.kp_selection import KpSelectionItem
 
     return [
-        KpSelectionItem(number=item.number, included=item.included, variant=item.variant)
+        KpSelectionItem(
+            number=item.number,
+            included=item.included,
+            variant=item.variant,
+            kit_indices=tuple(item.kit_indices) if item.kit_indices is not None else None,
+        )
         for item in body.selections
     ]
 

@@ -502,14 +502,157 @@ function pricingTotalsFromLine({ unitCost, unitBasePrice, quantity, internetPric
   const qty = quantity || 1;
   const totalCost = unitCost != null ? roundMoney(unitCost * qty) : 0;
   if (unitBasePrice == null) {
-    return { totalCost, totalBasePrice: 0, totalPrice: 0 };
+    return { totalCost, totalBasePrice: 0, totalPrice: 0, unitPrice: null };
   }
   const totalBasePrice = roundMoney(unitBasePrice * qty);
   const multiplier = internetPriced
     ? 1 - WEB_PRICE_DISCOUNT_PERCENT / 100
     : 1 + getCurrentMarkupPercent() / 100;
-  const totalPrice = roundMoney(unitBasePrice * multiplier * qty);
-  return { totalCost, totalBasePrice, totalPrice };
+  const unitPrice = roundMoney(unitBasePrice * multiplier);
+  const totalPrice = roundMoney(unitPrice * qty);
+  return { totalCost, totalBasePrice, totalPrice, unitPrice };
+}
+
+function aggregateKitPricing(item, kitIndices) {
+  const components = item.kit_components || [];
+  if (!components.length) return null;
+  const indices =
+    kitIndices && kitIndices.length
+      ? kitIndices
+      : components.map((_, index) => index);
+  const selected = indices
+    .filter((index) => index >= 0 && index < components.length)
+    .map((index) => components[index]);
+  if (!selected.length) {
+    return {
+      unitCost: null,
+      unitBasePrice: null,
+      unitPrice: null,
+      totalCost: 0,
+      totalBasePrice: 0,
+      totalPrice: 0,
+    };
+  }
+  const unitCostValues = selected
+    .map((line) =>
+      line.unit_cost != null ? roundMoney(line.unit_cost * (line.quantity || 1)) : null,
+    )
+    .filter((value) => value != null);
+  const unitBaseValues = selected
+    .map((line) =>
+      line.unit_price != null ? roundMoney(line.unit_price * (line.quantity || 1)) : null,
+    )
+    .filter((value) => value != null);
+  const unitCost = unitCostValues.length ? roundMoney(unitCostValues.reduce((a, b) => a + b, 0)) : null;
+  const unitBasePrice = unitBaseValues.length
+    ? roundMoney(unitBaseValues.reduce((a, b) => a + b, 0))
+    : null;
+  const totals = pricingTotalsFromLine({
+    unitCost,
+    unitBasePrice,
+    quantity: item.quantity,
+    internetPriced: item.internet_priced,
+  });
+  return {
+    unitCost,
+    unitBasePrice,
+    unitPrice: totals.unitPrice,
+    totalCost: totals.totalCost,
+    totalBasePrice: totals.totalBasePrice,
+    totalPrice: totals.totalPrice,
+  };
+}
+
+  const boxes = [...document.querySelectorAll(`.kp-kit-include[data-item="${itemNumber}"]`)];
+  if (!boxes.length) return null;
+  return boxes.filter((box) => box.checked).map((box) => Number(box.dataset.kitIndex));
+}
+
+function isKitComponentChecked(itemNumber, index) {
+  const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
+  if (saved?.kit_indices) {
+    return saved.kit_indices.includes(index);
+  }
+  const box = document.querySelector(
+    `.kp-kit-include[data-item="${itemNumber}"][data-kit-index="${index}"]`,
+  );
+  return box ? box.checked : true;
+}
+
+function computeItemPricing(item, selection = {}) {
+  const kitIndices =
+    selection.kit_indices !== undefined
+      ? selection.kit_indices
+      : getKitIndicesFromUI(item.number);
+  if (item.kit_components?.length && kitIndices !== null) {
+    const kitPricing = aggregateKitPricing(item, kitIndices);
+    if (kitPricing) {
+      return {
+        status: item.status,
+        internetPriced: item.internet_priced,
+        ...kitPricing,
+      };
+    }
+  }
+  const pricing = quotePricingFromItem(item, selection);
+  const totals = pricingTotalsFromLine({
+    unitCost: pricing.unitCost,
+    unitBasePrice: pricing.unitBasePrice,
+    quantity: item.quantity,
+    internetPriced: pricing.internetPriced,
+  });
+  return {
+    status: pricing.status,
+    internetPriced: pricing.internetPriced,
+    unitCost: pricing.unitCost,
+    unitBasePrice: pricing.unitBasePrice,
+    unitPrice: totals.unitPrice,
+    totalCost: totals.totalCost,
+    totalBasePrice: totals.totalBasePrice,
+    totalPrice: totals.totalPrice,
+  };
+}
+
+function syncKitSelectAll(itemNumber) {
+  const boxes = [...document.querySelectorAll(`.kp-kit-include[data-item="${itemNumber}"]`)];
+  const selectAll = document.querySelector(`.kp-kit-select-all[data-item="${itemNumber}"]`);
+  if (!boxes.length || !selectAll) return;
+  const checkedCount = boxes.filter((box) => box.checked).length;
+  selectAll.checked = checkedCount === boxes.length;
+  selectAll.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
+}
+
+function updateTzRowPricing(itemNumber) {
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  const row = document.querySelector(`.tz-row[data-item-number="${itemNumber}"]`);
+  if (!item || !row) return;
+
+  const pricing = computeItemPricing(item, {
+    variant: savedVariantIdForItem(itemNumber),
+    kit_indices: getKitIndicesFromUI(itemNumber),
+  });
+  const unitBaseCell = row.querySelector(".tz-row__price-base");
+  const unitKpCell = row.querySelector(".tz-row__price-kp");
+  const lineTotalCell = row.querySelector(".tz-row__line-total");
+  if (unitBaseCell) {
+    unitBaseCell.innerHTML = `${fmtMoney(pricing.unitBasePrice)}${
+      item.internet_priced ? '<br><small class="muted">интернет</small>' : ""
+    }`;
+  }
+  if (unitKpCell) {
+    unitKpCell.innerHTML = `${fmtMoney(pricing.unitPrice)}${
+      item.internet_priced ? '<br><small class="muted">−5%</small>' : ""
+    }`;
+  }
+  if (lineTotalCell) {
+    lineTotalCell.textContent = fmtMoney(pricing.totalPrice);
+  }
+
+  const kitTotalEl = document.querySelector(`.kp-kit-total[data-item="${itemNumber}"]`);
+  if (kitTotalEl) {
+    kitTotalEl.textContent = fmtMoney(pricing.unitBasePrice);
+  }
+  syncKitSelectAll(itemNumber);
 }
 
 function buildSummaryFromSelections(items, selections, baseSummary) {
@@ -519,14 +662,8 @@ function buildSummaryFromSelections(items, selections, baseSummary) {
     .map((selection) => {
       const item = itemsByNumber[selection.number];
       if (!item) return null;
-      const pricing = quotePricingFromItem(item, selection);
-      const totals = pricingTotalsFromLine({
-        unitCost: pricing.unitCost,
-        unitBasePrice: pricing.unitBasePrice,
-        quantity: item.quantity,
-        internetPriced: pricing.internetPriced,
-      });
-      return { status: pricing.status, ...totals };
+      const pricing = computeItemPricing(item, selection);
+      return { status: pricing.status, ...pricing };
     })
     .filter(Boolean);
 
@@ -778,56 +915,48 @@ function resolveSelectionPreview(item, selection) {
     unit: item.unit,
   };
 
-  if (selection.variant === "primary") {
-    return {
-      ...base,
-      matched: item.matched_name || item.name,
-      source: SOURCE_LABELS[item.source] || item.source || "—",
-      unitPrice: item.unit_base_price ?? item.unit_price,
-      total: item.total_price ?? lineSum(item.unit_price, item.quantity),
-    };
-  }
+  const pricing = computeItemPricing(item, selection);
+  const variantLabel =
+    selection.variant === "primary"
+      ? "Основное совпадение"
+      : selection.variant.startsWith("local:")
+        ? (item.comparison || []).filter(
+            (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
+          )[Number.parseInt(selection.variant.split(":")[1], 10)]?.label || "Источник"
+        : selection.variant.startsWith("web:")
+          ? collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q))[
+              Number.parseInt(selection.variant.split(":")[1], 10)
+            ]?.label || "Интернет"
+          : SOURCE_LABELS[item.source] || item.source || "—";
 
+  let matched = item.matched_name || item.name;
   if (selection.variant.startsWith("local:")) {
     const index = Number.parseInt(selection.variant.split(":")[1], 10);
-    const quotes = (item.comparison || []).filter(
+    const quote = (item.comparison || []).filter(
       (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
-    );
-    const quote = quotes[index];
-    if (quote) {
-      const unitPrice = quote.price ?? quote.cost;
-      return {
-        ...base,
-        matched: quote.matched_name || "—",
-        source: quote.label || "Источник",
-        unitPrice,
-        total: lineSum(unitPrice, item.quantity),
-      };
-    }
+    )[index];
+    if (quote?.matched_name) matched = quote.matched_name;
+  } else if (selection.variant.startsWith("web:")) {
+    const index = Number.parseInt(selection.variant.split(":")[1], 10);
+    const quote = collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q))[index];
+    if (quote?.matched_name) matched = quote.matched_name;
   }
 
-  if (selection.variant.startsWith("web:")) {
-    const index = Number.parseInt(selection.variant.split(":")[1], 10);
-    const quotes = collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
-    const quote = quotes[index];
-    if (quote) {
-      const unitPrice = quote.price ?? quote.cost;
-      return {
-        ...base,
-        matched: quote.matched_name || "—",
-        source: quote.label || "Интернет",
-        unitPrice,
-        total: lineSum(unitPrice, item.quantity),
-      };
+  if (item.kit_components?.length && selection.kit_indices?.length) {
+    const parts = selection.kit_indices
+      .map((index) => item.kit_components[index]?.name)
+      .filter(Boolean);
+    if (parts.length) {
+      matched = `${matched} (${parts.length}/${item.kit_components.length} в составе)`;
     }
   }
 
   return {
     ...base,
-    matched: item.matched_name || item.name,
-    source: SOURCE_LABELS[item.source] || item.source || "—",
-    unitPrice: item.unit_base_price ?? item.unit_price,
-    total: item.total_price ?? lineSum(item.unit_price, item.quantity),
+    matched,
+    source: selection.variant === "primary" ? SOURCE_LABELS[item.source] || item.source || "—" : variantLabel,
+    unitPrice: pricing.unitPrice ?? pricing.unitBasePrice,
+    total: pricing.totalPrice,
   };
 }
 
@@ -905,6 +1034,18 @@ async function saveKpSelection() {
     return;
   }
 
+  for (const selection of included) {
+    const item = kpProcessData.items.find((row) => row.number === selection.number);
+    if (!item?.kit_components?.length) continue;
+    if (!selection.kit_indices?.length) {
+      showToast(
+        `Позиция ${selection.number}: выберите хотя бы одну составляющую комплекта`,
+        true,
+      );
+      return;
+    }
+  }
+
   try {
     if (kpSessionId) {
       const data = await api("/api/kp/selection/preview", {
@@ -972,11 +1113,16 @@ function getSelectionsFromUI() {
     const checkedVariant = document.querySelector(
       `.kp-variant-line--selected[data-item="${item.number}"]`,
     );
-    return {
+    const kitIndices = getKitIndicesFromUI(item.number);
+    const selection = {
       number: item.number,
       included: include,
       variant: checkedVariant?.dataset.variant || "primary",
     };
+    if (item.kit_components?.length && kitIndices !== null) {
+      selection.kit_indices = kitIndices;
+    }
+    return selection;
   });
 }
 
@@ -1000,6 +1146,24 @@ function bindKpSelectionHandlers() {
         selectAll.indeterminate = !selectAll.checked && [...boxes].some((box) => box.checked);
       }
       resetKpSavedSelection();
+      return;
+    }
+    if (target.classList.contains("kp-kit-include") || target.classList.contains("kp-kit-select-all")) {
+      const itemNumber = Number(target.dataset.item);
+      if (target.classList.contains("kp-kit-select-all")) {
+        const checked = target.checked;
+        $$(`.kp-kit-include[data-item="${itemNumber}"]`).forEach((box) => {
+          box.checked = checked;
+        });
+      }
+      $$(`.kp-kit-row[data-item="${itemNumber}"]`).forEach((row) => {
+        const index = Number(row.dataset.kitIndex);
+        const box = row.querySelector(".kp-kit-include");
+        row.classList.toggle("kp-kit-row--excluded", box ? !box.checked : false);
+      });
+      resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
+      return;
     }
   });
 
@@ -1016,7 +1180,7 @@ function bindKpSelectionHandlers() {
       resetKpSavedSelection();
       return;
     }
-    if (event.target.closest(".kp-select-cell, .kp-variant-block")) {
+    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell")) {
       event.stopPropagation();
     }
   });
@@ -1035,6 +1199,19 @@ async function formKpDocument() {
   if (!included.length) {
     showToast("Выберите хотя бы одну позицию", true);
     return;
+  }
+  for (const selection of included) {
+    const item = kpProcessData?.items?.find((row) => row.number === selection.number);
+    if (!item?.kit_components?.length) continue;
+    const kitIndices =
+      selection.kit_indices ?? getKitIndicesFromUI(selection.number) ?? [];
+    if (!kitIndices.length) {
+      showToast(
+        `Позиция ${selection.number}: выберите хотя бы одну составляющую комплекта`,
+        true,
+      );
+      return;
+    }
   }
   showOverlay("Формирую КП (Excel и PDF)...");
   try {
@@ -1708,7 +1885,8 @@ function renderComparisonTable(item) {
     .join("");
 
   const kitRows = (item.kit_components || [])
-    .map((k) => {
+    .map((k, kitIndex) => {
+      const checked = isKitComponentChecked(item.number, kitIndex);
       const catalogLabel = k.found_in_catalog
         ? `<br><small class="muted">каталог: ${escapeHtml(k.catalog_matched_name || k.name)}</small>`
         : "";
@@ -1717,7 +1895,8 @@ function renderComparisonTable(item) {
       const supplierRow =
         k.found_in_catalog && k.supplier
           ? `
-      <tr class="compare-row--supplier">
+      <tr class="compare-row--supplier kp-kit-row${checked ? "" : " kp-kit-row--excluded"}" data-item="${item.number}" data-kit-index="${kitIndex}">
+        <td class="kp-kit-select-cell"></td>
         <td colspan="2">↳ ${escapeHtml(k.supplier)}</td>
         <td>—</td>
         <td>${fmtMoney(k.unit_price)}</td>
@@ -1728,7 +1907,16 @@ function renderComparisonTable(item) {
       </tr>`
           : "";
       return `
-      <tr>
+      <tr class="kp-kit-row${checked ? "" : " kp-kit-row--excluded"}" data-item="${item.number}" data-kit-index="${kitIndex}">
+        <td class="kp-kit-select-cell">
+          <input
+            type="checkbox"
+            class="kp-kit-include"
+            data-item="${item.number}"
+            data-kit-index="${kitIndex}"
+            ${checked ? "checked" : ""}
+          >
+        </td>
         <td colspan="2">${escapeHtml(k.name)}${catalogLabel}</td>
         <td>${fmtMoney(k.unit_cost)}</td>
         <td>${fmtMoney(k.unit_price)}</td>
@@ -1775,10 +1963,20 @@ function renderComparisonTable(item) {
       ${
         kitRows
           ? `
-      <h4 class="compare-block__subtitle">Состав комплекта</h4>
+      <h4 class="compare-block__subtitle">Состав комплекта (по ТЗ)</h4>
+      <p class="muted compare-block__kit-note">Снимите галочку, чтобы исключить составляющую из расчёта цены комплекта.</p>
       <table class="compare-table compare-table--kit">
         <thead>
           <tr>
+            <th class="kp-kit-select-cell">
+              <input
+                type="checkbox"
+                class="kp-kit-select-all"
+                data-item="${item.number}"
+                checked
+                title="Выбрать все составляющие"
+              >
+            </th>
             <th colspan="2">Позиция</th>
             <th>Себест.</th>
             <th>Цена</th>
@@ -1789,6 +1987,12 @@ function renderComparisonTable(item) {
           </tr>
         </thead>
         <tbody>${kitRows}</tbody>
+        <tfoot>
+          <tr class="compare-row--kit-total">
+            <td colspan="4"><strong>Сумма выбранных:</strong></td>
+            <td colspan="5"><strong class="kp-kit-total" data-item="${item.number}">${fmtMoney(item.unit_base_price)}</strong></td>
+          </tr>
+        </tfoot>
       </table>`
           : ""
       }
@@ -2046,7 +2250,7 @@ function renderProcessResult(data) {
         const hasDetails = hasItemDetails(item);
         const detailId = `tz-detail-${item.number}`;
         return `
-      <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
+      <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" data-item-number="${item.number}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
         <td class="kp-select-cell">
           <input type="checkbox" class="kp-item-include" data-item="${item.number}" checked>
         </td>
@@ -2067,9 +2271,9 @@ function renderProcessResult(data) {
         }</td>
         <td>${statusBadge(item.status, item.notes)}</td>
         <td>${fmtQty(item.quantity, item.unit)}</td>
-        <td>${fmtMoney(unitPrice)}${item.internet_priced ? '<br><small class="muted">интернет</small>' : ""}</td>
-        <td>${fmtMoney(item.unit_price)}${item.internet_priced ? '<br><small class="muted">−5%</small>' : ""}</td>
-        <td>${fmtMoney(lineTotalKp)}</td>
+        <td class="tz-row__price-base">${fmtMoney(unitPrice)}${item.internet_priced ? '<br><small class="muted">интернет</small>' : ""}</td>
+        <td class="tz-row__price-kp">${fmtMoney(item.unit_price)}${item.internet_priced ? '<br><small class="muted">−5%</small>' : ""}</td>
+        <td class="tz-row__line-total">${fmtMoney(lineTotalKp)}</td>
       </tr>
       ${
         hasDetails
@@ -2088,6 +2292,10 @@ function renderProcessResult(data) {
       row.classList.toggle("tz-row--open");
     });
   });
+
+  data.items
+    .filter((item) => item.kit_components?.length)
+    .forEach((item) => updateTzRowPricing(item.number));
 
   const selectAll = $("#selectAllKpItems");
   if (selectAll) {
