@@ -244,16 +244,21 @@ class ExcelGenerator:
                 markup_pct = get_markup_percent()
 
             if with_margin:
-                ws.cell(row=idx, column=7, value=f"=$H$5").border = _thin_border()
+                markup_cell = ws.cell(row=idx, column=7, value=markup_pct)
+                markup_cell.number_format = "0.##"
+                markup_cell.border = _thin_border()
+
                 cost_cell = ws.cell(row=idx, column=8, value=unit_cost if unit_cost else 0)
                 cost_cell.number_format = "#,##0.00"
                 cost_cell.border = _thin_border()
 
-                price_cell = ws.cell(row=idx, column=5, value=f"=H{idx}+H{idx}*G{idx}%")
+                unit_price = _money(result.unit_price) if result.unit_price is not None else None
+                line_total = _money(result.total_price) if result.total_price is not None else None
+                price_cell = ws.cell(row=idx, column=5, value=unit_price if unit_price is not None else "—")
                 price_cell.number_format = "#,##0.00"
                 price_cell.border = _thin_border()
 
-                total_cell = ws.cell(row=idx, column=6, value=f"=D{idx}*E{idx}")
+                total_cell = ws.cell(row=idx, column=6, value=line_total if line_total is not None else "—")
                 total_cell.number_format = "#,##0.00"
                 total_cell.border = _thin_border()
 
