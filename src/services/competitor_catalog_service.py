@@ -120,9 +120,25 @@ class CompetitorParsingHints:
     product_sample_url: str = ""
     price_html_hint: str = ""
     articul_html_hint: str = ""
+    description_html_hint: str = ""
 
 
 _domain_parsing_hints: dict[str, CompetitorParsingHints] = {}
+
+_ROSTCOM_SAMPLE_URL = (
+    "https://www.rostcom.com/catalog/element/"
+    "elektronnye_sredstva_obucheniya_interaktivnye_sredstva_obucheniya_onlayn_kursy_po_predmetnoy_oblasti_6/"
+)
+_ROSTCOM_PRICE_HINT = '<div class="detail-product-price">'
+_ROSTCOM_DESCRIPTION_HINT = '<div class="catalog-detail-page__preview-text">'
+
+_DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
+    "rostcom.com": CompetitorParsingHints(
+        product_sample_url=_ROSTCOM_SAMPLE_URL,
+        price_html_hint=_ROSTCOM_PRICE_HINT,
+        description_html_hint=_ROSTCOM_DESCRIPTION_HINT,
+    ),
+}
 
 
 def set_domain_parsing_hints(
@@ -131,21 +147,45 @@ def set_domain_parsing_hints(
     product_sample_url: str = "",
     price_html_hint: str = "",
     articul_html_hint: str = "",
+    description_html_hint: str = "",
 ) -> None:
     normalized = domain.lower().removeprefix("www.")
-    if not any((product_sample_url, price_html_hint, articul_html_hint)):
+    if not any(
+        (product_sample_url, price_html_hint, articul_html_hint, description_html_hint)
+    ):
         _domain_parsing_hints.pop(normalized, None)
         return
     _domain_parsing_hints[normalized] = CompetitorParsingHints(
         product_sample_url=product_sample_url.strip(),
         price_html_hint=price_html_hint.strip(),
         articul_html_hint=articul_html_hint.strip(),
+        description_html_hint=description_html_hint.strip(),
     )
 
 
 def get_domain_parsing_hints(domain: str) -> CompetitorParsingHints | None:
     normalized = domain.lower().removeprefix("www.")
-    return _domain_parsing_hints.get(normalized)
+    return _domain_parsing_hints.get(normalized) or _DOMAIN_DEFAULT_PARSING_HINTS.get(
+        normalized
+    )
+
+
+def apply_default_domain_parsing_hints(domain: str) -> CompetitorParsingHints | None:
+    normalized = domain.lower().removeprefix("www.")
+    defaults = _DOMAIN_DEFAULT_PARSING_HINTS.get(normalized)
+    if not defaults:
+        return get_domain_parsing_hints(normalized)
+    existing = _domain_parsing_hints.get(normalized)
+    if existing:
+        return existing
+    set_domain_parsing_hints(
+        normalized,
+        product_sample_url=defaults.product_sample_url,
+        price_html_hint=defaults.price_html_hint,
+        articul_html_hint=defaults.articul_html_hint,
+        description_html_hint=defaults.description_html_hint,
+    )
+    return get_domain_parsing_hints(normalized)
 
 
 def apply_parsing_hints_from_entry(entry) -> None:
@@ -246,6 +286,7 @@ def _infer_product_path_prefix(sample_url: str) -> str | None:
         return None
     markers = (
         "/catalog/product/",
+        "/catalog/element/",
         "/magazin/product/",
         "/product/",
         "/tovar/",
@@ -298,12 +339,17 @@ _TD_SCHOOL_PRODUCT_HREF_RE = re.compile(
 def _url_matches_product_pattern(url: str, sample_url: str | None) -> bool:
     if _is_query_param_product_url(url):
         return True
+    if sample_url:
+        if _is_query_param_product_url(sample_url):
+            return _is_query_param_product_url(url)
+        prefix = _infer_product_path_prefix(sample_url)
+        if prefix and prefix.count("/") >= 3:
+            path = urlparse(url).path
+            return path.startswith(prefix) and path.rstrip("/") != prefix.rstrip("/")
     if is_competitor_product_page_url(url):
         return True
     if not sample_url:
         return False
-    if _is_query_param_product_url(sample_url):
-        return _is_query_param_product_url(url)
     prefix = _infer_product_path_prefix(sample_url)
     if not prefix:
         return False
@@ -873,6 +919,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
         "https://zarnitza.ru/catalog/",
         "https://zarnitza.ru/sitemap.xml",
     ],
+    "rostcom.com": [
+        "https://rostcom.com/catalog/osnashchenie_shkol_po_prikazu/",
+        "https://rostcom.com/sitemap.xml",
+    ],
 }
 
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
@@ -928,7 +978,8 @@ _STRONIKUM_CATEGORY_ROW_RE = re.compile(
 
 
 def _strip_html_text(html: str) -> str:
-    return re.sub(r"\s+", " ", _TAG_RE.sub(" ", html)).strip()
+    text = unescape(_TAG_RE.sub(" ", html))
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _canonical_stronikum_product_url(url: str) -> str:
@@ -2472,6 +2523,8 @@ def _is_product_detail_path(path: str) -> bool:
     lower = path.lower().rstrip("/")
     if "/catalog/product/" in lower:
         return True
+    if "/catalog/element/" in lower:
+        return True
     if re.match(r"^/product/[^/]+$", lower):
         return True
     if _is_vrtorg_product_path(lower):
@@ -2900,17 +2953,16 @@ def _parse_product_detail_page(
     if not _is_product_page_url(page_url):
         return []
 
-    title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
-    if not title_match:
+    title_match = re.search(r"<h1[^>]*>(?P<body>.*?)</h1>", html, re.I | re.S)
+    if title_match:
+        name = _strip_html_text(title_match.group("body"))
+    else:
         title_match = re.search(
             r'itemprop="name"[^>]*>\s*(?P<name>[^<]+?)\s*</',
             html,
             re.I | re.S,
         )
-    if not title_match:
-        return []
-
-    name = re.sub(r"\s+", " ", title_match.group("name")).strip()
+        name = re.sub(r"\s+", " ", title_match.group("name")).strip() if title_match else ""
     if len(name) < 4:
         return []
 
@@ -2924,13 +2976,42 @@ def _parse_product_detail_page(
     if not articul_match:
         articul_match = _ARTICUL_RE.search(html[:120_000])
     articul = articul_match.group(1) if articul_match else None
+    if not articul:
+        code_match = re.search(
+            r'id="product-code"[^>]*>\s*([^<]+)',
+            html[:120_000],
+            re.I | re.S,
+        )
+        if code_match:
+            articul = code_match.group(1).strip()
+    if not articul:
+        code_match = re.search(
+            r"Код\s+товара:\s*</[^>]+>\s*([A-Za-z0-9\-_.]+)",
+            html[:120_000],
+            re.I | re.S,
+        )
+        if code_match:
+            articul = code_match.group(1).strip()
     if hints and hints.articul_html_hint and not articul:
         articul = _parse_articul_from_hint(html, hints.articul_html_hint)
 
-    price = _extract_primary_product_price(focused)
+    price = None
+    if domain.lower().removeprefix("www.") == "rostcom.com":
+        rostcom_price = re.search(
+            r'class="detail-product-price"[^>]*>\s*((?:\d[\d\s&nbsp;]*)+)',
+            html,
+            re.I,
+        )
+        if rostcom_price:
+            price = _parse_price(rostcom_price.group(1))
+    if price is None:
+        price = _extract_primary_product_price(focused)
     if price is None and hints and hints.price_html_hint:
         price = _parse_price_from_hint(html, hints.price_html_hint)
     price_label = price_on_request_label(focused) if price is None else None
+    description = None
+    if hints and hints.description_html_hint:
+        description = _extract_text_by_hint(html, hints.description_html_hint)
     return [
         CompetitorCatalogProduct(
             domain=domain,
@@ -2940,6 +3021,7 @@ def _parse_product_detail_page(
             url=page_url.split("#")[0],
             articul=articul,
             price_label=price_label,
+            description=description[:2000] if description else None,
         )
     ]
 
@@ -3055,6 +3137,16 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if zarnitza_products:
         return zarnitza_products
 
+    if _is_product_detail_path(urlparse(page_url).path.lower()):
+        detail_products = _parse_product_detail_page(
+            html,
+            domain=domain,
+            site_label=site_label,
+            page_url=page_url,
+        )
+        if detail_products:
+            return detail_products
+
     shop2_products = _parse_shop2_products(
         html,
         domain=domain,
@@ -3106,6 +3198,7 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
                 "/products/",
                 "/product/",
                 "/catalog/product/",
+                "/catalog/element/",
                 "/tovar/",
                 "/goods/",
                 "/item/",
@@ -3266,6 +3359,7 @@ def fetch_catalog_products(
     if normalized_domain == "zarnitza.ru":
         return fetch_zarnitza_catalog(site)
 
+    apply_default_domain_parsing_hints(normalized_domain)
     hints = get_domain_parsing_hints(normalized_domain)
     sample_url = hints.product_sample_url if hints else None
     sitemap_urls = _discover_generic_sitemap_product_urls(
@@ -3600,6 +3694,7 @@ def index_competitor_site_catalog(
             source="site_index",
         )
 
+    apply_default_domain_parsing_hints(site.domain)
     append_index_log(site.domain, f"Сбор каталога с {site.domain}…")
     products = fetch_catalog_products(site, extra_urls=extra_urls)
     existing_products = store.products_for_domain(site.domain)

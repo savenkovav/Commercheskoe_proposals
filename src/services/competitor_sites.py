@@ -505,6 +505,7 @@ def is_competitor_product_page_url(url: str) -> bool:
         marker in path
         for marker in (
             "/catalog/product/",
+            "/catalog/element/",
             "/magazin/product/",
             "/product/",
             "/tovar/",
