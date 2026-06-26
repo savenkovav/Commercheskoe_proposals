@@ -292,6 +292,12 @@ class TZMatchService:
         self._ensure_internet_source_detail(primary)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
         self._ensure_primary_matched_name(primary)
+        if (
+            tz_kit_names
+            and primary.is_kit
+            and self._kit_components_priced(primary.kit_components)
+        ):
+            self._finalize_tz_kit_composition_display(primary)
         return primary
 
     def _apply_kit_composition_metadata(self, result: MatchResult) -> None:
@@ -302,17 +308,72 @@ class TZMatchService:
         result.status = MatchStatus.SIMILAR
         result.source = MatchSource.CATALOG
         result.internet_priced = False
-        if not result.matched_name:
-            result.matched_name = result.tz_item.name
-        result.match_score = max(
-            result.match_score,
-            round(in_catalog / total * 100, 1) if total else 0,
-        )
+        result.matched_name = result.tz_item.name
+        result.match_score = round(in_catalog / total * 100, 1) if total else 0
         result.source_detail = (
             f"Комплект по составу ТЗ ({in_catalog}/{total} поз. в каталоге)"
         )
         note = f"Себестоимость по составу комплекта: {total} поз."
         result.notes = note if not result.notes else f"{result.notes} | {note}"
+
+    @staticmethod
+    def _kit_components_priced(components: list[KitComponentLine]) -> bool:
+        return any(
+            line.unit_cost is not None or line.unit_price is not None
+            for line in components
+        )
+
+    @staticmethod
+    def _is_tz_kit_composition_priced(result: MatchResult) -> bool:
+        if not result.is_kit or not result.kit_components:
+            return False
+        if not TZMatchService._kit_components_priced(result.kit_components):
+            return False
+        notes = result.notes or ""
+        detail = result.source_detail or ""
+        return (
+            "Состав из ТЗ" in notes
+            or "по составу ТЗ" in detail
+            or "составу комплекта" in notes.lower()
+        )
+
+    @staticmethod
+    def _strip_internet_pricing_notes(notes: str | None) -> str:
+        kept: list[str] = []
+        for part in (notes or "").split("|"):
+            text = part.strip()
+            if not text:
+                continue
+            lower = text.lower()
+            if "цена кп" in lower and "интернет" in lower:
+                continue
+            if "подбор по сравнению" in lower:
+                continue
+            kept.append(text)
+        return " | ".join(kept)
+
+    def _finalize_tz_kit_composition_display(self, result: MatchResult) -> None:
+        if not result.kit_components:
+            return
+        in_catalog = sum(1 for line in result.kit_components if line.found_in_catalog)
+        total = len(result.kit_components)
+        result.matched_name = result.tz_item.name
+        result.source = MatchSource.CATALOG
+        result.internet_priced = False
+        result.match_score = round(in_catalog / total * 100, 1) if total else 0
+        result.status = (
+            MatchStatus.EXACT
+            if result.match_score >= EXACT_MATCH_THRESHOLD
+            else MatchStatus.SIMILAR
+        )
+        result.source_detail = (
+            f"Комплект по составу ТЗ ({in_catalog}/{total} поз. в каталоге)"
+        )
+        cleaned = self._strip_internet_pricing_notes(result.notes)
+        kit_note = f"Себестоимость по составу комплекта: {total} поз."
+        if kit_note.lower() not in cleaned.lower():
+            cleaned = f"{cleaned} | {kit_note}".strip(" |")
+        result.notes = cleaned
 
     def _normalize_result_metadata(self, result: MatchResult) -> None:
         has_price = result.unit_base_price is not None or result.unit_cost is not None
@@ -1532,6 +1593,8 @@ class TZMatchService:
 
     @staticmethod
     def _has_confident_local_pricing(result: MatchResult) -> bool:
+        if TZMatchService._is_tz_kit_composition_priced(result):
+            return True
         if result.unit_base_price is None and result.unit_cost is None:
             return False
         if result.internet_priced or result.source == MatchSource.WEB:
@@ -1576,6 +1639,9 @@ class TZMatchService:
     @staticmethod
     def _promote_internet_status(result: MatchResult) -> None:
         from src.services.matcher import ItemMatcher
+
+        if TZMatchService._is_tz_kit_composition_priced(result):
+            return
 
         tz_item = result.tz_item
 
@@ -1676,6 +1742,8 @@ class TZMatchService:
 
     @staticmethod
     def _ensure_internet_source_detail(result: MatchResult) -> None:
+        if TZMatchService._is_tz_kit_composition_priced(result):
+            return
         if not result.internet_priced and result.source != MatchSource.WEB:
             return
         if result.unit_base_price is None and result.unit_cost is None:
