@@ -39,6 +39,8 @@ TABLE_BOTTOM_Y = 760
 PAGE_BOTTOM_MARGIN = 36
 PAGE_MAX_Y = PAGE_HEIGHT - PAGE_BOTTOM_MARGIN
 STAMP_DISPLAY_WIDTH = 150
+SINGLE_PAGE_MAX_ITEMS = 20
+SINGLE_PAGE_HEADER_RESERVE = 240
 
 ROW_FONT_SIZE = 9
 HEADER_FONT_SIZE = 9
@@ -75,7 +77,18 @@ def _stamp_display_size(stamp_path: Path) -> tuple[int, int]:
     return display_width, display_height
 
 
-def _footer_block_height(*, has_stamp: bool, stamp_display_height: int = 0) -> float:
+def _footer_block_height(*, compact: bool = False) -> float:
+    if compact:
+        height = 2.0 + 8.0
+        height += 11.0 + 4.0
+        height += 4.0
+        height += (10.0 + 4.0) * 3
+        height += 6.0
+        height += 9.0 + 4.0
+        height += 8.0
+        height += 11.0 + 4.0
+        return height
+
     height = 4.0 + 12.0
     height += 11.0 + 6.0
     height += 8.0
@@ -84,9 +97,69 @@ def _footer_block_height(*, has_stamp: bool, stamp_display_height: int = 0) -> f
     height += 9.0 + 6.0
     height += 18.0
     height += 11.0 + 6.0
-    if has_stamp:
-        height += 6.0 + stamp_display_height + 12.0
     return height
+
+
+def _estimate_table_body_height(
+    results: list[MatchResult],
+    font_regular: fitz.Font,
+    *,
+    row_font_size: float,
+    line_height: float,
+    row_gap: float,
+) -> float:
+    total = 0.0
+    for result in results:
+        name = result.tz_item.name
+        if result.status == MatchStatus.SIMILAR:
+            name = f"{name} *"
+        elif result.status == MatchStatus.NOT_FOUND:
+            name = f"{name} (не подобрано)"
+        name_lines = _wrap_text(
+            name,
+            font_regular,
+            row_font_size,
+            _col_width("name"),
+        )
+        row_height = max(row_font_size + 2, len(name_lines) * line_height + 2)
+        total += row_height + row_gap
+    return total
+
+
+def _tighten_single_page_layout(layout: dict[str, float | bool]) -> bool:
+    row_font_size = float(layout["row_font_size"])
+    row_gap = float(layout["row_gap"])
+    if row_font_size <= 7.5 and row_gap <= 1.0:
+        return False
+    if row_font_size > 7.5:
+        layout["row_font_size"] = max(7.5, row_font_size - 0.5)
+        layout["line_height"] = float(layout["row_font_size"]) + 1.5
+    if row_gap > 1.0:
+        layout["row_gap"] = max(1.0, row_gap - 0.5)
+    return True
+
+
+def _single_page_layout(item_count: int) -> dict[str, float | bool]:
+    if item_count > SINGLE_PAGE_MAX_ITEMS:
+        return {
+            "single_page": False,
+            "row_font_size": float(ROW_FONT_SIZE),
+            "line_height": float(LINE_HEIGHT),
+            "row_gap": float(ROW_GAP),
+            "compact_footer": False,
+        }
+
+    row_font_size = 8.5 if item_count >= 12 else float(ROW_FONT_SIZE)
+    line_height = row_font_size + 2.0
+    row_gap = 2.0 if item_count >= 10 else 3.0
+
+    return {
+        "single_page": True,
+        "row_font_size": row_font_size,
+        "line_height": line_height,
+        "row_gap": row_gap,
+        "compact_footer": True,
+    }
 
 
 def _first_existing_path(candidates: list[Path]) -> Path | None:
@@ -197,20 +270,21 @@ def _draw_wrapped_cell(
     fontname: str,
     font: fitz.Font,
     fontsize: float = ROW_FONT_SIZE,
+    line_height: float | None = None,
 ) -> int:
     x0, x1 = TABLE_COLS[col_key]
     max_width = _col_width(col_key)
+    lh = line_height if line_height is not None else LINE_HEIGHT
     lines = _wrap_text(text, font, fontsize, max_width)
     baseline = row_top + fontsize
     for index, line in enumerate(lines):
         page.insert_text(
-            fitz.Point(x0, baseline + index * LINE_HEIGHT),
+            fitz.Point(x0, baseline + index * lh),
             line,
             fontsize=fontsize,
             fontname=fontname,
             color=(0, 0, 0),
         )
-    content_height = len(lines) * LINE_HEIGHT
     return max(1, len(lines))
 
 
@@ -328,14 +402,33 @@ class PdfGenerator:
             y = 48
 
         stamp_path = resolve_kp_stamp_image()
+        layout = _single_page_layout(len(results))
+        if layout["single_page"]:
+            while True:
+                footer_try = _footer_block_height(compact=True)
+                table_try = _estimate_table_body_height(
+                    results,
+                    font_regular,
+                    row_font_size=float(layout["row_font_size"]),
+                    line_height=float(layout["line_height"]),
+                    row_gap=float(layout["row_gap"]),
+                )
+                if SINGLE_PAGE_HEADER_RESERVE + table_try + footer_try <= PAGE_MAX_Y:
+                    break
+                if not _tighten_single_page_layout(layout):
+                    break
+
+        single_page = bool(layout["single_page"])
+        row_font_size = float(layout["row_font_size"])
+        line_height = float(layout["line_height"])
+        row_gap = float(layout["row_gap"])
+        compact_footer = bool(layout["compact_footer"])
+
         stamp_display_width = 0
         stamp_display_height = 0
         if stamp_path:
             stamp_display_width, stamp_display_height = _stamp_display_size(stamp_path)
-        footer_height = _footer_block_height(
-            has_stamp=stamp_path is not None,
-            stamp_display_height=stamp_display_height,
-        )
+        footer_height = _footer_block_height(compact=compact_footer)
 
         write_line("КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ", size=16, bold=True, center=True)
         write_line(f"на запрос {request_number} от {today} г.", size=11, center=True)
@@ -369,23 +462,27 @@ class PdfGenerator:
             name_lines = _wrap_text(
                 name,
                 font_regular,
-                ROW_FONT_SIZE,
+                row_font_size,
                 _col_width("name"),
             )
-            row_height = max(ROW_FONT_SIZE + 2, len(name_lines) * LINE_HEIGHT + 2)
+            row_height = max(row_font_size + 2, len(name_lines) * line_height + 2)
 
-            is_last_row = row_num == total_rows
-            row_limit_y = (
-                min(TABLE_BOTTOM_Y, PAGE_MAX_Y - footer_height)
-                if is_last_row
-                else TABLE_BOTTOM_Y
-            )
-            if y + row_height > row_limit_y:
-                start_new_page()
-                if is_last_row:
-                    row_limit_y = min(TABLE_BOTTOM_Y, PAGE_MAX_Y - footer_height)
+            if not single_page:
+                if row_num == SINGLE_PAGE_MAX_ITEMS + 1:
+                    start_new_page()
+                else:
+                    is_last_row = row_num == total_rows
+                    row_limit_y = (
+                        min(TABLE_BOTTOM_Y, PAGE_MAX_Y - footer_height)
+                        if is_last_row
+                        else TABLE_BOTTOM_Y
+                    )
                     if y + row_height > row_limit_y:
-                        start_footer_page()
+                        start_new_page()
+                        if is_last_row:
+                            row_limit_y = min(TABLE_BOTTOM_Y, PAGE_MAX_Y - footer_height)
+                            if y + row_height > row_limit_y:
+                                start_footer_page()
 
             row_top = y
             _draw_wrapped_cell(
@@ -395,6 +492,8 @@ class PdfGenerator:
                 name,
                 fontname=PDF_FONT_REGULAR_NAME,
                 font=font_regular,
+                fontsize=row_font_size,
+                line_height=line_height,
             )
             _draw_single_cell(
                 page,
@@ -402,6 +501,7 @@ class PdfGenerator:
                 row_top,
                 str(row_num),
                 fontname=PDF_FONT_REGULAR_NAME,
+                fontsize=row_font_size,
             )
             _draw_single_cell(
                 page,
@@ -409,6 +509,7 @@ class PdfGenerator:
                 row_top,
                 result.tz_item.unit,
                 fontname=PDF_FONT_REGULAR_NAME,
+                fontsize=row_font_size,
             )
             _draw_single_cell(
                 page,
@@ -416,6 +517,7 @@ class PdfGenerator:
                 row_top,
                 _fmt_qty(qty),
                 fontname=PDF_FONT_REGULAR_NAME,
+                fontsize=row_font_size,
             )
             _draw_single_cell(
                 page,
@@ -423,6 +525,7 @@ class PdfGenerator:
                 row_top,
                 _fmt_money(unit_price),
                 fontname=PDF_FONT_REGULAR_NAME,
+                fontsize=row_font_size,
             )
             _draw_single_cell(
                 page,
@@ -430,32 +533,36 @@ class PdfGenerator:
                 row_top,
                 _fmt_money(line_total),
                 fontname=PDF_FONT_REGULAR_NAME,
+                fontsize=row_font_size,
             )
 
-            y = row_top + row_height + ROW_GAP
+            y = row_top + row_height + row_gap
 
-        if y + footer_height > PAGE_MAX_Y:
+        if not single_page and y + footer_height > PAGE_MAX_Y:
             start_footer_page()
 
-        y += 4
+        if compact_footer:
+            y += 2
+        else:
+            y += 4
         page.draw_line(fitz.Point(MARGIN_X, y), fitz.Point(MARGIN_RIGHT, y), width=0.8)
-        y += 12
+        y += 8 if compact_footer else 12
         write_line(f"Всего: {_fmt_money(summary.total_price)}", size=11, bold=True)
-        y += 8
+        y += 4 if compact_footer else 8
         write_line(f"Условия оплаты: {PAYMENT_TERMS}", size=10)
         write_line(f"Срок поставки: {DELIVERY_DAYS}", size=10)
         write_line(f"Доставка: {DELIVERY_TERMS}", size=10)
-        y += 10
+        y += 6 if compact_footer else 10
         write_line(
             f"Наценка: {get_markup_percent()}% (каталог/прайс); интернет −5%",
             size=9,
         )
-        y += 18
+        y += 8 if compact_footer else 18
         write_line(COMPANY_DIRECTOR, size=11)
 
         if stamp_path:
             stamp_x = 305
-            stamp_y = y + 6
+            stamp_y = PAGE_MAX_Y - stamp_display_height
             page.insert_image(
                 fitz.Rect(
                     stamp_x,
@@ -465,7 +572,6 @@ class PdfGenerator:
                 ),
                 filename=str(stamp_path),
             )
-            y = stamp_y + stamp_display_height + 12
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path)
