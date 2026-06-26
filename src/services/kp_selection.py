@@ -60,6 +60,28 @@ def _web_product_quotes(result: MatchResult) -> list[PriceQuote]:
     return quotes
 
 
+def _should_defer_internet_pricing(result: MatchResult) -> bool:
+    if not _web_product_quotes(result):
+        return False
+    if result.is_kit and result.kit_components:
+        return False
+    if result.source in (MatchSource.CATALOG, MatchSource.PRICE_LIST, MatchSource.REGISTRY):
+        if not result.internet_priced and result.unit_base_price is not None:
+            return False
+    return bool(result.internet_priced or result.source == MatchSource.WEB)
+
+
+def _clear_auto_internet_pricing(result: MatchResult) -> None:
+    if not _should_defer_internet_pricing(result):
+        return
+    result.unit_cost = None
+    result.unit_base_price = None
+    result.unit_price = None
+    result.total_cost = None
+    result.total_price = None
+    result.internet_priced = False
+
+
 def _quote_by_variant(result: MatchResult, variant: str) -> PriceQuote | None:
     if variant == "primary":
         return None
@@ -92,6 +114,7 @@ def _source_from_quote(quote: PriceQuote) -> MatchSource:
 def apply_variant_to_result(result: MatchResult, variant: str) -> MatchResult:
     if variant == "primary":
         cloned = copy.deepcopy(result)
+        _clear_auto_internet_pricing(cloned)
         apply_kp_pricing(cloned)
         return cloned
 
@@ -172,12 +195,19 @@ def apply_web_addon_selection(
     web_manual_prices: dict[int, float] | None = None,
 ) -> MatchResult:
     quotes = _web_product_quotes(result)
-    if not web_indices or not quotes:
+    if not quotes:
         return result
 
     cloned = copy.deepcopy(result)
+    if not web_indices:
+        _clear_auto_internet_pricing(cloned)
+        apply_kp_pricing(cloned)
+        return cloned
+
     valid = sorted({i for i in web_indices if 0 <= i < len(quotes)})
     if not valid:
+        _clear_auto_internet_pricing(cloned)
+        apply_kp_pricing(cloned)
         return cloned
 
     manual = {int(key): float(value) for key, value in (web_manual_prices or {}).items()}
@@ -200,14 +230,25 @@ def apply_web_addon_selection(
             addon_kp += round(base * (1 - WEB_PRICE_DISCOUNT_PERCENT / 100), 2)
 
     qty = cloned.tz_item.quantity
-    if addon_cost:
-        cloned.unit_cost = round((cloned.unit_cost or 0) + addon_cost, 2)
-        cloned.total_cost = round(cloned.unit_cost * qty, 2)
-    if addon_base:
-        cloned.unit_base_price = round((cloned.unit_base_price or 0) + addon_base, 2)
-    if addon_kp:
-        cloned.unit_price = round((cloned.unit_price or 0) + addon_kp, 2)
-        cloned.total_price = round(cloned.unit_price * qty, 2)
+    kit_has_components = bool(cloned.is_kit and cloned.kit_components)
+    if kit_has_components:
+        if addon_cost:
+            cloned.unit_cost = round((cloned.unit_cost or 0) + addon_cost, 2)
+            cloned.total_cost = round(cloned.unit_cost * qty, 2)
+        if addon_base:
+            cloned.unit_base_price = round((cloned.unit_base_price or 0) + addon_base, 2)
+            cloned.internet_priced = True
+        if addon_kp:
+            cloned.unit_price = round((cloned.unit_price or 0) + addon_kp, 2)
+            cloned.total_price = round(cloned.unit_price * qty, 2)
+        return cloned
+
+    cloned.unit_cost = round(addon_cost, 2) if addon_cost else None
+    cloned.unit_base_price = round(addon_base, 2) if addon_base else None
+    cloned.unit_price = round(addon_kp, 2) if addon_kp else None
+    cloned.internet_priced = bool(addon_base)
+    cloned.total_cost = round(cloned.unit_cost * qty, 2) if cloned.unit_cost is not None else None
+    cloned.total_price = round(cloned.unit_price * qty, 2) if cloned.unit_price is not None else None
     return cloned
 
 

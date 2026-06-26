@@ -458,8 +458,38 @@ function getCurrentMarkupPercent() {
   return kpProcessData?.summary?.markup_percent ?? 30;
 }
 
+function shouldDeferInternetRowPrice(item, selection = {}) {
+  if (!collectWebProductEntries(item).length) return false;
+  const variant = selection.variant || savedVariantIdForItem(item.number) || "primary";
+  if (variant !== "primary") return false;
+  if (item.kit_components?.length) return false;
+  if (isLocalDataSource(item) && item.unit_base_price != null) return false;
+  return Boolean(item.internet_priced || item.source === "web");
+}
+
+function emptyItemPricing(item) {
+  return {
+    status: item.status,
+    internetPriced: false,
+    unitCost: null,
+    unitBasePrice: null,
+    unitPrice: null,
+    totalCost: 0,
+    totalBasePrice: 0,
+    totalPrice: 0,
+  };
+}
+
 function quotePricingFromItem(item, selection) {
   if (selection.variant === "primary") {
+    if (shouldDeferInternetRowPrice(item, selection)) {
+      return {
+        unitCost: null,
+        unitBasePrice: null,
+        internetPriced: false,
+        status: item.status,
+      };
+    }
     return {
       unitCost: item.unit_cost,
       unitBasePrice: item.unit_base_price,
@@ -479,6 +509,15 @@ function quotePricingFromItem(item, selection) {
     const index = Number.parseInt(selection.variant.split(":")[1], 10);
     const quotes = collectWebProductEntries(item);
     quote = quotes[index];
+    if (quote) {
+      const base = resolveWebQuoteBasePrice(item, index, quote, selection);
+      return {
+        unitCost: base,
+        unitBasePrice: base,
+        internetPriced: true,
+        status: item.status,
+      };
+    }
   }
 
   if (!quote) {
@@ -631,6 +670,7 @@ function isKitComponentChecked(itemNumber, index) {
 }
 
 function computeItemPricing(item, selection = {}) {
+  const variant = selection.variant || savedVariantIdForItem(item.number) || "primary";
   const kitIndices =
     selection.kit_indices !== undefined
       ? selection.kit_indices
@@ -639,19 +679,38 @@ function computeItemPricing(item, selection = {}) {
     selection.web_indices !== undefined
       ? selection.web_indices
       : getWebIndicesFromUI(item.number);
+  const hasWebTable = collectWebProductEntries(item).length > 0;
+  const deferInternetPrice = shouldDeferInternetRowPrice(item, { ...selection, variant });
+
   let base;
   if (item.kit_components?.length && kitIndices !== null) {
     const kitPricing = aggregateKitPricing(item, kitIndices);
     if (kitPricing) {
       base = {
         status: item.status,
-        internetPriced: item.internet_priced,
+        internetPriced: false,
         ...kitPricing,
       };
     }
   }
   if (!base) {
-    const pricing = quotePricingFromItem(item, selection);
+    if (deferInternetPrice) {
+      if (!webIndices?.length) {
+        return emptyItemPricing(item);
+      }
+      const webOnly = aggregateWebAddonPricing(item, webIndices, selection);
+      return {
+        status: item.status,
+        internetPriced: Boolean(webOnly.unitBasePrice != null),
+        unitCost: webOnly.unitCost,
+        unitBasePrice: webOnly.unitBasePrice,
+        unitPrice: webOnly.unitPrice,
+        totalCost: webOnly.totalCost,
+        totalBasePrice: webOnly.totalBasePrice,
+        totalPrice: webOnly.totalPrice,
+      };
+    }
+    const pricing = quotePricingFromItem(item, { ...selection, variant });
     const totals = pricingTotalsFromLine({
       unitCost: pricing.unitCost,
       unitBasePrice: pricing.unitBasePrice,
@@ -669,7 +728,13 @@ function computeItemPricing(item, selection = {}) {
       totalPrice: totals.totalPrice,
     };
   }
+  if (!hasWebTable || deferInternetPrice) {
+    return base;
+  }
   const webAddon = aggregateWebAddonPricing(item, webIndices, selection);
+  if (!webIndices?.length) {
+    return base;
+  }
   return mergeItemPricing(base, webAddon);
 }
 
@@ -705,12 +770,12 @@ function updateTzRowPricing(itemNumber) {
   const lineTotalCell = row.querySelector(".tz-row__line-total");
   if (unitBaseCell) {
     unitBaseCell.innerHTML = `${fmtMoney(pricing.unitBasePrice)}${
-      item.internet_priced ? '<br><small class="muted">интернет</small>' : ""
+      pricing.internetPriced ? '<br><small class="muted">интернет</small>' : ""
     }`;
   }
   if (unitKpCell) {
     unitKpCell.innerHTML = `${fmtMoney(pricing.unitPrice)}${
-      item.internet_priced ? '<br><small class="muted">−5%</small>' : ""
+      pricing.internetPriced ? '<br><small class="muted">−5%</small>' : ""
     }`;
   }
   if (lineTotalCell) {
@@ -878,7 +943,9 @@ function listItemVariants(item) {
       label: "Основное совпадение",
       name: "",
       meta: "",
-      price: item.unit_base_price ?? item.unit_price ?? null,
+      price: shouldDeferInternetRowPrice(item, { variant: "primary" })
+        ? null
+        : item.unit_base_price ?? item.unit_price ?? null,
       headerOnly: true,
     },
   ];
@@ -918,7 +985,11 @@ function formatVariantLine(variant) {
 
 function savedVariantIdForItem(itemNumber) {
   const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
-  return saved?.variant || "primary";
+  if (saved?.variant) return saved.variant;
+  const selected = document.querySelector(
+    `.kp-variant-line--selected[data-item="${itemNumber}"]`,
+  );
+  return selected?.dataset.variant || "primary";
 }
 
 function renderVariantChoices(item) {
@@ -1308,13 +1379,14 @@ function bindKpSelectionHandlers() {
     const variantBtn = event.target.closest(".kp-variant-line");
     if (variantBtn) {
       event.stopPropagation();
-      const itemNumber = variantBtn.dataset.item;
+      const itemNumber = Number(variantBtn.dataset.item);
       $$(".kp-variant-line").forEach((btn) => {
-        if (btn.dataset.item === itemNumber) {
+        if (btn.dataset.item === String(itemNumber)) {
           btn.classList.toggle("kp-variant-line--selected", btn === variantBtn);
         }
       });
       resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
       return;
     }
     if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell")) {
@@ -2068,10 +2140,10 @@ function renderPrimaryMatchBlock(item) {
       ? `<strong>Ссылка:</strong> <a href="${escapeHtml(item.internet_url)}" target="_blank" rel="noopener">${escapeHtml(item.internet_url)}</a>`
       : null,
     renderSourceDetailLine(item),
-    item.unit_base_price != null
+    item.unit_base_price != null && !shouldDeferInternetRowPrice(item)
       ? `<strong>Цена баз.:</strong> ${fmtMoney(item.unit_base_price)}`
       : null,
-    item.unit_price != null
+    item.unit_price != null && !shouldDeferInternetRowPrice(item)
       ? `<strong>Цена КП:</strong> ${fmtMoney(item.unit_price)}`
       : null,
     item.notes ? `<strong>Примечание:</strong> ${escapeHtml(item.notes)}` : null,
@@ -2571,11 +2643,10 @@ function renderProcessResult(data) {
   tbody.innerHTML = data.items
     .map(
       (item) => {
-        const unitPrice = item.unit_base_price ?? item.unit_price;
-        const lineTotalKp =
-          item.total_price ?? lineSum(item.unit_price, item.quantity);
+        const initialPricing = computeItemPricing(item, { variant: "primary" });
         const hasDetails = hasItemDetails(item);
         const detailId = `tz-detail-${item.number}`;
+        const showInternetLabels = initialPricing.internetPriced;
         return `
       <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" data-item-number="${item.number}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
         <td class="kp-select-cell">
@@ -2588,7 +2659,7 @@ function renderProcessResult(data) {
             ? `<br><small class="muted">${escapeHtml(SOURCE_LABELS[item.source] || item.source)}</small>`
             : ""
         }${
-          item.internet_priced
+          showInternetLabels
             ? '<br><small class="muted">интернет −5%</small>'
             : `<br><small class="muted">${Math.round(item.match_score)}%</small>`
         }${
@@ -2598,9 +2669,9 @@ function renderProcessResult(data) {
         }</td>
         <td>${statusBadge(item.status, item.notes)}</td>
         <td>${fmtQty(item.quantity, item.unit)}</td>
-        <td class="tz-row__price-base">${fmtMoney(unitPrice)}${item.internet_priced ? '<br><small class="muted">интернет</small>' : ""}</td>
-        <td class="tz-row__price-kp">${fmtMoney(item.unit_price)}${item.internet_priced ? '<br><small class="muted">−5%</small>' : ""}</td>
-        <td class="tz-row__line-total">${fmtMoney(lineTotalKp)}</td>
+        <td class="tz-row__price-base">${fmtMoney(initialPricing.unitBasePrice)}${showInternetLabels ? '<br><small class="muted">интернет</small>' : ""}</td>
+        <td class="tz-row__price-kp">${fmtMoney(initialPricing.unitPrice)}${showInternetLabels ? '<br><small class="muted">−5%</small>' : ""}</td>
+        <td class="tz-row__line-total">${fmtMoney(initialPricing.totalPrice)}</td>
       </tr>
       ${
         hasDetails
@@ -2621,7 +2692,9 @@ function renderProcessResult(data) {
   });
 
   data.items
-    .filter((item) => item.kit_components?.length)
+    .filter(
+      (item) => item.kit_components?.length || collectWebProductEntries(item).length,
+    )
     .forEach((item) => updateTzRowPricing(item.number));
 
   const selectAll = $("#selectAllKpItems");
