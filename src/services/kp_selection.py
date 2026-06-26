@@ -112,7 +112,6 @@ def apply_kp_selections(
         number = result.tz_item.number
         selection = by_number.get(number)
         if selection is None:
-            selected.append(apply_variant_to_result(result, "primary"))
             continue
         if not selection.included:
             continue

@@ -1017,8 +1017,8 @@ async function formKpDocument() {
     showToast('Сначала нажмите «Сохранить выбор»', true);
     return;
   }
-  const selections = kpSavedSelections.filter((item) => item.included);
-  if (!selections.length) {
+  const included = kpSavedSelections.filter((item) => item.included);
+  if (!included.length) {
     showToast("Выберите хотя бы одну позицию", true);
     return;
   }
@@ -1027,7 +1027,7 @@ async function formKpDocument() {
     const data = await api("/api/kp/form", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: kpSessionId, selections }),
+      body: JSON.stringify({ session_id: kpSessionId, selections: kpSavedSelections }),
     });
     kpFormed = true;
     kpExportSummary = data.summary;
