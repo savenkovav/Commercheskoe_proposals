@@ -109,6 +109,15 @@ def _fmt_money(value: float | None) -> str:
     return f"{value:,.2f}".replace(",", " ").replace(".", ",")
 
 
+def _fmt_qty(value: float | int | None) -> str:
+    if value is None:
+        return "—"
+    qty = float(value)
+    if qty.is_integer():
+        return str(int(qty))
+    return f"{qty:g}".replace(".", ",")
+
+
 def _col_width(col_key: str) -> float:
     x0, x1 = TABLE_COLS[col_key]
     return x1 - x0 - 2
@@ -302,7 +311,7 @@ class PdfGenerator:
         y += 8
         draw_table_header()
 
-        for result in results:
+        for row_num, result in enumerate(results, start=1):
             qty = result.tz_item.quantity
             name = result.tz_item.name
             if result.status == MatchStatus.SIMILAR:
@@ -337,7 +346,7 @@ class PdfGenerator:
                 page,
                 "num",
                 row_top,
-                str(result.tz_item.number),
+                str(row_num),
                 fontname=PDF_FONT_REGULAR_NAME,
             )
             _draw_single_cell(
@@ -351,7 +360,7 @@ class PdfGenerator:
                 page,
                 "qty",
                 row_top,
-                str(qty).replace(".", ","),
+                _fmt_qty(qty),
                 fontname=PDF_FONT_REGULAR_NAME,
             )
             _draw_single_cell(
