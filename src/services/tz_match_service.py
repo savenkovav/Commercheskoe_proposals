@@ -50,6 +50,7 @@ from src.services.web_quote_priority import (
     pick_best_web_priced_quote,
     pick_internet_url,
     pick_marketplace_priced_quote,
+    pick_primary_internet_pricing_quote,
     resolve_price_source_url,
     sort_web_quotes,
     web_quote_rank_key,
@@ -289,6 +290,7 @@ class TZMatchService:
         self._ensure_marketplace_reference_links(primary, prefs)
         self._ensure_internet_comparison(primary)
         self._promote_internet_status(primary)
+        self._reconcile_internet_primary_price(primary)
         self._ensure_internet_source_detail(primary)
         primary.competitors = [q for q in primary.comparison if q.source == "web"]
         self._ensure_primary_matched_name(primary)
@@ -626,7 +628,7 @@ class TZMatchService:
                 )
                 return
 
-            best = pick_best_web_priced_quote(priced) or priced[0]
+            best = pick_primary_internet_pricing_quote(priced) or priced[0]
             if not best.url:
                 best.url = self._pick_internet_url(
                     web_quotes,
@@ -1328,6 +1330,7 @@ class TZMatchService:
             and result.unit_cost is None
         )
         if not needs_price and not web_without_price:
+            self._reconcile_internet_primary_price(result)
             self._normalize_result_metadata(result)
             return
 
@@ -1678,7 +1681,7 @@ class TZMatchService:
 
         if has_web_price or web_with_url:
             if result.unit_base_price is None and web_with_url:
-                best = pick_best_web_priced_quote(web_with_url)
+                best = pick_primary_internet_pricing_quote(web_with_url)
                 if best is None:
                     best = web_with_url[0]
                 self_price = best.cost if best.cost is not None else best.price
@@ -1725,9 +1728,41 @@ class TZMatchService:
                 ).strip(" |")
                 TZMatchService._ensure_internet_source_detail(result)
 
+    def _reconcile_internet_primary_price(self, result: MatchResult) -> None:
+        if self._is_tz_kit_composition_priced(result):
+            return
+        if self._has_confident_local_pricing(result):
+            return
+
+        best = pick_primary_internet_pricing_quote(result.comparison)
+        if best is None or not self._quote_acceptable_for_tz(result.tz_item, best):
+            return
+
+        base_price = best.cost if best.cost is not None else best.price
+        if base_price is None:
+            return
+
+        current = result.unit_base_price
+        if current is not None and abs(current - base_price) < 0.01:
+            return
+
+        if current is not None and not (
+            result.internet_priced or result.source == MatchSource.WEB
+        ):
+            return
+
+        result.notes = self._strip_internet_pricing_notes(result.notes)
+        self._apply_priced_quote(
+            result,
+            best,
+            unpriced_competitor_reference=has_unpriced_competitor_display_quote(
+                result.comparison
+            ),
+        )
+
     @staticmethod
     def _priced_web_quote_for_result(result: MatchResult) -> PriceQuote | None:
-        best = pick_best_web_priced_quote(result.comparison)
+        best = pick_primary_internet_pricing_quote(result.comparison)
         if best is not None:
             return best
         if result.unit_base_price is None:
@@ -1811,7 +1846,7 @@ class TZMatchService:
 
     @staticmethod
     def _best_web_priced_quote(quotes: list[PriceQuote]) -> PriceQuote | None:
-        return pick_best_web_priced_quote(quotes)
+        return pick_primary_internet_pricing_quote(quotes)
 
     @staticmethod
     def _best_local_priced_quote(

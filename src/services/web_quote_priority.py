@@ -146,6 +146,42 @@ def pick_best_web_priced_quote(quotes: list[PriceQuote]) -> PriceQuote | None:
     return min(eligible, key=web_quote_rank_key)
 
 
+def pick_primary_internet_pricing_quote(quotes: list[PriceQuote]) -> PriceQuote | None:
+    """Цена для строки КП: карточка конкурента с ценой, не AI-оценка рынка."""
+    web = [
+        quote
+        for quote in quotes
+        if quote.source == "web" and is_acceptable_web_pricing_quote(quote)
+    ]
+    if not web:
+        return None
+
+    competitor_product = [
+        quote
+        for quote in web
+        if not is_market_estimate_quote(quote)
+        and is_competitor_url(quote.url or "")
+        and is_product_page_url(quote.url)
+    ]
+    if competitor_product:
+        return min(competitor_product, key=web_quote_rank_key)
+
+    competitor_priced = [
+        quote
+        for quote in web
+        if not is_market_estimate_quote(quote)
+        and is_competitor_url(quote.url or "")
+    ]
+    if competitor_priced:
+        return min(competitor_priced, key=web_quote_rank_key)
+
+    non_estimate = [quote for quote in web if not is_market_estimate_quote(quote)]
+    if non_estimate:
+        return min(non_estimate, key=web_quote_rank_key)
+
+    return pick_best_web_priced_quote(quotes)
+
+
 def has_priced_competitor_quote(quotes: list[PriceQuote]) -> bool:
     return any(
         quote.source == "web"
