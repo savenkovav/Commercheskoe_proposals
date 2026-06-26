@@ -134,6 +134,7 @@ class ExcelGenerator:
             request_number,
             include_links=include_links,
             with_margin=show_margin,
+            summary=summary if show_margin else None,
         )
         if include_links and not template_mode:
             self._build_kp_specs_links_sheet(
@@ -166,6 +167,7 @@ class ExcelGenerator:
         *,
         include_links: bool,
         with_margin: bool,
+        summary: ProposalSummary | None = None,
     ) -> None:
         ws.title = KP_SHEET_NAME
         today = datetime.now().strftime("%d.%m.%Y")
@@ -248,9 +250,22 @@ class ExcelGenerator:
                 markup_cell.number_format = "0.##"
                 markup_cell.border = _thin_border()
 
-                cost_cell = ws.cell(row=idx, column=8, value=unit_cost if unit_cost else 0)
+                if result.unit_cost is not None:
+                    unit_cost_per_item = _money(result.unit_cost)
+                elif result.total_cost is not None and qty:
+                    unit_cost_per_item = _money(result.total_cost / qty)
+                else:
+                    unit_cost_per_item = unit_cost if unit_cost else 0
+                cost_cell = ws.cell(row=idx, column=8, value=unit_cost_per_item)
                 cost_cell.number_format = "#,##0.00"
                 cost_cell.border = _thin_border()
+
+                line_cost_total = (
+                    _money(result.total_cost) if result.total_cost is not None else 0
+                )
+                supplier_total = ws.cell(row=idx, column=9, value=line_cost_total)
+                supplier_total.number_format = "#,##0.00"
+                supplier_total.border = _thin_border()
 
                 unit_price = _money(result.unit_price) if result.unit_price is not None else None
                 line_total = _money(result.total_price) if result.total_price is not None else None
@@ -261,10 +276,6 @@ class ExcelGenerator:
                 total_cell = ws.cell(row=idx, column=6, value=line_total if line_total is not None else "—")
                 total_cell.number_format = "#,##0.00"
                 total_cell.border = _thin_border()
-
-                supplier_total = ws.cell(row=idx, column=9, value=f"=D{idx}*H{idx}")
-                supplier_total.number_format = "#,##0.00"
-                supplier_total.border = _thin_border()
 
                 supplier_name = (result.supplier or "").strip() or "—"
                 if not supplier_name or supplier_name == "—":
@@ -322,24 +333,45 @@ class ExcelGenerator:
             tax_row = terms_row + 1
             profit_row = terms_row + 2
             margin_row = terms_row + 3
-            ws.cell(row=tax_row, column=8, value="Налог").font = Font(bold=True)
-            ws.cell(
+            total_revenue = _money(summary.total_price) if summary else None
+            total_cost_value = _money(summary.total_cost) if summary else None
+            profit_value = (
+                _money(total_revenue - total_cost_value)
+                if total_revenue is not None and total_cost_value is not None
+                else None
+            )
+            margin_ratio = (
+                profit_value / total_cost_value
+                if profit_value is not None and total_cost_value and total_cost_value > 0
+                else None
+            )
+
+            ws.cell(row=tax_row, column=8, value="Себестоимость").font = Font(bold=True)
+            cost_total_cell = ws.cell(
                 row=tax_row,
                 column=9,
-                value=f"=(F{total_row}-I{total_row})*5%+F{total_row}/1.05*0.05",
-            ).number_format = "#,##0.00"
+                value=total_cost_value if total_cost_value is not None else f"=SUM(I{first_data_row}:I{last_data_row})",
+            )
+            cost_total_cell.number_format = "#,##0.00"
+            cost_total_cell.border = _thin_border()
+
             ws.cell(row=profit_row, column=8, value="Прибыль").font = Font(bold=True)
-            ws.cell(
+            profit_cell = ws.cell(
                 row=profit_row,
                 column=9,
-                value=f"=F{total_row}-I{tax_row}-I{total_row}",
-            ).number_format = "#,##0.00"
+                value=profit_value if profit_value is not None else f"=F{total_row}-I{tax_row}",
+            )
+            profit_cell.number_format = "#,##0.00"
+            profit_cell.border = _thin_border()
+
             ws.cell(row=margin_row, column=8, value="Маржа").font = Font(bold=True)
-            ws.cell(
+            margin_cell = ws.cell(
                 row=margin_row,
                 column=9,
-                value=f"=I{profit_row}/(I{total_row}+I{tax_row})",
-            ).number_format = "0.00%"
+                value=margin_ratio if margin_ratio is not None else f"=IF(I{tax_row}=0,0,I{profit_row}/I{tax_row})",
+            )
+            margin_cell.number_format = "0.00%"
+            margin_cell.border = _thin_border()
 
         sign_row = terms_row + (5 if with_margin else 3)
         ws.cell(row=sign_row, column=1, value=COMPANY_DIRECTOR)
@@ -878,6 +910,18 @@ class ExcelGenerator:
                 ),
             ),
             ("Итого цена КП", _money(summary.total_price)),
+            (
+                "Маржа (прибыль)",
+                _money(summary.total_price - summary.total_cost),
+            ),
+            (
+                "Маржа %",
+                (
+                    f"{((summary.total_price - summary.total_cost) / summary.total_cost * 100):.1f}%"
+                    if summary.total_cost
+                    else "—"
+                ),
+            ),
             ("", ""),
             ("Время обработки, сек", round(summary.processing_seconds, 2)),
         ]

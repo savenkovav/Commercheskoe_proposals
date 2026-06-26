@@ -103,8 +103,16 @@ def apply_variant_to_result(result: MatchResult, variant: str) -> MatchResult:
 def _aggregate_kit_components(
     components: list[KitComponentLine],
 ) -> tuple[float | None, float | None]:
-    costs = [line.unit_cost for line in components if line.unit_cost is not None]
-    prices = [line.unit_price for line in components if line.unit_price is not None]
+    costs = [
+        round(line.unit_cost * (line.quantity or 1), 2)
+        for line in components
+        if line.unit_cost is not None
+    ]
+    prices = [
+        round(line.unit_price * (line.quantity or 1), 2)
+        for line in components
+        if line.unit_price is not None
+    ]
     total_cost = round(sum(costs), 2) if costs else None
     total_price = round(sum(prices), 2) if prices else None
     return total_cost, total_price
