@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from src.config import AUTH_ENABLED
+from src.config import AUTH_ENABLED, OUTPUT_DIR
 from src.services.auth_service import (
     AUTH_COOKIE_NAME,
     AUTH_TOKEN_TTL_DAYS,
@@ -18,6 +21,8 @@ from src.services.auth_service import (
     validate_credential,
 )
 from src.services.user_db import ROLE_ADMIN, ROLE_MANAGER, UserRecord, get_user_database
+
+logger = logging.getLogger(__name__)
 
 auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -228,3 +233,45 @@ def api_history(user: UserRecord = Depends(get_current_user)) -> dict:
             for row in uploads
         ],
     }
+
+
+def _safe_history_file_path(filename: str) -> Path | None:
+    safe_name = Path(filename).name
+    if not safe_name.startswith("KP_"):
+        return None
+    if not (safe_name.endswith(".xlsx") or safe_name.endswith(".pdf")):
+        return None
+    path = (OUTPUT_DIR / safe_name).resolve()
+    output_root = OUTPUT_DIR.resolve()
+    if output_root not in path.parents:
+        return None
+    return path
+
+
+@history_router.delete("/downloads/{event_id}")
+def api_delete_download_history(
+    event_id: int,
+    user: UserRecord = Depends(get_current_user),
+) -> dict:
+    db = get_user_database()
+    try:
+        result = db.delete_download_event(
+            event_id,
+            acting_user_id=user.id,
+            is_admin=user.role == ROLE_ADMIN,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+
+    for filename in result.get("files_to_remove") or []:
+        path = _safe_history_file_path(filename)
+        if path and path.exists() and path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                logger.warning("Failed to delete history file %s", path, exc_info=True)
+
+    return {"ok": True, "id": result["id"]}

@@ -2262,6 +2262,28 @@ code {
   justify-content: flex-end;
 }
 
+.history-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.history-delete-btn {
+  color: var(--danger);
+  border: none;
+  background: transparent;
+  font-size: 1.35rem;
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.history-delete-btn:hover {
+  background: rgba(220, 53, 69, 0.12);
+}
+
 .btn--icon {
   min-width: 36px;
   padding: 6px 10px;

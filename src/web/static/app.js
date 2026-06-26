@@ -272,6 +272,38 @@ async function saveUserCredentials() {
   }
 }
 
+let pendingHistoryDeleteId = null;
+
+function openHistoryDeleteModal(eventId, filename) {
+  pendingHistoryDeleteId = eventId;
+  const modal = $("#historyDeleteModal");
+  const message = $("#historyDeleteMessage");
+  if (message) {
+    message.textContent = filename
+      ? `Файл «${filename}» будет удалён из истории и больше не будет доступен для скачивания.`
+      : "Запись будет удалена из истории.";
+  }
+  modal?.classList.remove("hidden");
+}
+
+function closeHistoryDeleteModal() {
+  pendingHistoryDeleteId = null;
+  $("#historyDeleteModal")?.classList.add("hidden");
+}
+
+async function confirmHistoryDelete() {
+  if (pendingHistoryDeleteId == null) return;
+  const eventId = pendingHistoryDeleteId;
+  closeHistoryDeleteModal();
+  try {
+    await api(`/api/history/downloads/${eventId}`, { method: "DELETE" });
+    showToast("Запись удалена из истории");
+    await loadHistory();
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
 async function loadHistory() {
   try {
     const data = await api("/api/history");
@@ -308,7 +340,19 @@ function renderHistory(data) {
             <td class="col-history-user${isAdmin ? "" : " hidden"}">${escapeHtml(row.user_login)}</td>
             <td>${escapeHtml(row.tz_filename || "—")}</td>
             <td>${formatHistoryDate(row.downloaded_at)}</td>
-            <td><a class="btn btn--secondary btn--small" href="${escapeHtml(row.download_url)}?t=${Date.now()}" download>Скачать</a></td>
+            <td>
+              <div class="history-actions">
+                <a class="btn btn--secondary btn--small" href="${escapeHtml(row.download_url)}?t=${Date.now()}" download>Скачать</a>
+                <button
+                  type="button"
+                  class="btn btn--icon history-delete-btn"
+                  data-history-delete="${row.id}"
+                  data-history-filename="${escapeHtml(row.filename)}"
+                  aria-label="Удалить из истории"
+                  title="Удалить из истории"
+                >×</button>
+              </div>
+            </td>
           </tr>`)
         .join("");
     }
@@ -340,6 +384,22 @@ function initAuth() {
   $("#btnKpHistory")?.addEventListener("click", () => switchToTab("history"));
   $("#btnLookupHistory")?.addEventListener("click", () => switchToTab("history"));
   $("#btnSaveUserCredentials")?.addEventListener("click", saveUserCredentials);
+  $("#btnHistoryDeleteConfirm")?.addEventListener("click", confirmHistoryDelete);
+
+  document.querySelectorAll("[data-close-history-delete]").forEach((el) => {
+    el.addEventListener("click", closeHistoryDeleteModal);
+  });
+
+  $("#historyDownloadsTable")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-history-delete]");
+    if (!btn) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openHistoryDeleteModal(
+      Number(btn.dataset.historyDelete),
+      btn.dataset.historyFilename || "",
+    );
+  });
 
   document.querySelectorAll("[data-close-modal]").forEach((el) => {
     el.addEventListener("click", closeUserCredentialsModal);

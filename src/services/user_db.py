@@ -384,6 +384,92 @@ class UserDatabase:
             for row in rows
         ]
 
+    def get_download_event(self, event_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM download_events WHERE id = ?",
+                (event_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_download_event(
+        self,
+        event_id: int,
+        *,
+        acting_user_id: int,
+        is_admin: bool = False,
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM download_events WHERE id = ?",
+                (event_id,),
+            ).fetchone()
+            if not row:
+                return None
+            owner_id = int(row["user_id"])
+            if not is_admin and owner_id != acting_user_id:
+                raise PermissionError("Нет доступа к записи истории")
+
+            export_id = row["export_id"]
+            filename = str(row["filename"])
+            conn.execute("DELETE FROM download_events WHERE id = ?", (event_id,))
+
+            files_to_remove: list[str] = []
+            if export_id is not None:
+                remaining = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM download_events WHERE export_id = ?",
+                    (export_id,),
+                ).fetchone()
+                if remaining and int(remaining["cnt"]) == 0:
+                    export_row = conn.execute(
+                        "SELECT * FROM file_exports WHERE id = ?",
+                        (export_id,),
+                    ).fetchone()
+                    if export_row:
+                        for key in ("xlsx_filename", "pdf_filename"):
+                            value = export_row[key]
+                            if not value:
+                                continue
+                            other_exports = conn.execute(
+                                """
+                                SELECT COUNT(*) AS cnt FROM file_exports
+                                WHERE id != ?
+                                  AND (xlsx_filename = ? OR pdf_filename = ?)
+                                """,
+                                (export_id, value, value),
+                            ).fetchone()
+                            if other_exports and int(other_exports["cnt"]) == 0:
+                                files_to_remove.append(str(value))
+                        conn.execute(
+                            "DELETE FROM file_exports WHERE id = ?",
+                            (export_id,),
+                        )
+            else:
+                other_events = conn.execute(
+                    """
+                    SELECT COUNT(*) AS cnt FROM download_events
+                    WHERE filename = ? AND user_id = ?
+                    """,
+                    (filename, owner_id),
+                ).fetchone()
+                if other_events and int(other_events["cnt"]) == 0:
+                    other_exports = conn.execute(
+                        """
+                        SELECT COUNT(*) AS cnt FROM file_exports
+                        WHERE user_id = ?
+                          AND (xlsx_filename = ? OR pdf_filename = ?)
+                        """,
+                        (owner_id, filename, filename),
+                    ).fetchone()
+                    if other_exports and int(other_exports["cnt"]) == 0:
+                        files_to_remove.append(filename)
+
+            return {
+                "id": event_id,
+                "filename": filename,
+                "files_to_remove": sorted(set(files_to_remove)),
+            }
+
     def list_upload_history(
         self,
         *,
