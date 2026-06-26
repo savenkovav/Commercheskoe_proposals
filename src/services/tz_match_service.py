@@ -318,6 +318,22 @@ class TZMatchService:
     def _normalize_result_metadata(self, result: MatchResult) -> None:
         has_price = result.unit_base_price is not None or result.unit_cost is not None
         if not has_price:
+            best_web = self._best_web_priced_quote(result.comparison)
+            if best_web:
+                self._apply_priced_quote(result, best_web)
+                has_price = (
+                    result.unit_base_price is not None or result.unit_cost is not None
+                )
+            if not has_price and any(
+                q.source == "web" and (q.price or q.cost) for q in result.comparison
+            ):
+                result.source = MatchSource.WEB
+                result.status = MatchStatus.SIMILAR
+                if not result.matched_name:
+                    result.matched_name = result.tz_item.name
+                if not result.source_detail:
+                    result.source_detail = "Интернет"
+                self._ensure_internet_source_detail(result)
             return
 
         if result.status != MatchStatus.NOT_FOUND and result.source != MatchSource.NONE:
@@ -419,6 +435,10 @@ class TZMatchService:
         if self.matcher.is_distinctive_mismatch(tz_item.name, name):
             return False
         if quote.source == "web":
+            if is_market_estimate_quote(quote) and (
+                quote.price is not None or quote.cost is not None
+            ):
+                return is_acceptable_web_pricing_quote(quote)
             min_score = (
                 LOCAL_MATCH_THRESHOLD
                 if quote.url and is_competitor_url(quote.url)
@@ -1407,12 +1427,27 @@ class TZMatchService:
 
         needs_price = result.unit_base_price is None and result.unit_cost is None
         if needs_price:
-            candidates: list[PriceQuote] = []
             has_priced_web = any(
                 q.source == "web"
                 and is_acceptable_web_pricing_quote(q)
                 for q in result.comparison
             )
+            if has_priced_web:
+                best = self._best_web_priced_quote(result.comparison)
+                if best:
+                    self._apply_priced_quote(
+                        result,
+                        best,
+                        unpriced_competitor_reference=has_unpriced_competitor_display_quote(
+                            result.comparison
+                        ),
+                    )
+                    if result.unit_base_price is not None:
+                        self._sort_comparison_web_quotes(result)
+                        self._promote_internet_status(result)
+                        return
+
+            candidates: list[PriceQuote] = []
             search_text = internet_search_text(result.tz_item)
             if not has_priced_web and not skip_internet_search:
                 candidates.extend(
