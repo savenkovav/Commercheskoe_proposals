@@ -563,6 +563,7 @@ function aggregateKitPricing(item, kitIndices) {
   };
 }
 
+function getKitIndicesFromUI(itemNumber) {
   const boxes = [...document.querySelectorAll(`.kp-kit-include[data-item="${itemNumber}"]`)];
   if (!boxes.length) return null;
   return boxes.filter((box) => box.checked).map((box) => Number(box.dataset.kitIndex));
@@ -685,6 +686,7 @@ let kpFormed = false;
 let kpExportSummary = null;
 let kpSavedSelections = null;
 let kpSelectionSaved = false;
+let kpLastUploadedFileName = "";
 
 function isMarketEstimateQuote(q) {
   const label = (q?.label || "").toLowerCase();
@@ -2348,8 +2350,9 @@ async function processUpload(taskMode) {
         ? `ТЗ обработано (${modeLabel})`
         : "ТЗ загружено в чат",
     );
+    kpLastUploadedFileName = file.name;
+    $("#fileName").textContent = file.name;
     fileInput.value = "";
-    $("#fileName").textContent = "";
     setUploadButtonsEnabled(false);
   } catch (e) {
     showToast(e.message, true);
@@ -2388,8 +2391,13 @@ function initUpload() {
 
   function onFileSelected() {
     const name = input.files[0]?.name || "";
+    kpLastUploadedFileName = name;
     $("#fileName").textContent = name;
     setUploadButtonsEnabled(isAllowedTzFile(name));
+  }
+
+  if (kpLastUploadedFileName) {
+    $("#fileName").textContent = kpLastUploadedFileName;
   }
 
   btnTask1?.addEventListener("click", () => processUpload("task1"));
