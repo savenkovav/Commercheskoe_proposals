@@ -1089,9 +1089,56 @@ def api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
     }
 
 
+def _kp_selection_items(body: KpFormRequest) -> list:
+    from src.services.kp_selection import KpSelectionItem
+
+    return [
+        KpSelectionItem(number=item.number, included=item.included, variant=item.variant)
+        for item in body.selections
+    ]
+
+
+def _kp_selected_results_and_summary(session, selections: list):
+    from src.services.kp_selection import apply_kp_selections
+
+    selected_results = apply_kp_selections(session.results, selections)
+    if not selected_results:
+        raise HTTPException(
+            status_code=400,
+            detail="Выберите хотя бы одну позицию для формирования КП",
+        )
+    processor = get_processor()
+    summary = processor._build_summary(
+        selected_results,
+        session.summary.processing_seconds,
+    )
+    return selected_results, summary
+
+
+@app.post("/api/kp/selection/preview")
+def api_kp_selection_preview(body: KpFormRequest) -> dict[str, Any]:
+    store = _kp_chat_service().store
+    session = store.get(body.session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    if not session.search_completed:
+        raise HTTPException(status_code=400, detail="Сначала выполните поиск по ТЗ")
+
+    selections = _kp_selection_items(body)
+    _, summary = _kp_selected_results_and_summary(session, selections)
+    session.stage = "selection_saved"
+    store.save()
+
+    return {
+        "session_id": session.session_id,
+        "stage": "selection_saved",
+        "summary": _summary_to_dict(summary, session.output_path.name if session.output_path else "pending.xlsx"),
+        "selected_count": summary.total_items,
+    }
+
+
 @app.post("/api/kp/form")
 def api_kp_form(request: Request, body: KpFormRequest) -> dict[str, Any]:
-    from src.services.kp_selection import KpSelectionItem, apply_kp_selections
     from src.services.pdf_generator import PdfGenerator
 
     store = _kp_chat_service().store
@@ -1101,22 +1148,9 @@ def api_kp_form(request: Request, body: KpFormRequest) -> dict[str, Any]:
     if not session.search_completed:
         raise HTTPException(status_code=400, detail="Сначала выполните поиск по ТЗ")
 
-    selections = [
-        KpSelectionItem(number=item.number, included=item.included, variant=item.variant)
-        for item in body.selections
-    ]
-    selected_results = apply_kp_selections(session.results, selections)
-    if not selected_results:
-        raise HTTPException(
-            status_code=400,
-            detail="Выберите хотя бы одну позицию для формирования КП",
-        )
-
+    selections = _kp_selection_items(body)
+    selected_results, summary = _kp_selected_results_and_summary(session, selections)
     processor = get_processor()
-    summary = processor._build_summary(
-        selected_results,
-        session.summary.processing_seconds,
-    )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     xlsx_path = OUTPUT_DIR / f"KP_{timestamp}.xlsx"
     pdf_path = OUTPUT_DIR / f"KP_{timestamp}.pdf"

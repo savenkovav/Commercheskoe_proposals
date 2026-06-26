@@ -449,15 +449,39 @@ a.btn.btn--disabled {
   margin-bottom: 12px;
 }
 
-.kp-variant {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+.kp-variant-list__title {
+  font-weight: 600;
   font-size: 0.92rem;
 }
 
-.kp-variant input {
-  margin-top: 3px;
+.kp-variant {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kp-variant:hover {
+  border-color: var(--accent);
+}
+
+.kp-variant--selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.kp-variant__text {
+  display: block;
+  line-height: 1.45;
+  font-size: 0.92rem;
 }
 
 .muted { color: var(--muted); font-size: 0.9rem; margin: 0 0 16px; }

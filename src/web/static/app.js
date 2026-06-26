@@ -445,6 +445,104 @@ const taskModeLabel = (mode) => {
 
 const hasKpDownload = (data) => Boolean(data?.kp_formed && data?.summary?.download_url);
 
+const WEB_PRICE_DISCOUNT_PERCENT = 5;
+
+const roundMoney = (value) => Math.round(Number(value) * 100) / 100;
+
+function getCurrentMarkupPercent() {
+  const input = $("#markupPercent");
+  if (input && input.value !== "") {
+    const parsed = Number(input.value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return kpProcessData?.summary?.markup_percent ?? 30;
+}
+
+function quotePricingFromItem(item, selection) {
+  if (selection.variant === "primary") {
+    return {
+      unitCost: item.unit_cost,
+      unitBasePrice: item.unit_base_price,
+      internetPriced: item.internet_priced,
+      status: item.status,
+    };
+  }
+
+  let quote = null;
+  if (selection.variant.startsWith("local:")) {
+    const index = Number.parseInt(selection.variant.split(":")[1], 10);
+    const quotes = (item.comparison || []).filter(
+      (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
+    );
+    quote = quotes[index];
+  } else if (selection.variant.startsWith("web:")) {
+    const index = Number.parseInt(selection.variant.split(":")[1], 10);
+    const quotes = collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
+    quote = quotes[index];
+  }
+
+  if (!quote) {
+    return {
+      unitCost: item.unit_cost,
+      unitBasePrice: item.unit_base_price,
+      internetPriced: item.internet_priced,
+      status: item.status,
+    };
+  }
+
+  return {
+    unitCost: quote.cost ?? quote.price ?? null,
+    unitBasePrice: quote.price ?? quote.cost ?? null,
+    internetPriced: selection.variant.startsWith("web:"),
+    status: item.status,
+  };
+}
+
+function pricingTotalsFromLine({ unitCost, unitBasePrice, quantity, internetPriced }) {
+  const qty = quantity || 1;
+  const totalCost = unitCost != null ? roundMoney(unitCost * qty) : 0;
+  if (unitBasePrice == null) {
+    return { totalCost, totalBasePrice: 0, totalPrice: 0 };
+  }
+  const totalBasePrice = roundMoney(unitBasePrice * qty);
+  const multiplier = internetPriced
+    ? 1 - WEB_PRICE_DISCOUNT_PERCENT / 100
+    : 1 + getCurrentMarkupPercent() / 100;
+  const totalPrice = roundMoney(unitBasePrice * multiplier * qty);
+  return { totalCost, totalBasePrice, totalPrice };
+}
+
+function buildSummaryFromSelections(items, selections, baseSummary) {
+  const itemsByNumber = Object.fromEntries(items.map((item) => [item.number, item]));
+  const lines = selections
+    .filter((selection) => selection.included)
+    .map((selection) => {
+      const item = itemsByNumber[selection.number];
+      if (!item) return null;
+      const pricing = quotePricingFromItem(item, selection);
+      const totals = pricingTotalsFromLine({
+        unitCost: pricing.unitCost,
+        unitBasePrice: pricing.unitBasePrice,
+        quantity: item.quantity,
+        internetPriced: pricing.internetPriced,
+      });
+      return { status: pricing.status, ...totals };
+    })
+    .filter(Boolean);
+
+  return {
+    ...baseSummary,
+    total_items: lines.length,
+    exact_count: lines.filter((line) => line.status === "exact").length,
+    similar_count: lines.filter((line) => line.status === "similar").length,
+    not_found_count: lines.filter((line) => line.status === "not_found").length,
+    total_cost: roundMoney(lines.reduce((sum, line) => sum + (line.totalCost || 0), 0)),
+    total_base_price: roundMoney(lines.reduce((sum, line) => sum + (line.totalBasePrice || 0), 0)),
+    total_price: roundMoney(lines.reduce((sum, line) => sum + (line.totalPrice || 0), 0)),
+    markup_percent: getCurrentMarkupPercent(),
+  };
+}
+
 let kpProcessData = null;
 let kpFormed = false;
 let kpExportSummary = null;
@@ -603,22 +701,20 @@ function renderVariantChoices(item) {
   if (variants.length <= 1) return "";
   return `
     <div class="kp-variant-list">
-      <strong>Вариант для КП:</strong>
+      <div class="kp-variant-list__title">Вариант для КП:</div>
       ${variants
         .map(
           (variant) => `
-        <label class="kp-variant">
-          <input
-            type="checkbox"
-            class="kp-variant-input"
-            data-item="${item.number}"
-            data-variant="${variant.id}"
-            ${variant.id === "primary" ? "checked" : ""}
-          >
-          <span>${escapeHtml(variant.label)}: ${escapeHtml(variant.name)}${
+        <button
+          type="button"
+          class="kp-variant${variant.id === "primary" ? " kp-variant--selected" : ""}"
+          data-item="${item.number}"
+          data-variant="${variant.id}"
+        >
+          <span class="kp-variant__text">${escapeHtml(variant.label)}: ${escapeHtml(variant.name)}${
             variant.meta ? ` · ${escapeHtml(variant.meta)}` : ""
           }</span>
-        </label>`,
+        </button>`,
         )
         .join("")}
     </div>`;
@@ -782,7 +878,7 @@ function renderSavedSelectionList() {
     </div>`;
 }
 
-function saveKpSelection() {
+async function saveKpSelection() {
   if (!kpProcessData?.search_completed) {
     showToast("Сначала выполните поиск по ТЗ", true);
     return;
@@ -795,13 +891,45 @@ function saveKpSelection() {
     return;
   }
 
-  kpSavedSelections = selections;
-  kpSelectionSaved = true;
-  resetKpFormed();
-  renderSavedSelectionList();
-  updateKpExportButtons();
-  updateAssistantMode(kpProcessData);
-  showToast(`Выбор сохранён: ${included.length} поз.`);
+  try {
+    if (kpSessionId) {
+      const data = await api("/api/kp/selection/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: kpSessionId, selections }),
+      });
+      if (data.summary) {
+        kpProcessData = {
+          ...kpProcessData,
+          summary: data.summary,
+          stage: data.stage || "selection_saved",
+        };
+      }
+    } else if (kpProcessData.summary) {
+      kpProcessData = {
+        ...kpProcessData,
+        summary: buildSummaryFromSelections(
+          kpProcessData.items,
+          selections,
+          kpProcessData.summary,
+        ),
+        stage: "selection_saved",
+      };
+    }
+
+    kpSavedSelections = selections;
+    kpSelectionSaved = true;
+    resetKpFormed();
+    renderSavedSelectionList();
+    if (kpProcessData?.summary) {
+      renderProcessSummary(kpProcessData);
+    }
+    updateKpExportButtons();
+    updateAssistantMode(kpProcessData);
+    showToast(`Выбор сохранён: ${included.length} поз.`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
 }
 
 function updateKpExportButtons() {
@@ -828,7 +956,7 @@ function getSelectionsFromUI() {
     const includeEl = document.querySelector(`.kp-item-include[data-item="${item.number}"]`);
     const include = includeEl ? includeEl.checked : true;
     const checkedVariant = document.querySelector(
-      `.kp-variant-input[data-item="${item.number}"]:checked`,
+      `.kp-variant--selected[data-item="${item.number}"]`,
     );
     return {
       number: item.number,
@@ -858,20 +986,22 @@ function bindKpSelectionHandlers() {
         selectAll.indeterminate = !selectAll.checked && [...boxes].some((box) => box.checked);
       }
       resetKpSavedSelection();
-      return;
-    }
-    if (target.classList.contains("kp-variant-input") && target.checked) {
-      const itemNumber = target.dataset.item;
-      $$(".kp-variant-input").forEach((checkbox) => {
-        if (checkbox.dataset.item === itemNumber && checkbox !== target) {
-          checkbox.checked = false;
-        }
-      });
-      resetKpSavedSelection();
     }
   });
 
   tbody?.addEventListener("click", (event) => {
+    const variantBtn = event.target.closest(".kp-variant");
+    if (variantBtn) {
+      event.stopPropagation();
+      const itemNumber = variantBtn.dataset.item;
+      $$(".kp-variant").forEach((btn) => {
+        if (btn.dataset.item === itemNumber) {
+          btn.classList.toggle("kp-variant--selected", btn === variantBtn);
+        }
+      });
+      resetKpSavedSelection();
+      return;
+    }
     if (event.target.closest(".kp-select-cell, .kp-variant-list")) {
       event.stopPropagation();
     }
@@ -925,6 +1055,7 @@ function renderProcessSummary(data) {
 
   const marginAmount = Number(s.total_price) - Number(s.total_cost);
   const marginPercent = calcMarginPercent(s.total_cost, s.total_price);
+  const selectionNote = kpSelectionSaved ? " · по выбранным позициям" : "";
   const markupNote =
     s.markup_percent != null ? ` · наценка ${fmtPercent(s.markup_percent)}` : "";
 
@@ -940,7 +1071,7 @@ function renderProcessSummary(data) {
       <div class="metric"><div class="metric__label">Маржа</div><div class="metric__value">${fmtMoney(marginAmount)}<span class="metric__sub">${fmtPercent(marginPercent)}</span></div></div>
       <div class="metric"><div class="metric__label">Цена без наценки</div><div class="metric__value">${fmtMoney(s.total_base_price)}</div></div>
     </div>
-    <p class="muted process-summary-note">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}${data.web_used ? " · конкуренты" : ""}${markupNote}${data.kp_formed ? " · КП готово" : ""}</p>
+    <p class="muted process-summary-note">Время: ${s.processing_seconds} сек · ${taskModeLabel(data.task_mode)} · AI: ${data.ai_used ? "да" : "нет"}${data.web_used ? " · конкуренты" : ""}${markupNote}${selectionNote}${data.kp_formed ? " · КП готово" : ""}</p>
   `;
 }
 
