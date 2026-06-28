@@ -41,6 +41,8 @@ PAGE_BOTTOM_MARGIN = 36
 PAGE_MAX_Y = PAGE_HEIGHT - PAGE_BOTTOM_MARGIN
 STAMP_DISPLAY_WIDTH = 150
 LOGO_TITLE_GAP = 10
+TITLE_SUBTITLE_GAP = 10
+SUBTITLE_FONT_SIZE = 11
 SINGLE_PAGE_MAX_ITEMS = 20
 SINGLE_PAGE_RELAXED_MAX_ITEMS = 16
 SINGLE_PAGE_HEADER_RESERVE = 240
@@ -128,7 +130,7 @@ def _draw_title_with_logo(
         fontname=fontname,
         color=(0, 0, 0),
     )
-    return baseline_y + 6
+    return baseline_y + TITLE_SUBTITLE_GAP + SUBTITLE_FONT_SIZE
 
 
 def _stamp_display_size(stamp_path: Path) -> tuple[int, int]:
@@ -546,7 +548,11 @@ class PdfGenerator:
             fontsize=16,
             logo_path=logo_path,
         )
-        write_line(f"на запрос {request_number} от {today} г.", size=11, center=True)
+        write_line(
+            f"на запрос {request_number} от {today} г.",
+            size=SUBTITLE_FONT_SIZE,
+            center=True,
+        )
 
         legal = [COMPANY_NAME]
         if COMPANY_INN:
