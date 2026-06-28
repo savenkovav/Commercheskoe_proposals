@@ -17,6 +17,7 @@ if grep -q "server_name regionsnab7.ru" "$NGINX_CONF" 2>/dev/null; then
 else
   cp "$NGINX_CONF" "${NGINX_CONF}.bak.$(date +%Y%m%d%H%M%S)"
   # Вставить перед закрывающей скобкой http { }
+  export ROOT
   python3 - <<'PY'
 from pathlib import Path
 import os
