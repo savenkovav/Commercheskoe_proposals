@@ -529,6 +529,10 @@ def is_competitor_product_page_url(url: str) -> bool:
     if last.isdigit() and len(last) >= 4:
         return True
 
+    # rene-edu.ru: /category-slug/327.html
+    if path.endswith(".html") and re.match(r"^\d+\.html$", last):
+        return len(segments) >= 2
+
     if path.endswith(".html") and len(last) >= 10:
         return True
 

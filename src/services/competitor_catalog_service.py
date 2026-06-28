@@ -137,6 +137,7 @@ _MUSIC_EXPERT_SAMPLE_URL = (
     "mikrofony_besprovodnye/radiosistemy_vokalnye/behringer/"
     "behringer_ulm300usb_tsifrovaya_vokalnaya_radiosistema/"
 )
+_RENE_EDU_SAMPLE_URL = "https://www.rene-edu.ru/srednyaya-i-starshaya-shkola/327.html"
 
 _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
     "rostcom.com": CompetitorParsingHints(
@@ -149,6 +150,12 @@ _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
         price_html_hint='<div class="product_card_price_actual"',
         articul_html_hint='<span class="articul"',
         description_html_hint='<div class="product_about"',
+    ),
+    "rene-edu.ru": CompetitorParsingHints(
+        product_sample_url=_RENE_EDU_SAMPLE_URL,
+        price_html_hint='<div class="price">',
+        articul_html_hint='<div class="vendor-code">',
+        description_html_hint='<div class="editor--default editor">',
     ),
 }
 
@@ -937,6 +944,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     ],
     "music-expert.ru": [
         "https://www.music-expert.ru/catalog/",
+    ],
+    "rene-edu.ru": [
+        "https://www.rene-edu.ru/sitemap.xml",
+        "https://www.rene-edu.ru/",
     ],
 }
 
@@ -2738,6 +2749,176 @@ def fetch_music_expert_catalog(
     )
 
 
+_RENE_EDU_DOMAIN = "rene-edu.ru"
+_RENE_EDU_SITEMAP_URL = "https://www.rene-edu.ru/sitemap.xml"
+_RENE_EDU_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=45.0, write=20.0, pool=20.0)
+
+
+def _is_rene_edu_domain(domain: str) -> bool:
+    return domain.lower().removeprefix("www.") == _RENE_EDU_DOMAIN
+
+
+def _is_rene_edu_product_url(url: str) -> bool:
+    path = urlparse(url.split("#")[0]).path
+    last = path.rsplit("/", 1)[-1]
+    return bool(re.match(r"^\d+\.html$", last, re.I))
+
+
+def _is_rene_edu_product_page_html(html: str) -> bool:
+    return 'class="vendor-code"' in html and 'class="price"' in html
+
+
+def _parse_rene_edu_price(html: str) -> tuple[float | None, str | None]:
+    price_match = re.search(
+        r'class="price"[^>]*>(?P<body>.*?)</div>',
+        html,
+        re.I | re.S,
+    )
+    if not price_match:
+        return None, None
+    plain = _strip_html_text(price_match.group("body"))
+    if not plain:
+        return None, None
+    if "запрос" in plain.lower():
+        return None, PRICE_ON_REQUEST_LABEL
+    prices = extract_prices_from_text(plain)
+    if prices:
+        return prices[0], None
+    parsed = _parse_price(plain)
+    return parsed, None
+
+
+def _parse_rene_edu_description(html: str) -> str | None:
+    desc_match = re.search(
+        r'data-tab="1"[^>]*>.*?class="editor--default[^"]*"[^>]*>(?P<body>.*?)</div>\s*</div>',
+        html,
+        re.I | re.S,
+    )
+    if not desc_match:
+        hints = get_domain_parsing_hints(_RENE_EDU_DOMAIN)
+        if hints and hints.description_html_hint:
+            return _extract_text_by_hint(html, hints.description_html_hint)
+        return None
+    text = _strip_html_text(desc_match.group("body"))
+    return text[:2000] if text else None
+
+
+def _parse_rene_edu_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_rene_edu_product_page_html(html):
+        return None
+
+    title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not title_match:
+        return None
+    name = re.sub(r"\s+", " ", title_match.group("name")).strip()
+    if len(name) < 4:
+        return None
+
+    articul_match = re.search(
+        r'class="vendor-code"[^>]*>.*?<h2>\s*(?P<art>[^<]+?)\s*</h2>',
+        html,
+        re.I | re.S,
+    )
+    articul = articul_match.group("art").strip() if articul_match else None
+    price, price_label = _parse_rene_edu_price(html)
+    description = _parse_rene_edu_description(html)
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=page_url.split("#")[0],
+        articul=articul,
+        price_label=price_label,
+        description=description,
+    )
+
+
+def _parse_rene_edu_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if not _is_rene_edu_domain(domain):
+        return []
+    product = _parse_rene_edu_product_html(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    return [product] if product else []
+
+
+def _discover_rene_edu_sitemap_urls() -> list[str]:
+    limit = COMPETITOR_INDEX_MAX_URLS
+    product_urls: list[str] = []
+    seen: set[str] = set()
+
+    append_index_log(_RENE_EDU_DOMAIN, "Загрузка sitemap rene-edu.ru…")
+    try:
+        with httpx.Client(
+            timeout=_RENE_EDU_REQUEST_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            response = client.get(_RENE_EDU_SITEMAP_URL)
+            response.raise_for_status()
+            for loc in _SITEMAP_LOC_RE.findall(response.text[:5_000_000]):
+                clean = loc.strip().split("#")[0]
+                host = urlparse(clean).netloc.lower().removeprefix("www.")
+                if host != _RENE_EDU_DOMAIN:
+                    continue
+                if not _is_rene_edu_product_url(clean):
+                    continue
+                if clean in seen:
+                    continue
+                seen.add(clean)
+                product_urls.append(clean)
+                if len(product_urls) >= limit:
+                    break
+    except Exception:
+        logger.exception("Failed to fetch rene-edu sitemap")
+
+    append_index_log(
+        _RENE_EDU_DOMAIN,
+        f"rene-edu.ru: sitemap — {len(product_urls)} URL товаров",
+    )
+    return product_urls
+
+
+def fetch_rene_edu_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_rene_edu_sitemap_urls()
+    if not product_urls:
+        append_index_log(site.domain, "Каталог rene-edu.ru пуст — обход seed URL", level="error")
+        return fetch_catalog_products(site, max_pages=24)
+
+    append_index_log(
+        site.domain,
+        f"Индексация rene-edu.ru: {len(product_urls)} URL товаров",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
+        request_timeout=_RENE_EDU_REQUEST_TIMEOUT,
+        max_workers=min(8, COMPETITOR_INDEX_WORKERS),
+    )
+
+
 def _parse_n72_product_previews(
     html: str,
     *,
@@ -3396,6 +3577,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if epp24_products:
         return epp24_products
 
+    rene_edu_products = _parse_rene_edu_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if rene_edu_products:
+        return rene_edu_products
+
     n72_products = _parse_n72_page(
         html,
         domain=domain,
@@ -3637,6 +3827,8 @@ def fetch_catalog_products(
         return fetch_zarnitza_catalog(site)
     if normalized_domain == "music-expert.ru":
         return fetch_music_expert_catalog(site)
+    if normalized_domain == "rene-edu.ru":
+        return fetch_rene_edu_catalog(site)
 
     apply_default_domain_parsing_hints(normalized_domain)
     hints = get_domain_parsing_hints(normalized_domain)
