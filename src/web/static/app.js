@@ -22,6 +22,11 @@ function calcMarginPercent(totalCost, totalPrice) {
   return ((price - cost) / cost) * 100;
 }
 
+function fmtMarginPercent(unitCost, unitPrice) {
+  const value = calcMarginPercent(unitCost, unitPrice);
+  return value == null ? "—" : fmtPercent(value);
+}
+
 let currentUser = null;
 let openUserMenuId = null;
 let userEditTargetId = null;
@@ -597,6 +602,19 @@ function quotePricingFromItem(item, selection) {
   };
 }
 
+function applyTzSalePriceOverride(item, pricing, variant) {
+  if (variant !== "primary" || item.target_sale_price == null) {
+    return pricing;
+  }
+  const unitPrice = roundMoney(item.target_sale_price);
+  const qty = item.quantity || 1;
+  return {
+    ...pricing,
+    unitPrice,
+    totalPrice: roundMoney(unitPrice * qty),
+  };
+}
+
 function pricingTotalsFromLine({ unitCost, unitBasePrice, quantity, internetPriced }) {
   const qty = quantity || 1;
   const totalCost = unitCost != null ? roundMoney(unitCost * qty) : 0;
@@ -808,6 +826,7 @@ function computeItemPricing(item, selection = {}) {
       totalBasePrice: totals.totalBasePrice,
       totalPrice: totals.totalPrice,
     };
+    base = applyTzSalePriceOverride(item, base, variant);
   }
   if (!hasWebTable || deferInternetPrice) {
     return base;
@@ -861,6 +880,10 @@ function updateTzRowPricing(itemNumber) {
   }
   if (lineTotalCell) {
     lineTotalCell.textContent = fmtMoney(pricing.totalPrice);
+  }
+  const marginCell = row.querySelector(".tz-row__margin");
+  if (marginCell) {
+    marginCell.textContent = fmtMarginPercent(pricing.unitCost, pricing.unitPrice);
   }
 
   const kitTotalEl = document.querySelector(`.kp-kit-total[data-item="${itemNumber}"]`);
@@ -2783,6 +2806,7 @@ function renderProcessResult(data, options = {}) {
         const hasDetails = hasItemDetails(item);
         const detailId = `tz-detail-${item.number}`;
         const showInternetLabels = initialPricing.internetPriced;
+        const tzSalePriceNote = item.target_sale_price != null ? '<br><small class="muted">из ТЗ</small>' : "";
         return `
       <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" data-item-number="${item.number}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
         <td class="kp-select-cell">
@@ -2806,12 +2830,13 @@ function renderProcessResult(data, options = {}) {
         <td>${statusBadge(item.status, item.notes)}</td>
         <td>${fmtQty(item.quantity, item.unit)}</td>
         <td class="tz-row__price-base">${fmtMoney(initialPricing.unitBasePrice)}${showInternetLabels ? '<br><small class="muted">интернет</small>' : ""}</td>
-        <td class="tz-row__price-kp">${fmtMoney(initialPricing.unitPrice)}${showInternetLabels ? '<br><small class="muted">−5%</small>' : ""}</td>
+        <td class="tz-row__price-kp">${fmtMoney(initialPricing.unitPrice)}${showInternetLabels ? '<br><small class="muted">−5%</small>' : ""}${tzSalePriceNote}</td>
+        <td class="tz-row__margin">${fmtMarginPercent(initialPricing.unitCost, initialPricing.unitPrice)}</td>
         <td class="tz-row__line-total">${fmtMoney(initialPricing.totalPrice)}</td>
       </tr>
       ${
         hasDetails
-          ? `<tr class="tz-detail hidden" id="${detailId}"><td colspan="9">${renderComparisonTable(item)}</td></tr>`
+          ? `<tr class="tz-detail hidden" id="${detailId}"><td colspan="10">${renderComparisonTable(item)}</td></tr>`
           : ""
       }`;
       },
@@ -2883,9 +2908,13 @@ async function processUpload(taskMode) {
   form.append("file", file);
   form.append("use_ai", $("#useAiUpload").checked);
   form.append("task_mode", taskMode);
+  form.append("markup_percent", String(getCurrentMarkupPercent()));
 
   try {
     const data = await api("/api/process/upload", { method: "POST", body: form });
+    if (data.markup_percent != null) {
+      setMarkupInput(data.markup_percent);
+    }
     renderProcessResult(data);
     const modeLabel = taskModeLabel(data.task_mode);
     showToast(

@@ -110,6 +110,7 @@ class TZItem:
     quantity: float
     specifications: str = ""
     country_of_origin: str = ""
+    target_sale_price: Optional[float] = None
 
 
 @dataclass

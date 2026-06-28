@@ -59,6 +59,7 @@ class _ColumnMap:
     qty: int
     specs: int | None = None
     country: int | None = None
+    sale_price: int | None = None
     has_number: bool = True
 
 
@@ -488,6 +489,29 @@ def _build_column_map(header_cells: list[str]) -> _ColumnMap | None:
             specs_idx = i
             break
 
+    sale_price_idx: int | None = None
+    sale_price_priority = -1
+    for i, cell in enumerate(lower):
+        if any(
+            marker in cell
+            for marker in ("себестоим", "закуп", "поставщ", "ндс", "итого")
+        ):
+            continue
+        if "сумма" in cell and "цена" not in cell:
+            continue
+        priority = 0
+        if any(marker in cell for marker in ("продаж", "отпуск", "реализац")):
+            priority = 3
+        elif "цена" in cell and ("ед" in cell or "единиц" in cell):
+            priority = 2
+        elif "цена" in cell:
+            priority = 1
+        elif "стоимость" in cell and ("ед" in cell or "единиц" in cell):
+            priority = 1
+        if priority > sale_price_priority:
+            sale_price_priority = priority
+            sale_price_idx = i
+
     return _ColumnMap(
         number_idx,
         name_idx,
@@ -495,6 +519,7 @@ def _build_column_map(header_cells: list[str]) -> _ColumnMap | None:
         qty_idx,
         specs_idx,
         country_idx,
+        sale_price_idx,
         has_number,
     )
 
@@ -546,6 +571,10 @@ def _parse_row(
     except ValueError:
         quantity = 1.0
 
+    sale_price = None
+    if col.sale_price is not None and len(cells) > col.sale_price:
+        sale_price = _parse_money(cells[col.sale_price])
+
     return TZItem(
         number=number,
         name=name,
@@ -553,6 +582,7 @@ def _parse_row(
         quantity=quantity,
         specifications=specs,
         country_of_origin=country,
+        target_sale_price=sale_price,
     )
 
 
@@ -1050,6 +1080,29 @@ def _parse_quantity(value: str) -> float | None:
         return float(raw)
     except ValueError:
         return None
+
+
+def _parse_money(value: str) -> float | None:
+    raw = str(value or "").strip()
+    if not raw or raw in {"—", "-", "–"}:
+        return None
+    normalized = (
+        raw.lower()
+        .replace("руб.", "")
+        .replace("руб", "")
+        .replace("₽", "")
+        .replace(" ", "")
+        .replace("\u00a0", "")
+        .replace(",", ".")
+    )
+    normalized = re.sub(r"[^0-9.\-]", "", normalized)
+    if not normalized or normalized in {".", "-", "-."}:
+        return None
+    try:
+        amount = float(normalized)
+    except ValueError:
+        return None
+    return amount if amount > 0 else None
 
 
 def _looks_like_characteristic_name(value: str) -> bool:

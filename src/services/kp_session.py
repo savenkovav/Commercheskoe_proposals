@@ -77,6 +77,7 @@ def _decode_tz_item(data: dict[str, Any]) -> TZItem:
         quantity=float(data.get("quantity") or 0),
         specifications=str(data.get("specifications") or ""),
         country_of_origin=str(data.get("country_of_origin") or ""),
+        target_sale_price=data.get("target_sale_price"),
     )
 
 

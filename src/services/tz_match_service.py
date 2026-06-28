@@ -73,6 +73,14 @@ from src.services.models import (
 logger = logging.getLogger(__name__)
 
 
+def _missing_price_note(*, internet_allowed: bool, use_ai: bool) -> str:
+    if not internet_allowed:
+        return "Не найдено в каталогах, прайсах и остатках"
+    if use_ai:
+        return "Поиск цены в интернете"
+    return "Подбор цены из интернета"
+
+
 class TZMatchService:
     def __init__(
         self,
@@ -221,6 +229,7 @@ class TZMatchService:
             candidates=candidates,
             local_miss=local_miss,
             local_floor=local_floor,
+            internet_allowed="web" not in prefs.disabled_sources,
         )
 
         if primary.supplier is None and supplier:
@@ -1045,6 +1054,7 @@ class TZMatchService:
         *,
         local_miss: bool = False,
         local_floor: float | None = None,
+        internet_allowed: bool = True,
     ) -> MatchResult:
         floor = local_floor if local_floor is not None else LOCAL_MATCH_THRESHOLD
         local = self.matcher.match_local(tz_item, min_score=floor) if local_floor else None
@@ -1195,10 +1205,13 @@ class TZMatchService:
                 status=MatchStatus.SIMILAR,
                 source=MatchSource.NONE,
                 matched_name=tz_item.name,
-                notes="Подбор цены из интернета",
+                notes=_missing_price_note(
+                    internet_allowed=internet_allowed,
+                    use_ai=False,
+                ),
             )
 
-        if local_miss and WEB_SEARCH_ENABLED:
+        if local_miss and WEB_SEARCH_ENABLED and internet_allowed:
             if web_quote and (web_quote.cost is not None or web_quote.price is not None):
                 return self._result_from_web_quote(tz_item, web_quote)
             if local and local.match_score >= LOCAL_MATCH_THRESHOLD and (
@@ -1210,7 +1223,10 @@ class TZMatchService:
                 status=MatchStatus.SIMILAR,
                 source=MatchSource.NONE,
                 matched_name=tz_item.name,
-                notes="Поиск цены в интернете",
+                notes=_missing_price_note(
+                    internet_allowed=internet_allowed,
+                    use_ai=True,
+                ),
             )
 
         ai_candidates = self.matcher.candidates_for_ai(tz_item)

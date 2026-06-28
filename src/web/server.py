@@ -36,7 +36,7 @@ from src.web.auth_routes import admin_router, auth_router, history_router
 from src.services.kp_chat_service import KpChatService, WELCOME_MESSAGE
 from src.services.kp_preferences import KpPreferences
 from src.services.markup_settings import get_markup_percent, set_markup_percent
-from src.services.pricing_rules import effective_markup_percent, format_markup_percent, is_internet_sourced_result
+from src.services.pricing_rules import effective_markup_percent, format_markup_percent, is_internet_sourced_result, item_margin_percent
 from src.services.meilisearch_service import meilisearch_health
 from src.services.models import KitComponentLine, MatchResult, MatchSource, MatchStatus, PriceQuote
 from src.services.web_quote_priority import pick_marketplace_search_urls, resolve_price_source_url
@@ -366,6 +366,7 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
         "country_of_origin": result.tz_item.country_of_origin,
         "quantity": result.tz_item.quantity,
         "unit": result.tz_item.unit,
+        "target_sale_price": result.tz_item.target_sale_price,
         "status": result.status.value,
         "source": result.source.value,
         "matched_name": result.matched_name,
@@ -389,6 +390,7 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
         "internet_priced": result.internet_priced,
         "applied_markup_pct": effective_markup_percent(result),
         "applied_markup_label": format_markup_percent(effective_markup_percent(result)),
+        "margin_percent": item_margin_percent(result.unit_cost, result.unit_price),
         "internet_url": _internet_url_from_result(result),
         "marketplace_urls": _marketplace_urls_from_result(result),
         "comparison": [_price_quote_to_dict(q) for q in result.comparison],
@@ -769,6 +771,15 @@ def _normalize_task_mode(task_mode: str | None, *, parse_only: bool | None = Non
     if parse_only is False:
         return "task1_task2"
     return "task1"
+
+
+def _apply_request_markup(markup_percent: float | None) -> None:
+    if markup_percent is None:
+        return
+    try:
+        set_markup_percent(float(markup_percent))
+    except (TypeError, ValueError):
+        pass
 
 
 def _process_tz_upload(
@@ -1271,6 +1282,7 @@ async def api_process_upload(
     file: UploadFile = File(...),
     use_ai: bool = Form(default=True),
     task_mode: str = Form(default="task1"),
+    markup_percent: float | None = Form(default=None),
     parse_only: bool | None = Form(default=None),
 ) -> dict[str, Any]:
     try:
@@ -1278,6 +1290,8 @@ async def api_process_upload(
         filename = resolve_tz_upload_filename(file.filename, content, file.content_type)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _apply_request_markup(markup_percent)
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:

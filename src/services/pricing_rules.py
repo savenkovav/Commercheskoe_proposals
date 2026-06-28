@@ -13,6 +13,23 @@ def is_internet_sourced_result(result: MatchResult) -> bool:
     return bool(result.internet_priced or result.source == MatchSource.WEB)
 
 
+def uses_tz_sale_price(result: MatchResult) -> bool:
+    return result.tz_item.target_sale_price is not None
+
+
+def item_margin_percent(
+    unit_cost: float | None,
+    unit_price: float | None,
+) -> float | None:
+    if unit_cost is None or unit_price is None:
+        return None
+    cost = float(unit_cost)
+    price = float(unit_price)
+    if cost <= 0:
+        return None
+    return round((price - cost) / cost * 100, 2)
+
+
 def effective_markup_percent(result: MatchResult) -> float | None:
     if result.applied_markup_pct is not None:
         return result.applied_markup_pct
@@ -48,6 +65,12 @@ def apply_kp_pricing(result: MatchResult) -> None:
         result.total_cost = round(result.unit_cost * qty, 2)
     else:
         result.total_cost = None
+
+    if result.tz_item.target_sale_price is not None:
+        result.unit_price = round(float(result.tz_item.target_sale_price), 2)
+        result.total_price = round(result.unit_price * qty, 2)
+        result.applied_markup_pct = item_margin_percent(result.unit_cost, result.unit_price)
+        return
 
     if result.unit_base_price is None:
         result.unit_price = None
