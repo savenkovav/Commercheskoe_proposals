@@ -51,3 +51,28 @@ def test_primary_picks_cheapest_competitor_product() -> None:
     best = pick_primary_internet_pricing_quote([expensive, cheaper])
 
     assert best is cheaper
+
+
+def test_primary_prefers_higher_match_over_cheaper_price() -> None:
+    exact = PriceQuote(
+        source="web",
+        label="Rostcom",
+        matched_name="Рабочий словарик. 1 класс",
+        price=733.0,
+        cost=733.0,
+        match_score=100.0,
+        url="https://rostcom.com/catalog/element/rabochiy_slovarik_1_klass_/",
+    )
+    cheaper_partial = PriceQuote(
+        source="web",
+        label="Rostcom",
+        matched_name="Англо-русский словарь: 1-4 классы",
+        price=255.0,
+        cost=255.0,
+        match_score=96.0,
+        url="https://rostcom.com/catalog/element/anglo_russkiy/",
+    )
+
+    best = pick_primary_internet_pricing_quote([cheaper_partial, exact])
+
+    assert best is exact

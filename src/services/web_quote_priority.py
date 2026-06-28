@@ -125,7 +125,7 @@ def web_quote_rank_key(quote: PriceQuote) -> tuple[int, float, int, float, int]:
     else:
         tier = 4
 
-    return (tier, price_sort, 0 if product_page else 1, -score, 0 if has_price else 1)
+    return (tier, -score, price_sort, 0 if product_page else 1, 0 if has_price else 1)
 
 
 def sort_web_quotes(quotes: list[PriceQuote]) -> list[PriceQuote]:

@@ -1105,6 +1105,7 @@ class WebSearchService:
                 limit=max_results,
                 deadline=deadline,
                 allow_fallback=competitor_fallback,
+                sort_by_match=True,
             )
             _extend(competitor_quotes)
             if has_priced_competitor_quote(quotes):

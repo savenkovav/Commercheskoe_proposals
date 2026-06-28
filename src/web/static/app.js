@@ -1937,7 +1937,7 @@ function webQuoteRank(q) {
     else if (productPage && hasPrice) tier = 2;
     else tier = 4;
   }
-  return [tier, priceSort, productPage ? 0 : 1, -score, hasPrice ? 0 : 1];
+  return [tier, -score, priceSort, productPage ? 0 : 1, hasPrice ? 0 : 1];
 }
 
 function quoteMeetsMatchThreshold(q) {

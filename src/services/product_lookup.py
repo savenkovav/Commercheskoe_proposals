@@ -369,7 +369,7 @@ class ProductLookupService:
     def _build_competitors_block(self, query: str) -> dict[str, object]:
         quotes: list[PriceQuote] = []
         try:
-            quotes.extend(self.web_search.search_competitor_offers(query))
+            quotes.extend(self.web_search.search_competitor_offers(query, sort_by_match=True))
             if not any(q.price is not None or q.cost is not None for q in quotes):
                 quotes.extend(self.web_search.search_web_price_fallback(query))
         except Exception:
@@ -409,7 +409,13 @@ class ProductLookupService:
                 }
             )
 
-        items.sort(key=lambda item: (0 if item.get("has_price") else 1, item["_sort_price"]))
+        items.sort(
+            key=lambda item: (
+                -(float(item.get("match_score") or 0)),
+                0 if item.get("has_price") else 1,
+                item["_sort_price"],
+            )
+        )
         for item in items:
             item.pop("_sort_price", None)
         return {"found": bool(items), "items": items}

@@ -37,22 +37,22 @@ def test_finalize_sort_by_match_orders_descending() -> None:
     quotes = [
         PriceQuote(
             source="web",
-            label="A",
+            label="Rostcom",
             matched_name="low",
             price=100.0,
             cost=100.0,
             match_score=96.0,
-            url="https://a.com/p/1",
+            url="https://rostcom.com/catalog/element/low/",
             notes="Индекс каталога",
         ),
         PriceQuote(
             source="web",
-            label="B",
+            label="EPP24",
             matched_name="exact",
             price=500.0,
             cost=500.0,
             match_score=100.0,
-            url="https://b.com/p/2",
+            url="https://epp24.ru/product/exact/",
             notes="Индекс каталога",
         ),
     ]
