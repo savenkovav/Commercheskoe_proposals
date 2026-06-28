@@ -48,6 +48,9 @@ HEADER_FONT_SIZE = 9
 LINE_HEIGHT = ROW_FONT_SIZE + 3
 ROW_GAP = 5
 HEADER_GAP_AFTER_LINE = 10
+TOTAL_SEPARATOR_GAP_BEFORE = 4
+TOTAL_SEPARATOR_GAP_AFTER_COMPACT = 16
+TOTAL_SEPARATOR_GAP_AFTER = 18
 
 # x0, x1 для колонок таблицы
 TABLE_COLS = {
@@ -84,7 +87,7 @@ def _footer_block_height(
     stamp_height: float = 0,
 ) -> float:
     if compact:
-        height = 2.0 + 8.0
+        height = float(TOTAL_SEPARATOR_GAP_BEFORE) + float(TOTAL_SEPARATOR_GAP_AFTER_COMPACT)
         height += 11.0 + 4.0
         height += 4.0
         height += (10.0 + 4.0) * 3
@@ -96,7 +99,7 @@ def _footer_block_height(
             height += 4.0 + stamp_height
         return height
 
-    height = 4.0 + 12.0
+    height = float(TOTAL_SEPARATOR_GAP_BEFORE) + float(TOTAL_SEPARATOR_GAP_AFTER)
     height += 11.0 + 6.0
     height += 8.0
     height += (10.0 + 6.0) * 3
@@ -584,12 +587,9 @@ class PdfGenerator:
         if not single_page and y + footer_height > PAGE_MAX_Y:
             start_footer_page()
 
-        if compact_footer:
-            y += 2
-        else:
-            y += 4
+        y += TOTAL_SEPARATOR_GAP_BEFORE
         page.draw_line(fitz.Point(MARGIN_X, y), fitz.Point(MARGIN_RIGHT, y), width=0.8)
-        y += 8 if compact_footer else 12
+        y += TOTAL_SEPARATOR_GAP_AFTER_COMPACT if compact_footer else TOTAL_SEPARATOR_GAP_AFTER
         write_line(f"Всего: {_fmt_money(summary.total_price)}", size=11, bold=True)
         y += 4 if compact_footer else 8
         write_line(f"Условия оплаты: {PAYMENT_TERMS}", size=10)
