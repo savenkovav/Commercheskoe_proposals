@@ -405,6 +405,7 @@ class ProductLookupService:
                     "notes": quote.notes or "",
                     "articul": quote.articul,
                     "has_price": base_price is not None,
+                    "price_amount": base_price,
                     "image_url": quote.image_url,
                     "_sort_price": base_price if base_price is not None else float("inf"),
                 }

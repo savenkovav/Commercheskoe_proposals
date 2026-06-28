@@ -203,6 +203,28 @@ class KpFormRequest(BaseModel):
     selections: list[KpSelectionItemRequest] = Field(default_factory=list)
 
 
+class KpLookupCompetitorItem(BaseModel):
+    label: str = ""
+    name: str = ""
+    match_score: float = 0
+    price: str | None = None
+    price_amount: float | None = None
+    price_kp: str | None = None
+    price_label: str | None = None
+    url: str | None = None
+    notes: str = ""
+    articul: str | None = None
+    image_url: str | None = None
+    has_price: bool = True
+
+
+class KpLookupItemToggleRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=64)
+    query_name: str = Field(min_length=1, max_length=500)
+    item: KpLookupCompetitorItem
+    included: bool = True
+
+
 class RagQueryRequest(BaseModel):
     session_id: str = Field(min_length=8, max_length=64)
     query: str = Field(min_length=1, max_length=4000)
@@ -376,7 +398,15 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
             if result.price_list_check
             else None
         ),
+        "lookup_kp_key": _lookup_kp_key_from_result(result),
     }
+
+
+def _lookup_kp_key_from_result(result: MatchResult) -> str | None:
+    for quote in [*result.competitors, *result.comparison]:
+        if quote.url:
+            return quote.url
+    return None
 
 
 def _summary_to_dict(summary, filename: str, *, pdf_filename: str | None = None) -> dict[str, Any]:
@@ -980,6 +1010,46 @@ def api_kp_session_create(body: KpSessionCreateRequest = KpSessionCreateRequest(
         "search_completed": False,
         "stage": "intake",
     }
+
+
+def _kp_session_process_payload(session, *, session_id: str | None = None) -> dict[str, Any]:
+    processor = get_processor()
+    sid = session_id or session.session_id
+    filename = session.output_path.name if session.output_path.name != "pending.xlsx" else "pending.xlsx"
+    payload = {
+        "session_id": sid,
+        "stage": session.stage,
+        "task_mode": session.task_mode,
+        "search_completed": session.search_completed,
+        "kp_formed": False,
+        "summary": _summary_to_dict(session.summary, filename),
+        "items": [_match_result_to_dict(r) for r in session.results],
+        "ai_used": processor.ai.enabled,
+        "web_used": any(
+            r.source == MatchSource.WEB or bool(r.competitors)
+            for r in session.results
+        ),
+    }
+    _attach_download_info(payload, session.output_path, pdf_path=session.pdf_path)
+    return payload
+
+
+@app.post("/api/kp/items/from-lookup")
+def api_kp_toggle_lookup_item(body: KpLookupItemToggleRequest) -> dict[str, Any]:
+    try:
+        service = _kp_chat_service()
+        session = service.toggle_lookup_competitor(
+            body.session_id,
+            body.query_name,
+            body.item.model_dump(),
+            included=body.included,
+        )
+        return _kp_session_process_payload(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("KP lookup item toggle failed")
+        raise HTTPException(status_code=500, detail=f"Ошибка: {exc}") from exc
 
 
 @app.post("/api/kp/chat")

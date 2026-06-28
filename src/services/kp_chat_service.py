@@ -462,3 +462,48 @@ class KpChatService:
                 }
             )
         return rows
+
+    def toggle_lookup_competitor(
+        self,
+        session_id: str,
+        query_name: str,
+        item: dict,
+        *,
+        included: bool,
+    ) -> KpSession:
+        from src.services.kp_lookup_import import (
+            build_match_result_from_lookup_competitor,
+            find_result_by_lookup_key,
+        )
+
+        session = self.store.get(session_id)
+        if not session:
+            raise ValueError("Сессия не найдена")
+
+        existing = find_result_by_lookup_key(session.results, item)
+        if included:
+            if existing is not None:
+                return session
+            next_number = max((r.tz_item.number for r in session.results), default=0) + 1
+            result = build_match_result_from_lookup_competitor(
+                query_name,
+                next_number,
+                item,
+            )
+            session.tz_items.append(result.tz_item)
+            session.results.append(result)
+        else:
+            if existing is None:
+                return session
+            number = existing.tz_item.number
+            session.tz_items = [tz for tz in session.tz_items if tz.number != number]
+            session.results = [r for r in session.results if r.tz_item.number != number]
+
+        session.search_completed = bool(session.results)
+        session.stage = "searched" if session.search_completed else "intake"
+        session.summary = self.processor._build_summary(
+            session.results,
+            session.summary.processing_seconds,
+        )
+        self.store.save()
+        return session

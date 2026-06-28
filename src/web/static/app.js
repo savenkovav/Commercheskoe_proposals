@@ -2549,7 +2549,9 @@ function renderKpChatMessages() {
       if (msg.actions?.reprocessed_items?.length) {
         actions += `<div class="kp-chat-actions">Позиции: ${msg.actions.reprocessed_items.join(", ")}</div>`;
       }
-      const lookupHtml = msg.lookup ? renderLookupResultHtml(msg.lookup) : "";
+      const lookupHtml = msg.lookup
+        ? renderLookupResultHtml(msg.lookup, { enableKpSelect: true })
+        : "";
       return `
         <div class="chat-msg chat-msg--assistant">
           <div class="chat-msg__bubble">${escapeHtml(msg.text)}${actions}</div>
@@ -2573,6 +2575,7 @@ function renderKpChatMessages() {
 
   requestAnimationFrame(() => {
     box.scrollTop = box.scrollHeight;
+    syncLookupKpCheckboxes();
   });
 }
 
@@ -2792,6 +2795,8 @@ function renderProcessResult(data) {
     updateKpChatFormState();
     renderKpChatMessages();
   }
+
+  syncLookupKpCheckboxes();
 }
 
 async function processUpload(taskMode) {
@@ -2967,6 +2972,7 @@ function scrollChatToBottom() {
   const box = $("#chatMessages");
   requestAnimationFrame(() => {
     box.scrollTop = box.scrollHeight;
+    syncLookupKpCheckboxes();
   });
 }
 
@@ -2998,7 +3004,7 @@ function renderChatMessages() {
       }
       return `
         <div class="chat-msg chat-msg--assistant" id="${escapeHtml(msg.id)}">
-          <div class="chat-msg__bubble chat-result">${renderLookupResultHtml(msg.result)}</div>
+          <div class="chat-msg__bubble chat-result">${renderLookupResultHtml(msg.result, { enableKpSelect: true })}</div>
           <span class="chat-msg__time">${formatChatTime(msg.ts)}</span>
         </div>`;
     })
@@ -3017,6 +3023,7 @@ function renderChatMessages() {
   }
 
   scrollChatToBottom();
+  syncLookupKpCheckboxes();
 }
 
 function newChatId() {
@@ -3281,7 +3288,7 @@ function renderAiInsightBlock(ai) {
     </div>`;
 }
 
-function renderCompetitorsBlock(competitors) {
+function renderCompetitorsBlock(competitors, options = {}) {
   const items = competitors?.items?.length
     ? competitors.items
     : competitors?.found
@@ -3295,7 +3302,14 @@ function renderCompetitorsBlock(competitors) {
       </div>`;
   }
 
-  const rows = items.map((item) => renderCompetitorResultItem(item, { showPriceKp: true })).join("");
+  const rows = items
+    .map((item) =>
+      renderCompetitorResultItem(item, {
+        showPriceKp: true,
+        kpSelect: options.kpSelect ? { queryName: options.kpSelect.queryName } : null,
+      }),
+    )
+    .join("");
 
   return `
     <div class="source-block">
@@ -3304,7 +3318,7 @@ function renderCompetitorsBlock(competitors) {
     </div>`;
 }
 
-function renderLookupResultHtml(data) {
+function renderLookupResultHtml(data, options = {}) {
   const registryBlock = data.registry?.found
     ? renderMatchVariants(
         "Реестр остатков",
@@ -3351,7 +3365,9 @@ function renderLookupResultHtml(data) {
   );
 
   const aiBlock = renderAiInsightBlock(data.ai_insight);
-  const competitorsBlock = renderCompetitorsBlock(data.competitors);
+  const competitorsBlock = renderCompetitorsBlock(data.competitors, {
+    kpSelect: options.enableKpSelect ? { queryName: data.query_name || "" } : null,
+  });
 
   if (data.not_found) {
     return `
@@ -4000,6 +4016,105 @@ function formatCompetitorSiteLabel(label) {
   return label.replace(/^Конкурент:\s*/i, "").trim() || label;
 }
 
+function serializeLookupKpItem(item) {
+  return JSON.stringify({
+    label: item.label || "",
+    name: item.name || item.matched_name || "",
+    match_score: item.match_score || 0,
+    price: item.price || null,
+    price_amount: item.price_amount ?? null,
+    price_kp: item.price_kp || null,
+    price_label: item.price_label || null,
+    url: item.url || null,
+    notes: item.notes || "",
+    articul: item.articul || null,
+    image_url: item.image_url || null,
+    has_price: item.has_price !== false,
+  });
+}
+
+function lookupKpItemKey(item) {
+  const url = String(item.url || "").trim();
+  if (url) return url;
+  const label = String(item.label || "").trim();
+  const name = String(item.name || item.matched_name || "").trim();
+  return `${label}|${name}`;
+}
+
+function isLookupKpSelected(item) {
+  const key = lookupKpItemKey(item);
+  return (kpProcessData?.items || []).some(
+    (row) =>
+      row.lookup_kp_key === key ||
+      (item.url && row.internet_url && row.internet_url === item.url),
+  );
+}
+
+async function toggleLookupKpItem(checkbox) {
+  if (checkbox.dataset.lookupKpBusy === "1") return;
+
+  const queryName = checkbox.dataset.lookupQuery || "";
+  let item;
+  try {
+    item = JSON.parse(decodeURIComponent(checkbox.dataset.lookupItem || ""));
+  } catch {
+    showToast("Не удалось прочитать данные позиции", true);
+    checkbox.checked = !checkbox.checked;
+    return;
+  }
+
+  const included = checkbox.checked;
+  checkbox.dataset.lookupKpBusy = "1";
+  try {
+    await ensureKpSession();
+    const data = await api("/api/kp/items/from-lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: kpSessionId,
+        query_name: queryName,
+        item,
+        included,
+      }),
+    });
+    renderProcessResult(data);
+    resetKpSavedSelection();
+    showToast(included ? "Добавлено в детализацию КП" : "Удалено из детализации КП");
+    syncLookupKpCheckboxes();
+  } catch (error) {
+    checkbox.checked = !included;
+    showToast(error.message, true);
+  } finally {
+    delete checkbox.dataset.lookupKpBusy;
+  }
+}
+
+function syncLookupKpCheckboxes() {
+  document.querySelectorAll(".lookup-kp-select").forEach((checkbox) => {
+    try {
+      const item = JSON.parse(decodeURIComponent(checkbox.dataset.lookupItem || ""));
+      checkbox.checked = isLookupKpSelected(item);
+    } catch {
+      // ignore malformed payload
+    }
+  });
+}
+
+function initLookupKpSelection() {
+  document.addEventListener("change", (event) => {
+    const checkbox = event.target.closest?.(".lookup-kp-select");
+    if (!checkbox) return;
+    event.stopPropagation();
+    toggleLookupKpItem(checkbox);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (event.target.closest?.(".lookup-kp-select, .competitor-result-item__kp-select")) {
+      event.stopPropagation();
+    }
+  });
+}
+
 function renderCompetitorResultItem(item, options = {}) {
   const showPriceKp = Boolean(options.showPriceKp);
   const matchedName = item.matched_name || item.name || "—";
@@ -4012,6 +4127,25 @@ function renderCompetitorResultItem(item, options = {}) {
         "competitor-result-item__image",
       )}</div>`
     : "";
+
+  const selectHtml = options.kpSelect
+    ? `<label class="competitor-result-item__kp-select" title="Добавить в детализацию КП">
+        <input
+          type="checkbox"
+          class="lookup-kp-select"
+          data-lookup-query="${escapeHtml(options.kpSelect.queryName || "")}"
+          data-lookup-item="${escapeHtml(encodeURIComponent(serializeLookupKpItem(item)))}"
+          ${isLookupKpSelected(item) ? "checked" : ""}
+          aria-label="Добавить «${escapeHtml(matchedName)}» в детализацию КП"
+        >
+        <span class="competitor-result-item__kp-select-label">В КП</span>
+      </label>`
+    : "";
+
+  const asideHtml =
+    photoHtml || selectHtml
+      ? `<div class="competitor-result-item__aside">${photoHtml}${selectHtml}</div>`
+      : "";
 
   const priceText =
     item.has_price === false
@@ -4051,7 +4185,7 @@ function renderCompetitorResultItem(item, options = {}) {
 
   return `
     <div class="competitor-result-item">
-      ${photoHtml}
+      ${asideHtml}
       <div class="competitor-result-item__body">
         <div class="competitor-result-item__head">
           <strong class="competitor-result-item__title">${escapeHtml(title)}</strong>
@@ -4132,6 +4266,7 @@ function renderCompetitorChatMessages() {
 
   requestAnimationFrame(() => {
     box.scrollTop = box.scrollHeight;
+    syncLookupKpCheckboxes();
   });
 }
 
@@ -4221,6 +4356,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initMarkup();
   initAiToggle();
   initChat();
+  initLookupKpSelection();
   initKpChat();
   updateKpChatFormState();
   initPhotoModal();
