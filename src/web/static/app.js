@@ -520,10 +520,13 @@ function getCurrentMarkupPercent() {
 
 function shouldDeferInternetRowPrice(item, selection = {}) {
   if (!collectWebProductEntries(item).length) return false;
-  const variant = selection.variant || savedVariantIdForItem(item.number) || "primary";
-  if (variant !== "primary") return false;
+  const variant = selection.variant || getLocalVariantFromUI(item.number) || "primary";
+  if (variant !== "primary" && !variant.startsWith("local:")) return false;
   if (item.kit_components?.length) return false;
-  if (isLocalDataSource(item) && item.unit_base_price != null) return false;
+  const localEntries = collectLocalComparisonEntries(item);
+  if (!localEntries.length) return true;
+  if (!hasLocalSourceSelected(item.number)) return true;
+  if (isLocalDataSource(item) && item.unit_base_price != null && variant === "primary") return false;
   return Boolean(item.internet_priced || item.source === "web");
 }
 
@@ -668,9 +671,20 @@ function getKitIndicesFromUI(itemNumber) {
   return boxes.filter((box) => box.checked).map((box) => Number(box.dataset.kitIndex));
 }
 
-function shouldAutoSelectSingleWebRow(item) {
-  if (!shouldDeferInternetRowPrice(item)) return false;
-  return collectWebProductEntries(item).length === 1;
+function collectLocalComparisonEntries(item) {
+  return (item.comparison || []).filter(
+    (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
+  );
+}
+
+function hasLocalSourceSelected(itemNumber) {
+  const boxes = [...document.querySelectorAll(`.kp-local-include[data-item="${itemNumber}"]`)];
+  if (boxes.length) {
+    return boxes.some((box) => box.checked);
+  }
+  return collectLocalComparisonEntries(
+    kpProcessData?.items?.find((row) => row.number === itemNumber) || { comparison: [] },
+  ).length > 0;
 }
 
 function getDefaultWebIndices(item) {
@@ -678,10 +692,50 @@ function getDefaultWebIndices(item) {
   if (saved?.web_indices) {
     return [...saved.web_indices];
   }
-  if (shouldAutoSelectSingleWebRow(item)) {
+  const webEntries = collectWebProductEntries(item);
+  if (!webEntries.length) return [];
+  const localEntries = collectLocalComparisonEntries(item);
+  if (!localEntries.length || shouldDeferInternetRowPrice(item)) {
     return [0];
   }
   return [];
+}
+
+function isLocalQuoteChecked(itemNumber, index) {
+  const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
+  if (saved?.variant?.startsWith("local:")) {
+    return Number.parseInt(saved.variant.split(":")[1], 10) === index;
+  }
+  if (saved?.variant === "primary" && index === 0) {
+    return true;
+  }
+  const boxes = [...document.querySelectorAll(`.kp-local-include[data-item="${itemNumber}"]`)];
+  if (boxes.length) {
+    const box = boxes.find((entry) => Number(entry.dataset.localIndex) === index);
+    return box ? box.checked : false;
+  }
+  return index === 0;
+}
+
+function getLocalVariantFromUI(itemNumber) {
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  const localEntries = item ? collectLocalComparisonEntries(item) : [];
+  const boxes = [...document.querySelectorAll(`.kp-local-include[data-item="${itemNumber}"]`)];
+  if (boxes.length) {
+    const checked = boxes.find((box) => box.checked);
+    if (!checked) {
+      return "primary";
+    }
+    return `local:${checked.dataset.localIndex}`;
+  }
+  const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
+  if (saved?.variant) {
+    return saved.variant;
+  }
+  if (localEntries.length) {
+    return "local:0";
+  }
+  return "primary";
 }
 
 function getWebIndicesFromUI(itemNumber) {
@@ -694,6 +748,7 @@ function getWebIndicesFromUI(itemNumber) {
 }
 
 function hasPositionDetailSelection(item, selection = {}) {
+  const variant = selection.variant || getLocalVariantFromUI(item.number);
   const kitIndices =
     selection.kit_indices !== undefined
       ? selection.kit_indices
@@ -702,15 +757,24 @@ function hasPositionDetailSelection(item, selection = {}) {
     selection.web_indices !== undefined
       ? selection.web_indices
       : getWebIndicesFromUI(item.number);
+  const localEntries = collectLocalComparisonEntries(item);
+  const webEntries = collectWebProductEntries(item);
   const hasKitSelection = Boolean(item.kit_components?.length && kitIndices?.length);
+  const hasLocalSelection = Boolean(
+    localEntries.length && (variant.startsWith("local:") || hasLocalSourceSelected(item.number)),
+  );
   const hasWebSelection = Boolean(
-    collectWebProductEntries(item).length &&
-      webIndices?.some((index) => {
-        const quote = collectWebProductEntries(item)[index];
-        return quote && resolveWebQuoteBasePrice(item, index, quote) != null;
+    webEntries.length &&
+      webIndices?.length &&
+      webIndices.some((index) => {
+        const quote = webEntries[index];
+        return quote && resolveWebQuoteBasePrice(item, index, quote, selection) != null;
       }),
   );
-  return hasKitSelection || hasWebSelection;
+  if (hasKitSelection) return true;
+  if (hasLocalSelection) return true;
+  if (hasWebSelection) return true;
+  return false;
 }
 
 function kitSelectedBaseTotal(item, itemNumber = item.number) {
@@ -731,12 +795,13 @@ function updateKitComponentTotal(itemNumber) {
 }
 
 function isWebQuoteChecked(itemNumber, index) {
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
   const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
   if (saved?.web_indices) {
     return saved.web_indices.includes(index);
   }
-  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
-  return Boolean(item && shouldAutoSelectSingleWebRow(item) && index === 0);
+  if (!item) return false;
+  return getDefaultWebIndices(item).includes(index);
 }
 
 function isKitComponentChecked(itemNumber, index) {
@@ -751,7 +816,7 @@ function isKitComponentChecked(itemNumber, index) {
 }
 
 function computeItemPricing(item, selection = {}) {
-  const variant = selection.variant || savedVariantIdForItem(item.number) || "primary";
+  const variant = selection.variant || getLocalVariantFromUI(item.number) || "primary";
   const kitIndices =
     selection.kit_indices !== undefined
       ? selection.kit_indices
@@ -761,9 +826,31 @@ function computeItemPricing(item, selection = {}) {
       ? selection.web_indices
       : getWebIndicesFromUI(item.number);
   const hasWebTable = collectWebProductEntries(item).length > 0;
+  const localEntries = collectLocalComparisonEntries(item);
   const deferInternetPrice = shouldDeferInternetRowPrice(item, { ...selection, variant });
+  const localDeselected = Boolean(localEntries.length && !hasLocalSourceSelected(item.number));
 
   let base;
+  if (localDeselected && deferInternetPrice) {
+    if (!webIndices?.length) {
+      return emptyItemPricing(item);
+    }
+    const webOnly = aggregateWebAddonPricing(item, webIndices, selection);
+    return {
+      status: item.status,
+      internetPriced: Boolean(webOnly.unitBasePrice != null),
+      unitCost: webOnly.unitCost,
+      unitBasePrice: webOnly.unitBasePrice,
+      unitPrice: webOnly.unitPrice,
+      totalCost: webOnly.totalCost,
+      totalBasePrice: webOnly.totalBasePrice,
+      totalPrice: webOnly.totalPrice,
+    };
+  }
+  if (localDeselected && !deferInternetPrice) {
+    return emptyItemPricing(item);
+  }
+
   if (item.kit_components?.length && kitIndices !== null) {
     const kitPricing = aggregateKitPricing(item, kitIndices);
     if (kitPricing) {
@@ -842,7 +929,7 @@ function updateTzRowPricing(itemNumber) {
   if (!item || !row) return;
 
   const pricing = computeItemPricing(item, {
-    variant: savedVariantIdForItem(itemNumber),
+    variant: getLocalVariantFromUI(itemNumber),
     kit_indices: getKitIndicesFromUI(itemNumber),
     web_indices: getWebIndicesFromUI(itemNumber),
   });
@@ -1065,15 +1152,11 @@ function formatVariantLine(variant) {
 }
 
 function savedVariantIdForItem(itemNumber) {
-  const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
-  if (saved?.variant) return saved.variant;
-  const selected = document.querySelector(
-    `.kp-variant-line--selected[data-item="${itemNumber}"]`,
-  );
-  return selected?.dataset.variant || "primary";
+  return getLocalVariantFromUI(itemNumber);
 }
 
 function renderVariantChoices(item) {
+  if (collectLocalComparisonEntries(item).length) return "";
   const variants = listItemVariants(item);
   if (variants.length <= 1) return "";
 
@@ -1266,10 +1349,16 @@ async function saveKpSelection() {
   for (const selection of included) {
     const item = kpProcessData.items.find((row) => row.number === selection.number);
     if (!item) continue;
-    if (!item.kit_components?.length && !collectWebProductEntries(item).length) continue;
+    if (
+      !item.kit_components?.length &&
+      !collectWebProductEntries(item).length &&
+      !collectLocalComparisonEntries(item).length
+    ) {
+      continue;
+    }
     if (!hasPositionDetailSelection(item, selection)) {
       showToast(
-        `Позиция ${selection.number}: выберите состав комплекта и/или позиции из интернета`,
+        `Позиция ${selection.number}: выберите источник в каталоге/прайсе, состав комплекта и/или позиции из интернета`,
         true,
       );
       return;
@@ -1352,14 +1441,12 @@ function getSelectionsFromUI() {
   return kpProcessData.items.map((item) => {
     const includeEl = document.querySelector(`.kp-item-include[data-item="${item.number}"]`);
     const include = includeEl ? includeEl.checked : true;
-    const checkedVariant = document.querySelector(
-      `.kp-variant-line--selected[data-item="${item.number}"]`,
-    );
+    const checkedVariant = getLocalVariantFromUI(item.number);
     const kitIndices = getKitIndicesFromUI(item.number);
     const selection = {
       number: item.number,
       included: include,
-      variant: checkedVariant?.dataset.variant || "primary",
+      variant: checkedVariant,
     };
     if (item.kit_components?.length && kitIndices !== null) {
       selection.kit_indices = kitIndices;
@@ -1395,6 +1482,22 @@ function bindKpSelectionHandlers() {
         selectAll.indeterminate = !selectAll.checked && [...boxes].some((box) => box.checked);
       }
       resetKpSavedSelection();
+      return;
+    }
+    if (target.classList.contains("kp-local-include")) {
+      const itemNumber = Number(target.dataset.item);
+      if (target.checked) {
+        $$(`.kp-local-include[data-item="${itemNumber}"]`).forEach((box) => {
+          if (box !== target) box.checked = false;
+        });
+      }
+      $$(`.kp-local-row[data-item="${itemNumber}"]`).forEach((row) => {
+        const box = row.querySelector(".kp-local-include");
+        row.classList.toggle("kp-local-row--excluded", box ? !box.checked : false);
+      });
+      resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
+      updateWebAddonTotal(itemNumber);
       return;
     }
     if (target.classList.contains("kp-kit-include") || target.classList.contains("kp-kit-select-all")) {
@@ -1470,7 +1573,7 @@ function bindKpSelectionHandlers() {
       updateTzRowPricing(itemNumber);
       return;
     }
-    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell")) {
+    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-local-select-cell, .kp-web-select-cell, .kp-web-price-cell")) {
       event.stopPropagation();
     }
   });
@@ -1493,10 +1596,16 @@ async function formKpDocument() {
   for (const selection of included) {
     const item = kpProcessData?.items?.find((row) => row.number === selection.number);
     if (!item) continue;
-    if (!item.kit_components?.length && !collectWebProductEntries(item).length) continue;
+    if (
+      !item.kit_components?.length &&
+      !collectWebProductEntries(item).length &&
+      !collectLocalComparisonEntries(item).length
+    ) {
+      continue;
+    }
     if (!hasPositionDetailSelection(item, selection)) {
       showToast(
-        `Позиция ${selection.number}: выберите состав комплекта и/или позиции из интернета`,
+        `Позиция ${selection.number}: выберите источник в каталоге/прайсе, состав комплекта и/или позиции из интернета`,
         true,
       );
       return;
@@ -2270,6 +2379,57 @@ function updateWebRowKpPrice(itemNumber, webIndex) {
   kpEl.textContent = fmtMoney(webQuoteKpUnitPriceFromBase(base));
 }
 
+function renderLocalComparisonRows(item) {
+  const entries = collectLocalComparisonEntries(item);
+  if (!entries.length) return "";
+
+  const rows = entries
+    .map((q, localIndex) => {
+      const checked = isLocalQuoteChecked(item.number, localIndex);
+      return `
+      <tr class="kp-local-row compare-row--local${checked ? "" : " kp-local-row--excluded"}" data-item="${item.number}" data-local-index="${localIndex}">
+        <td class="kp-local-select-cell">
+          <input
+            type="checkbox"
+            class="kp-local-include"
+            data-item="${item.number}"
+            data-local-index="${localIndex}"
+            ${checked ? "checked" : ""}
+          >
+        </td>
+        <td>${escapeHtml(q.label || "Источник")}</td>
+        <td>${escapeHtml(q.matched_name || "—")}</td>
+        <td>${fmtMoney(q.cost ?? q.price)}</td>
+        <td>${fmtMoney(q.price)}</td>
+        <td>${escapeHtml(q.supplier || "—")}</td>
+        <td>${escapeHtml(q.purchase_date || "—")}</td>
+        <td>${q.match_score ? `${Math.round(q.match_score)}%` : "—"}</td>
+        <td>${escapeHtml(q.notes || "—")}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return `
+      <h4 class="compare-block__subtitle">Каталоги, прайсы и остатки</h4>
+      <p class="muted compare-block__kit-note">Отметьте источник для КП. По умолчанию выбран первый — снимите галочку, чтобы исключить, или отметьте другой для замены.</p>
+      <table class="compare-table compare-table--local">
+        <thead>
+          <tr>
+            <th class="kp-local-select-cell"></th>
+            <th>Источник</th>
+            <th>Найдено</th>
+            <th>Себест.</th>
+            <th>Цена</th>
+            <th>Поставщик</th>
+            <th>Дата покупки</th>
+            <th>Совпадение</th>
+            <th>Примечание</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+}
+
 function renderWebComparisonRows(item) {
   const productEntries = collectWebProductEntries(item);
   if (!productEntries.length) return "";
@@ -2358,35 +2518,18 @@ function renderWebComparisonRows(item) {
 }
 
 function renderComparisonTable(item) {
-  const comparison = (item.comparison || []).filter(
-    (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
-  );
+  const localEntries = collectLocalComparisonEntries(item);
   const webEntries = collectWebEntries(item);
-  const primaryBlock = renderPrimaryMatchBlock(item);
+  const primaryBlock =
+    localEntries.length || !webEntries.length ? "" : renderPrimaryMatchBlock(item);
   if (
-    !comparison.length &&
+    !localEntries.length &&
     !webEntries.length &&
     !(item.kit_components || []).length &&
     !primaryBlock
   ) {
     return "";
   }
-
-  const comparisonRows = comparison
-    .map(
-      (q) => `
-      <tr>
-        <td>${escapeHtml(q.label)}</td>
-        <td>${escapeHtml(q.matched_name || "—")}</td>
-        <td>${fmtMoney(q.cost ?? q.price)}</td>
-        <td>${fmtMoney(q.price)}</td>
-        <td>${escapeHtml(q.supplier || "—")}</td>
-        <td>${escapeHtml(q.purchase_date || "—")}</td>
-        <td>${q.match_score ? `${Math.round(q.match_score)}%` : "—"}</td>
-        <td>${escapeHtml(q.notes || "—")}</td>
-      </tr>`,
-    )
-    .join("");
 
   const kitRows = (item.kit_components || [])
     .map((k, kitIndex) => {
@@ -2443,27 +2586,8 @@ function renderComparisonTable(item) {
       ${renderMarketEstimateInfo(item)}
       ${primaryBlock}
       ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
+      ${renderLocalComparisonRows(item)}
       ${renderWebComparisonRows(item)}
-      ${
-        comparisonRows
-          ? `
-      <table class="compare-table">
-        <thead>
-          <tr>
-            <th>Источник</th>
-            <th>Найдено</th>
-            <th>Себест.</th>
-            <th>Цена</th>
-            <th>Поставщик</th>
-            <th>Дата покупки</th>
-            <th>Совпадение</th>
-            <th>Примечание</th>
-          </tr>
-        </thead>
-        <tbody>${comparisonRows}</tbody>
-      </table>`
-          : ""
-      }
       ${
         kitRows
           ? `
