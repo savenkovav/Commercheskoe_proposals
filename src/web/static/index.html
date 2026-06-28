@@ -360,6 +360,15 @@
       </section>
 
       <section class="panel" id="panel-users" data-panel="users">
+        <div class="card" id="systemLoadCard">
+          <div class="card__head">
+            <h2>Нагрузка системы</h2>
+            <button class="btn btn--secondary btn--small" type="button" id="btnRefreshSystemStatus">Обновить</button>
+          </div>
+          <p class="muted" id="systemLoadUpdated">—</p>
+          <div class="stats-grid" id="systemLoadGrid"></div>
+          <div id="systemIndexQueue"></div>
+        </div>
         <div class="card">
           <div class="card__head">
             <h2>Настройки пользователей</h2>
@@ -427,6 +436,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20260628o"></script>
+  <script src="/app.js?v=20260628p"></script>
 </body>
 </html>

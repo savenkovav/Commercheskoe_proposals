@@ -58,7 +58,12 @@ function switchToTab(tabName) {
   if (tabName === "competitors") loadCompetitors();
   if (tabName === "status") loadStatus();
   if (tabName === "history") loadHistory();
-  if (tabName === "users") loadUsers();
+  if (tabName === "users") {
+    loadUsers();
+    startSystemStatusPolling();
+  } else {
+    stopSystemStatusPolling();
+  }
 }
 
 function updateAuthUi() {
@@ -148,6 +153,84 @@ async function loadUsers() {
     renderUsersTable(data.items || []);
   } catch (e) {
     showToast(e.message, true);
+  }
+}
+
+let systemStatusTimer = null;
+
+function formatUptime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours > 0) return `${hours} ч ${minutes} мин`;
+  return `${minutes} мин`;
+}
+
+async function loadSystemStatus() {
+  if (currentUser?.role !== "admin") return;
+  try {
+    const data = await api("/api/admin/system-status");
+    renderSystemStatus(data);
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+function renderSystemStatus(status) {
+  const grid = $("#systemLoadGrid");
+  const queueEl = $("#systemIndexQueue");
+  const updatedEl = $("#systemLoadUpdated");
+  if (!grid) return;
+
+  const ai = status.ai || {};
+  const idx = status.index_queue || {};
+  const sessions = status.kp_sessions || {};
+  const limits = status.limits || {};
+  const memoryText = status.memory_mb != null ? `${status.memory_mb} МБ` : "—";
+
+  grid.innerHTML = `
+    <div class="card"><div class="metric"><div class="metric__label">Uptime</div><div class="metric__value">${escapeHtml(formatUptime(status.uptime_seconds))}</div></div></div>
+    <div class="card"><div class="metric"><div class="metric__label">Память</div><div class="metric__value">${escapeHtml(memoryText)}</div></div></div>
+    <div class="card"><div class="metric"><div class="metric__label">AI запросы</div><div class="metric__value">${ai.in_flight ?? 0} / ${limits.ai_max_concurrent_requests ?? ai.max_concurrent ?? "—"}</div></div></div>
+    <div class="card"><div class="metric"><div class="metric__label">Индексация</div><div class="metric__value">${idx.running_count ?? 0} / ${limits.index_max_concurrent_jobs ?? idx.max_concurrent_jobs ?? "—"}</div></div></div>
+    <div class="card"><div class="metric"><div class="metric__label">Очередь индексации</div><div class="metric__value">${idx.queued_count ?? 0}</div></div></div>
+    <div class="card"><div class="metric"><div class="metric__label">Сессии КП</div><div class="metric__value">${sessions.active_sessions ?? 0} / ${limits.kp_max_sessions ?? sessions.max_sessions ?? "—"}</div></div></div>
+  `;
+
+  if (queueEl) {
+    const running = idx.running || [];
+    const queued = idx.queued || [];
+    if (!running.length && !queued.length) {
+      queueEl.innerHTML = `<p class="muted">Фоновые индексации не выполняются.</p>`;
+    } else {
+      const runningRows = running
+        .map((job) => `<li><code>${escapeHtml(job.domain || "—")}</code> — ${escapeHtml(job.phase || "running")}</li>`)
+        .join("");
+      const queuedRows = queued
+        .map((job) => `<li><code>${escapeHtml(job.domain || "—")}</code> — позиция ${job.queue_position ?? "—"}</li>`)
+        .join("");
+      queueEl.innerHTML = `
+        ${running.length ? `<p class="muted">Выполняется:</p><ul class="price-list">${runningRows}</ul>` : ""}
+        ${queued.length ? `<p class="muted">В очереди:</p><ul class="price-list">${queuedRows}</ul>` : ""}
+      `;
+    }
+  }
+
+  if (updatedEl) {
+    updatedEl.textContent = `Обновлено: ${new Date().toLocaleTimeString("ru-RU")} · PID ${status.pid ?? "—"}`;
+  }
+}
+
+function startSystemStatusPolling() {
+  stopSystemStatusPolling();
+  loadSystemStatus();
+  systemStatusTimer = setInterval(loadSystemStatus, 15000);
+}
+
+function stopSystemStatusPolling() {
+  if (systemStatusTimer) {
+    clearInterval(systemStatusTimer);
+    systemStatusTimer = null;
   }
 }
 
@@ -385,6 +468,7 @@ function renderHistory(data) {
 function initAuth() {
   $("#btnLogout")?.addEventListener("click", logoutUser);
   $("#btnAddManager")?.addEventListener("click", openAddManagerForm);
+  $("#btnRefreshSystemStatus")?.addEventListener("click", loadSystemStatus);
   $("#btnRefreshHistory")?.addEventListener("click", loadHistory);
   $("#btnKpHistory")?.addEventListener("click", () => switchToTab("history"));
   $("#btnLookupHistory")?.addEventListener("click", () => switchToTab("history"));

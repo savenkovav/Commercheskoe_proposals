@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import KP_MAX_SESSIONS, KP_SESSIONS_PATH
+from src.services.kp_session_db import get_kp_session_database
 from src.services.kp_preferences import KpPreferences
 from src.services.models import (
     KitComponentLine,
@@ -210,79 +211,66 @@ class KpSessionStore:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or KP_SESSIONS_PATH
-        self._sessions: dict[str, KpSession] = {}
-        self._loaded = False
+        self._db = get_kp_session_database()
+        self._cache: dict[str, KpSession] = {}
         self._lock = threading.RLock()
 
     @property
     def _max_sessions(self) -> int:
         return KP_MAX_SESSIONS
 
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            self._purge_stale(persist=False)
+            return self._db.stats()
+
     def create(self, session: KpSession) -> str:
         with self._lock:
-            self.ensure_loaded()
-            self._purge_stale()
-            if len(self._sessions) >= self._max_sessions:
-                oldest = min(self._sessions.values(), key=lambda item: item.created_at)
-                self._sessions.pop(oldest.session_id, None)
-            self._sessions[session.session_id] = session
-            self._save_unlocked()
+            self._purge_stale(persist=False)
+            self._cache[session.session_id] = session
+            self._persist_session(session)
+            self._db.enforce_max_sessions(self._max_sessions)
             return session.session_id
 
     def get(self, session_id: str) -> KpSession | None:
         with self._lock:
-            self.ensure_loaded()
-            self._purge_stale()
-            return self._sessions.get(session_id)
+            self._purge_stale(persist=False)
+            cached = self._cache.get(session_id)
+            if cached is not None:
+                return cached
+            payload = self._db.get_payload(session_id)
+            if not payload:
+                return None
+            session = _decode_session(payload)
+            if session:
+                self._cache[session_id] = session
+            return session
 
     def save(self) -> None:
         with self._lock:
-            self.ensure_loaded()
-            self._purge_stale(unlock_save=False)
-            self._save_unlocked()
+            self._purge_stale(persist=False)
+            for session in self._cache.values():
+                self._persist_session(session)
 
-    def _save_unlocked(self) -> None:
-        payload = {
-            "updated_at": time.time(),
-            "sessions": [_to_jsonable(session) for session in self._sessions.values()],
-        }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_suffix(".tmp")
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+    def _persist_session(self, session: KpSession) -> None:
+        self._db.save_payload(
+            session.session_id,
+            _to_jsonable(session),
+            created_at=session.created_at,
         )
-        tmp_path.replace(self.path)
 
-    def ensure_loaded(self) -> None:
-        if self._loaded:
-            return
-        self._loaded = True
-        if not self.path.exists():
-            return
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            rows = payload.get("sessions", [])
-            if not isinstance(rows, list):
-                return
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                session = _decode_session(row)
-                if session:
-                    self._sessions[session.session_id] = session
-        except Exception:
-            logger.exception("Failed to load KP sessions from %s", self.path)
-
-    def _purge_stale(self, *, unlock_save: bool = True) -> None:
+    def _purge_stale(self, *, persist: bool = True) -> None:
+        removed = self._db.purge_stale(self._TTL_SECONDS)
+        if removed:
+            logger.info("Purged %s stale KP sessions", removed)
         cutoff = time.time() - self._TTL_SECONDS
-        stale = [sid for sid, session in self._sessions.items() if session.created_at < cutoff]
-        if not stale:
-            return
-        for sid in stale:
-            self._sessions.pop(sid, None)
-        if unlock_save:
-            self._save_unlocked()
+        stale_ids = [
+            sid for sid, session in self._cache.items() if session.created_at < cutoff
+        ]
+        for sid in stale_ids:
+            self._cache.pop(sid, None)
+        if persist and stale_ids:
+            pass
 
 
 _store = KpSessionStore()

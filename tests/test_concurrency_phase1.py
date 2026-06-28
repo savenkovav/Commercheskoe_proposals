@@ -42,7 +42,7 @@ def test_kp_session_store_thread_safe(tmp_path) -> None:
         thread.join(timeout=10)
 
     assert not errors
-    assert len(store._sessions) == 12
+    assert store._db.count_sessions() == 12
 
 
 def test_ai_request_slot_releases() -> None:

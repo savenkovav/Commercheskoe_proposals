@@ -113,6 +113,13 @@ def api_me(user: UserRecord = Depends(get_current_user)) -> dict:
     return _user_payload(user)
 
 
+@admin_router.get("/system-status")
+def api_admin_system_status(_: UserRecord = Depends(get_admin_user)) -> dict:
+    from src.services.system_status import get_system_status
+
+    return get_system_status()
+
+
 @admin_router.get("/users")
 def api_list_users(_: UserRecord = Depends(get_admin_user)) -> dict:
     users = get_user_database().list_users()
