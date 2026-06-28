@@ -40,8 +40,7 @@ TABLE_BOTTOM_Y = 760
 PAGE_BOTTOM_MARGIN = 36
 PAGE_MAX_Y = PAGE_HEIGHT - PAGE_BOTTOM_MARGIN
 STAMP_DISPLAY_WIDTH = 150
-LOGO_DISPLAY_HEIGHT = 38
-LOGO_TITLE_GAP = 12
+LOGO_TITLE_GAP = 10
 SINGLE_PAGE_MAX_ITEMS = 20
 SINGLE_PAGE_RELAXED_MAX_ITEMS = 16
 SINGLE_PAGE_HEADER_RESERVE = 240
@@ -105,25 +104,22 @@ def _draw_title_with_logo(
 ) -> float:
     text_width = font.text_length(title, fontsize=fontsize)
     baseline_y = y + fontsize
+    text_x = max(MARGIN_X, (PAGE_WIDTH - text_width) / 2)
 
     if logo_path:
-        logo_width, logo_height = _image_display_size(logo_path, LOGO_DISPLAY_HEIGHT)
-        block_width = logo_width + LOGO_TITLE_GAP + text_width
-        block_x = max(MARGIN_X, (PAGE_WIDTH - block_width) / 2)
+        logo_width, logo_height = _image_display_size(logo_path, fontsize)
         text_center_y = baseline_y - fontsize * 0.35
         logo_y = text_center_y - logo_height / 2
+        logo_x = text_x - LOGO_TITLE_GAP - logo_width
         page.insert_image(
             fitz.Rect(
-                block_x,
+                logo_x,
                 logo_y,
-                block_x + logo_width,
+                logo_x + logo_width,
                 logo_y + logo_height,
             ),
             filename=str(logo_path),
         )
-        text_x = block_x + logo_width + LOGO_TITLE_GAP
-    else:
-        text_x = max(MARGIN_X, (PAGE_WIDTH - text_width) / 2)
 
     page.insert_text(
         fitz.Point(text_x, baseline_y),
