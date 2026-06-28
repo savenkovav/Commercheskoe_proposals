@@ -138,6 +138,9 @@ _MUSIC_EXPERT_SAMPLE_URL = (
     "behringer_ulm300usb_tsifrovaya_vokalnaya_radiosistema/"
 )
 _RENE_EDU_SAMPLE_URL = "https://www.rene-edu.ru/srednyaya-i-starshaya-shkola/327.html"
+_PRIORITET1_SAMPLE_URL = (
+    "https://prioritet1.com/katalog/interaktivnyj-kompleks-rychi-ne-molchi"
+)
 
 _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
     "rostcom.com": CompetitorParsingHints(
@@ -156,6 +159,12 @@ _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
         price_html_hint='<div class="price">',
         articul_html_hint='<div class="vendor-code">',
         description_html_hint='<div class="editor--default editor">',
+    ),
+    "prioritet1.com": CompetitorParsingHints(
+        product_sample_url=_PRIORITET1_SAMPLE_URL,
+        price_html_hint='<div class="bCard__cost"',
+        articul_html_hint='<div class="bCard__article">',
+        description_html_hint='<ul class="bCard__features">',
     ),
 }
 
@@ -948,6 +957,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "rene-edu.ru": [
         "https://www.rene-edu.ru/sitemap.xml",
         "https://www.rene-edu.ru/",
+    ],
+    "prioritet1.com": [
+        "https://prioritet1.com/sitemap.xml",
+        "https://prioritet1.com/katalog",
     ],
 }
 
@@ -2919,6 +2932,193 @@ def fetch_rene_edu_catalog(
     )
 
 
+_PRIORITET1_DOMAIN = "prioritet1.com"
+_PRIORITET1_SITEMAP_URL = "https://prioritet1.com/sitemap.xml"
+_PRIORITET1_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=45.0, write=20.0, pool=20.0)
+
+
+def _is_prioritet1_domain(domain: str) -> bool:
+    return domain.lower().removeprefix("www.") == _PRIORITET1_DOMAIN
+
+
+def _is_prioritet1_product_url(url: str) -> bool:
+    segments = [segment for segment in urlparse(url.split("#")[0]).path.split("/") if segment]
+    if len(segments) != 2:
+        return False
+    return segments[0].lower() in ("katalog", "catalog")
+
+
+def _is_prioritet1_product_page_html(html: str) -> bool:
+    return 'class="bCard__cost"' in html and 'class="bCard__article"' in html
+
+
+def _parse_prioritet1_price(html: str) -> float | None:
+    meta_match = re.search(
+        r'class="bCard__cost"[^>]*itemprop="price"[^>]*content="([0-9.]+)"',
+        html,
+        re.I | re.S,
+    )
+    if meta_match:
+        try:
+            return float(meta_match.group(1))
+        except ValueError:
+            pass
+    price_match = re.search(
+        r'class="bCard__cost"[^>]*>(?P<body>.*?)</div>',
+        html,
+        re.I | re.S,
+    )
+    if not price_match:
+        return None
+    prices = extract_prices_from_text(_strip_html_text(price_match.group("body")))
+    return prices[0] if prices else None
+
+
+def _parse_prioritet1_description(html: str) -> str | None:
+    parts: list[str] = []
+    for match in re.finditer(
+        r'class="bCard__features"[^>]*>(?P<body>.*?)</ul>',
+        html,
+        re.I | re.S,
+    ):
+        for item in re.finditer(
+            r"<li>\s*<span>(?P<label>[^<]*)</span>\s*<span>(?P<value>[^<]*)</span>\s*</li>",
+            match.group("body"),
+            re.I | re.S,
+        ):
+            label = _strip_html_text(item.group("label")).strip(" :")
+            value = _strip_html_text(item.group("value"))
+            if label and value:
+                parts.append(f"{label}: {value}")
+    desc_match = re.search(
+        r'class="bCard__desc"[^>]*>(?P<body>.*?)</div>',
+        html,
+        re.I | re.S,
+    )
+    if desc_match:
+        desc_text = _strip_html_text(desc_match.group("body"))
+        if desc_text:
+            parts.append(desc_text)
+    if not parts:
+        return None
+    return " ".join(parts)[:2000]
+
+
+def _parse_prioritet1_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_prioritet1_product_page_html(html):
+        return None
+
+    title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not title_match:
+        return None
+    name = re.sub(r"\s+", " ", title_match.group("name")).strip()
+    if len(name) < 4:
+        return None
+
+    articul_match = re.search(
+        r'class="bCard__article"[^>]*>.*?Артикул:?\s*</span>\s*(\d+)',
+        html,
+        re.I | re.S,
+    )
+    articul = articul_match.group(1).strip() if articul_match else None
+    price = _parse_prioritet1_price(html)
+    description = _parse_prioritet1_description(html)
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=page_url.split("#")[0],
+        articul=articul,
+        description=description,
+    )
+
+
+def _parse_prioritet1_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if not _is_prioritet1_domain(domain):
+        return []
+    product = _parse_prioritet1_product_html(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    return [product] if product else []
+
+
+def _discover_prioritet1_sitemap_urls() -> list[str]:
+    limit = COMPETITOR_INDEX_MAX_URLS
+    product_urls: list[str] = []
+    seen: set[str] = set()
+
+    append_index_log(_PRIORITET1_DOMAIN, "Загрузка sitemap prioritet1.com…")
+    try:
+        with httpx.Client(
+            timeout=_PRIORITET1_REQUEST_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            response = client.get(_PRIORITET1_SITEMAP_URL)
+            response.raise_for_status()
+            for loc in _SITEMAP_LOC_RE.findall(response.text[:8_000_000]):
+                clean = loc.strip().split("#")[0]
+                host = urlparse(clean).netloc.lower().removeprefix("www.")
+                if host != _PRIORITET1_DOMAIN:
+                    continue
+                if not _is_prioritet1_product_url(clean):
+                    continue
+                if clean in seen:
+                    continue
+                seen.add(clean)
+                product_urls.append(clean)
+                if len(product_urls) >= limit:
+                    break
+    except Exception:
+        logger.exception("Failed to fetch prioritet1 sitemap")
+
+    append_index_log(
+        _PRIORITET1_DOMAIN,
+        f"prioritet1.com: sitemap — {len(product_urls)} URL товаров",
+    )
+    return product_urls
+
+
+def fetch_prioritet1_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_prioritet1_sitemap_urls()
+    if not product_urls:
+        append_index_log(site.domain, "Каталог prioritet1.com пуст — обход seed URL", level="error")
+        return fetch_catalog_products(site, max_pages=24)
+
+    append_index_log(
+        site.domain,
+        f"Индексация prioritet1.com: {len(product_urls)} URL товаров",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
+        request_timeout=_PRIORITET1_REQUEST_TIMEOUT,
+        max_workers=min(8, COMPETITOR_INDEX_WORKERS),
+    )
+
+
 def _parse_n72_product_previews(
     html: str,
     *,
@@ -3586,6 +3786,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if rene_edu_products:
         return rene_edu_products
 
+    prioritet1_products = _parse_prioritet1_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if prioritet1_products:
+        return prioritet1_products
+
     n72_products = _parse_n72_page(
         html,
         domain=domain,
@@ -3829,6 +4038,8 @@ def fetch_catalog_products(
         return fetch_music_expert_catalog(site)
     if normalized_domain == "rene-edu.ru":
         return fetch_rene_edu_catalog(site)
+    if normalized_domain == "prioritet1.com":
+        return fetch_prioritet1_catalog(site)
 
     apply_default_domain_parsing_hints(normalized_domain)
     hints = get_domain_parsing_hints(normalized_domain)

@@ -40,7 +40,7 @@ _PRODUCT_LINK_RE = re.compile(
 _CATALOG_PATHS: dict[str, str] = {
     "xn----7sbbumkojddmeoc1a7r.xn--p1acf": "/products/",
     "skale.ru": "/prays-list",
-    "prioritet1.com": "/catalog/",
+    "prioritet1.com": "/katalog",
     "orionedu.ru": "/shop/",
     "rene-edu.ru": "/catalog/",
     "rostcom.com": "/catalog/",

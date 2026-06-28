@@ -542,6 +542,10 @@ def is_competitor_product_page_url(url: str) -> bool:
     if slug_like and "/catalog/" in path and len(segments) >= 3:
         return True
 
+    # prioritet1.com: /katalog/product-slug
+    if len(segments) == 2 and segments[0] in ("katalog", "catalog"):
+        return len(last) >= 5
+
     # stronikum.ru: /1061_Fizika/15145_Komplekt_...
     if (
         len(segments) == 2
