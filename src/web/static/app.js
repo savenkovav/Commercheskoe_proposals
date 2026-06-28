@@ -3155,68 +3155,6 @@ function renderPhotoButton(url, alt, imgClass = "lookup-result__photo") {
     </button>`;
 }
 
-function renderRegistryPhotos(registry) {
-  const urls =
-    registry?.photo_urls?.length > 0
-      ? registry.photo_urls
-      : registry?.photo_url
-        ? [registry.photo_url]
-        : [];
-  const alt = registry?.found ? registry.name : "Нет фото";
-
-  if (!urls.length) {
-    return `<img class="lookup-result__photo lookup-result__photo--empty" src="/no-photo.svg" alt="${escapeHtml(alt)}">`;
-  }
-
-  const [mainUrl, ...extraUrls] = urls;
-  const extras = extraUrls
-    .map((url) => renderPhotoButton(url, alt, "lookup-result__photo lookup-result__photo--thumb"))
-    .join("");
-
-  return `
-    <div class="lookup-result__photos">
-      ${renderPhotoButton(mainUrl, alt)}
-      ${extras ? `<div class="lookup-result__photo-stack">${extras}</div>` : ""}
-    </div>`;
-}
-
-function renderLookupResultPhotos(registry, competitors, lookupData) {
-  const registryUrls =
-    registry?.photo_urls?.length > 0
-      ? registry.photo_urls
-      : registry?.photo_url
-        ? [registry.photo_url]
-        : [];
-  if (registryUrls.length) {
-    return renderRegistryPhotos(registry);
-  }
-
-  const topLevelUrls =
-    lookupData?.photo_urls?.length > 0
-      ? lookupData.photo_urls
-      : lookupData?.photo_url
-        ? [lookupData.photo_url]
-        : [];
-  if (topLevelUrls.length) {
-    const alt =
-      lookupData?.matched_name ||
-      lookupData?.query_name ||
-      competitors?.items?.[0]?.name ||
-      "Фото товара";
-    const [mainUrl, ...extraUrls] = topLevelUrls;
-    const extras = extraUrls
-      .map((url) => renderPhotoButton(url, alt, "lookup-result__photo lookup-result__photo--thumb"))
-      .join("");
-    return `
-      <div class="lookup-result__photos">
-        ${renderPhotoButton(mainUrl, alt)}
-        ${extras ? `<div class="lookup-result__photo-stack">${extras}</div>` : ""}
-      </div>`;
-  }
-
-  return renderRegistryPhotos(registry);
-}
-
 function fitPhotoModalImage(img) {
   const previewSize = 220;
   const target = previewSize * 3;
@@ -3367,8 +3305,6 @@ function renderCompetitorsBlock(competitors) {
 }
 
 function renderLookupResultHtml(data) {
-  const photoHtml = renderLookupResultPhotos(data.registry, data.competitors, data);
-
   const registryBlock = data.registry?.found
     ? renderMatchVariants(
         "Реестр остатков",
@@ -3419,21 +3355,18 @@ function renderLookupResultHtml(data) {
 
   if (data.not_found) {
     return `
-      <div class="lookup-result__layout">
-        <div>
-          <h3>Не найдено: «${escapeHtml(data.query_name)}»</h3>
-          ${catalogBlock}
-          ${priceBlock}
-          ${registryBlock}
-          ${competitorsBlock}
-          ${aiBlock}
-          ${
-            data.alternatives.length
-              ? `<p class="muted" style="margin-top:12px">Похожие: ${data.alternatives.map(escapeHtml).join(" · ")}</p>`
-              : ""
-          }
-        </div>
-        <div>${photoHtml}</div>
+      <div class="lookup-result">
+        <h3>Не найдено: «${escapeHtml(data.query_name)}»</h3>
+        ${catalogBlock}
+        ${priceBlock}
+        ${registryBlock}
+        ${competitorsBlock}
+        ${aiBlock}
+        ${
+          data.alternatives.length
+            ? `<p class="muted" style="margin-top:12px">Похожие: ${data.alternatives.map(escapeHtml).join(" · ")}</p>`
+            : ""
+        }
       </div>`;
   }
 
@@ -3442,23 +3375,20 @@ function renderLookupResultHtml(data) {
     .join("");
 
   return `
-    <div class="lookup-result__layout">
-      <div>
-        <h3>${escapeHtml(data.matched_name)}</h3>
-        <p class="muted">Запрос: «${escapeHtml(data.query_name)}» · ${Math.round(data.match_score)}% · ${escapeHtml(data.status)}</p>
-        <dl class="lookup-kv">${kv}</dl>
-        ${catalogBlock}
-        ${priceBlock}
-        ${registryBlock}
-        ${competitorsBlock}
-        ${aiBlock}
-        ${
-          data.alternatives.length
-            ? `<p class="muted" style="margin-top:12px">Альтернативы: ${data.alternatives.map(escapeHtml).join(" · ")}</p>`
-            : ""
-        }
-      </div>
-      <div>${photoHtml}</div>
+    <div class="lookup-result">
+      <h3>${escapeHtml(data.matched_name)}</h3>
+      <p class="muted">Запрос: «${escapeHtml(data.query_name)}» · ${Math.round(data.match_score)}% · ${escapeHtml(data.status)}</p>
+      <dl class="lookup-kv">${kv}</dl>
+      ${catalogBlock}
+      ${priceBlock}
+      ${registryBlock}
+      ${competitorsBlock}
+      ${aiBlock}
+      ${
+        data.alternatives.length
+          ? `<p class="muted" style="margin-top:12px">Альтернативы: ${data.alternatives.map(escapeHtml).join(" · ")}</p>`
+          : ""
+      }
     </div>`;
 }
 

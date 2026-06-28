@@ -1255,9 +1255,8 @@ a.btn.btn--disabled {
   overflow-x: hidden;
 }
 
-.chat-result .lookup-result__layout {
+.chat-result .lookup-result {
   margin-top: 0;
-  grid-template-columns: 1fr;
   min-width: 0;
 }
 
