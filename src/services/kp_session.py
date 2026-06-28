@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -9,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from src.config import KP_SESSIONS_PATH
+from src.config import KP_MAX_SESSIONS, KP_SESSIONS_PATH
 from src.services.kp_preferences import KpPreferences
 from src.services.models import (
     KitComponentLine,
@@ -205,35 +206,42 @@ def _decode_session(data: dict[str, Any]) -> KpSession | None:
 
 
 class KpSessionStore:
-    _MAX_SESSIONS = 30
     _TTL_SECONDS = 3600 * 8
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or KP_SESSIONS_PATH
         self._sessions: dict[str, KpSession] = {}
         self._loaded = False
+        self._lock = threading.RLock()
+
+    @property
+    def _max_sessions(self) -> int:
+        return KP_MAX_SESSIONS
 
     def create(self, session: KpSession) -> str:
-        self.ensure_loaded()
-        self._purge_stale()
-        if len(self._sessions) >= self._MAX_SESSIONS:
-            oldest = min(self._sessions.values(), key=lambda item: item.created_at)
-            self._sessions.pop(oldest.session_id, None)
-        self._sessions[session.session_id] = session
-        self.save()
-        return session.session_id
+        with self._lock:
+            self.ensure_loaded()
+            self._purge_stale()
+            if len(self._sessions) >= self._max_sessions:
+                oldest = min(self._sessions.values(), key=lambda item: item.created_at)
+                self._sessions.pop(oldest.session_id, None)
+            self._sessions[session.session_id] = session
+            self._save_unlocked()
+            return session.session_id
 
     def get(self, session_id: str) -> KpSession | None:
-        self.ensure_loaded()
-        self._purge_stale()
-        session = self._sessions.get(session_id)
-        if session is None:
-            return None
-        return session
+        with self._lock:
+            self.ensure_loaded()
+            self._purge_stale()
+            return self._sessions.get(session_id)
 
     def save(self) -> None:
-        self.ensure_loaded()
-        self._purge_stale()
+        with self._lock:
+            self.ensure_loaded()
+            self._purge_stale(unlock_save=False)
+            self._save_unlocked()
+
+    def _save_unlocked(self) -> None:
         payload = {
             "updated_at": time.time(),
             "sessions": [_to_jsonable(session) for session in self._sessions.values()],
@@ -266,14 +274,15 @@ class KpSessionStore:
         except Exception:
             logger.exception("Failed to load KP sessions from %s", self.path)
 
-    def _purge_stale(self) -> None:
+    def _purge_stale(self, *, unlock_save: bool = True) -> None:
         cutoff = time.time() - self._TTL_SECONDS
         stale = [sid for sid, session in self._sessions.items() if session.created_at < cutoff]
         if not stale:
             return
         for sid in stale:
             self._sessions.pop(sid, None)
-        self.save()
+        if unlock_save:
+            self._save_unlocked()
 
 
 _store = KpSessionStore()

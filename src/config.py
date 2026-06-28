@@ -174,10 +174,14 @@ COMPETITOR_NATIVE_SEARCH_MAX_FETCHES = max(
     1, int(os.getenv("COMPETITOR_NATIVE_SEARCH_MAX_FETCHES", "8"))
 )
 COMPETITOR_SEARCH_PARALLEL_WORKERS = max(
-    1, int(os.getenv("COMPETITOR_SEARCH_PARALLEL_WORKERS", "14"))
+    1, int(os.getenv("COMPETITOR_SEARCH_PARALLEL_WORKERS", "6"))
 )
 # Параллельная индексация каталога конкурента (страницы товаров из sitemap)
-COMPETITOR_INDEX_WORKERS = max(1, int(os.getenv("COMPETITOR_INDEX_WORKERS", "12")))
+COMPETITOR_INDEX_WORKERS = max(1, int(os.getenv("COMPETITOR_INDEX_WORKERS", "6")))
+# Одновременных фоновых индексаций каталогов (разные домены)
+INDEX_MAX_CONCURRENT_JOBS = max(1, int(os.getenv("INDEX_MAX_CONCURRENT_JOBS", "1")))
+# Одновременных запросов к LLM/embeddings (ProxyAPI)
+AI_MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("AI_MAX_CONCURRENT_REQUESTS", "6")))
 COMPETITOR_INDEX_MAX_URLS = max(100, int(os.getenv("COMPETITOR_INDEX_MAX_URLS", "8000")))
 COMPETITOR_INDEX_REQUEST_TIMEOUT = float(
     os.getenv("COMPETITOR_INDEX_REQUEST_TIMEOUT", "6")
@@ -200,7 +204,8 @@ MEILISEARCH_AUTO_SYNC = os.getenv("MEILISEARCH_AUTO_SYNC", "true").lower() in {
 }
 MEILISEARCH_SEARCH_LIMIT = max(5, int(os.getenv("MEILISEARCH_SEARCH_LIMIT", "20")))
 
-KP_PARALLEL_WORKERS = max(1, int(os.getenv("KP_PARALLEL_WORKERS", "4")))
+KP_PARALLEL_WORKERS = max(1, int(os.getenv("KP_PARALLEL_WORKERS", "2")))
+KP_MAX_SESSIONS = max(10, int(os.getenv("KP_MAX_SESSIONS", "50")))
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip()
 LOG_DIR = os.getenv("LOG_DIR", str(PROJECT_ROOT / "logs"))

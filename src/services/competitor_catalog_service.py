@@ -18,6 +18,7 @@ from src.config import (
     COMPETITOR_INDEX_WORKERS,
     COMPETITOR_SEARCH_FALLBACK_THRESHOLD,
     COMPETITOR_SEARCH_PER_DOMAIN_MAX,
+    INDEX_MAX_CONCURRENT_JOBS,
     WEB_SEARCH_TIMEOUT,
 )
 from src.services.competitor_sites import (
@@ -64,6 +65,11 @@ _INDEX_PHASE_LABELS: dict[str, str] = {
     "rag": "Сохранение в базу данных и RAG…",
     "done": "Индексация завершена",
 }
+
+
+def _count_running_index_jobs() -> int:
+    with _reindex_lock:
+        return sum(1 for job in _reindex_jobs.values() if job.get("running"))
 
 
 def clear_index_logs(domain: str) -> None:
@@ -651,6 +657,18 @@ def start_site_reindex_background(
                 "message": "Индексация уже выполняется",
                 **job,
             }
+        running_count = sum(1 for item in _reindex_jobs.values() if item.get("running"))
+        if running_count >= INDEX_MAX_CONCURRENT_JOBS:
+            return {
+                "started": False,
+                "running": False,
+                "queued": True,
+                "domain": normalized,
+                "message": (
+                    f"Достигнут лимит одновременных индексаций ({INDEX_MAX_CONCURRENT_JOBS}). "
+                    "Дождитесь завершения текущей задачи."
+                ),
+            }
         _reindex_jobs[normalized] = {
             "domain": normalized,
             "running": True,
@@ -772,6 +790,18 @@ def start_competitor_site_index_background(
                 "domain": normalized,
                 "message": "Индексация уже выполняется",
                 **job,
+            }
+        running_count = sum(1 for item in _reindex_jobs.values() if item.get("running"))
+        if running_count >= INDEX_MAX_CONCURRENT_JOBS:
+            return {
+                "started": False,
+                "running": False,
+                "queued": True,
+                "domain": normalized,
+                "message": (
+                    f"Достигнут лимит одновременных индексаций ({INDEX_MAX_CONCURRENT_JOBS}). "
+                    "Дождитесь завершения текущей задачи."
+                ),
             }
         clear_index_logs(normalized)
         append_index_log(normalized, "Запуск индексации…")

@@ -149,10 +149,13 @@ class TZRagService:
             batch_vectors: list[list[float]] | None = None
             for attempt in range(3):
                 try:
-                    response = self.ai.client.embeddings.create(
-                        model=RAG_EMBEDDING_MODEL,
-                        input=batch,
-                    )
+                    from src.services.concurrency_limits import ai_request_slot
+
+                    with ai_request_slot(label="embeddings"):
+                        response = self.ai.client.embeddings.create(
+                            model=RAG_EMBEDDING_MODEL,
+                            input=batch,
+                        )
                     batch_vectors = [item.embedding for item in response.data]
                     if len(batch_vectors) != len(batch):
                         logger.error(

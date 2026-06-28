@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,12 +51,15 @@ class UserDatabase:
     def __init__(self, db_path: Path = USERS_DB_PATH) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
     def _init_schema(self) -> None:
@@ -170,15 +174,16 @@ class UserDatabase:
         role: str = ROLE_MANAGER,
     ) -> UserRecord:
         now = self._now()
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO users (login, password_hash, password_salt, role, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (login, password_hash, password_salt, role, now, now),
-            )
-            user_id = int(cursor.lastrowid)
+        with self._lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO users (login, password_hash, password_salt, role, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (login, password_hash, password_salt, role, now, now),
+                )
+                user_id = int(cursor.lastrowid)
         user = self.get_user_by_id(user_id)
         if user is None:
             raise RuntimeError("Failed to create user")
@@ -193,32 +198,34 @@ class UserDatabase:
         password_salt: str | None = None,
         role: str | None = None,
     ) -> UserRecord | None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            if not row:
-                return None
-            now = self._now()
-            conn.execute(
-                """
-                UPDATE users
-                SET login = ?, password_hash = ?, password_salt = ?, role = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    login or str(row["login"]),
-                    password_hash if password_hash is not None else str(row["password_hash"]),
-                    password_salt if password_salt is not None else str(row["password_salt"]),
-                    role or str(row["role"]),
-                    now,
-                    user_id,
-                ),
-            )
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+                if not row:
+                    return None
+                now = self._now()
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET login = ?, password_hash = ?, password_salt = ?, role = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        login or str(row["login"]),
+                        password_hash if password_hash is not None else str(row["password_hash"]),
+                        password_salt if password_salt is not None else str(row["password_salt"]),
+                        role or str(row["role"]),
+                        now,
+                        user_id,
+                    ),
+                )
         return self.get_user_by_id(user_id)
 
     def delete_user(self, user_id: int) -> bool:
-        with self._connect() as conn:
-            cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        return cursor.rowcount > 0
+        with self._lock:
+            with self._connect() as conn:
+                cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            return cursor.rowcount > 0
 
     def count_admins(self) -> int:
         with self._connect() as conn:
@@ -229,18 +236,20 @@ class UserDatabase:
         return int(row["cnt"]) if row else 0
 
     def create_auth_token(self, user_id: int, token: str, expires_at: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO auth_tokens (token, user_id, expires_at, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (token, user_id, expires_at, self._now()),
-            )
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO auth_tokens (token, user_id, expires_at, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (token, user_id, expires_at, self._now()),
+                )
 
     def delete_auth_token(self, token: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM auth_tokens WHERE token = ?", (token,))
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM auth_tokens WHERE token = ?", (token,))
 
     def get_user_id_by_token(self, token: str) -> int | None:
         now = self._now()
@@ -264,24 +273,25 @@ class UserDatabase:
         task_mode: str | None,
         session_id: str | None,
     ) -> int:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO tz_uploads
-                (user_id, filename, original_filename, items_count, task_mode, session_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    filename,
-                    original_filename,
-                    items_count,
-                    task_mode,
-                    session_id,
-                    self._now(),
-                ),
-            )
-            return int(cursor.lastrowid)
+        with self._lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO tz_uploads
+                    (user_id, filename, original_filename, items_count, task_mode, session_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        filename,
+                        original_filename,
+                        items_count,
+                        task_mode,
+                        session_id,
+                        self._now(),
+                    ),
+                )
+                return int(cursor.lastrowid)
 
     def record_file_export(
         self,
@@ -292,23 +302,24 @@ class UserDatabase:
         xlsx_filename: str,
         pdf_filename: str,
     ) -> int:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO file_exports
-                (user_id, session_id, tz_filename, xlsx_filename, pdf_filename, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    session_id,
-                    tz_filename,
-                    xlsx_filename,
-                    pdf_filename,
-                    self._now(),
-                ),
-            )
-            return int(cursor.lastrowid)
+        with self._lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO file_exports
+                    (user_id, session_id, tz_filename, xlsx_filename, pdf_filename, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        session_id,
+                        tz_filename,
+                        xlsx_filename,
+                        pdf_filename,
+                        self._now(),
+                    ),
+                )
+                return int(cursor.lastrowid)
 
     def find_export_by_filename(self, filename: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -331,16 +342,17 @@ class UserDatabase:
         file_type: str,
         export_id: int | None = None,
     ) -> int:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO download_events
-                (user_id, export_id, filename, file_type, downloaded_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (user_id, export_id, filename, file_type, self._now()),
-            )
-            return int(cursor.lastrowid)
+        with self._lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO download_events
+                    (user_id, export_id, filename, file_type, downloaded_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (user_id, export_id, filename, file_type, self._now()),
+                )
+                return int(cursor.lastrowid)
 
     def list_download_history(
         self,
@@ -399,76 +411,77 @@ class UserDatabase:
         acting_user_id: int,
         is_admin: bool = False,
     ) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM download_events WHERE id = ?",
-                (event_id,),
-            ).fetchone()
-            if not row:
-                return None
-            owner_id = int(row["user_id"])
-            if not is_admin and owner_id != acting_user_id:
-                raise PermissionError("Нет доступа к записи истории")
-
-            export_id = row["export_id"]
-            filename = str(row["filename"])
-            conn.execute("DELETE FROM download_events WHERE id = ?", (event_id,))
-
-            files_to_remove: list[str] = []
-            if export_id is not None:
-                remaining = conn.execute(
-                    "SELECT COUNT(*) AS cnt FROM download_events WHERE export_id = ?",
-                    (export_id,),
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM download_events WHERE id = ?",
+                    (event_id,),
                 ).fetchone()
-                if remaining and int(remaining["cnt"]) == 0:
-                    export_row = conn.execute(
-                        "SELECT * FROM file_exports WHERE id = ?",
+                if not row:
+                    return None
+                owner_id = int(row["user_id"])
+                if not is_admin and owner_id != acting_user_id:
+                    raise PermissionError("Нет доступа к записи истории")
+
+                export_id = row["export_id"]
+                filename = str(row["filename"])
+                conn.execute("DELETE FROM download_events WHERE id = ?", (event_id,))
+
+                files_to_remove: list[str] = []
+                if export_id is not None:
+                    remaining = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM download_events WHERE export_id = ?",
                         (export_id,),
                     ).fetchone()
-                    if export_row:
-                        for key in ("xlsx_filename", "pdf_filename"):
-                            value = export_row[key]
-                            if not value:
-                                continue
-                            other_exports = conn.execute(
-                                """
-                                SELECT COUNT(*) AS cnt FROM file_exports
-                                WHERE id != ?
-                                  AND (xlsx_filename = ? OR pdf_filename = ?)
-                                """,
-                                (export_id, value, value),
-                            ).fetchone()
-                            if other_exports and int(other_exports["cnt"]) == 0:
-                                files_to_remove.append(str(value))
-                        conn.execute(
-                            "DELETE FROM file_exports WHERE id = ?",
+                    if remaining and int(remaining["cnt"]) == 0:
+                        export_row = conn.execute(
+                            "SELECT * FROM file_exports WHERE id = ?",
                             (export_id,),
-                        )
-            else:
-                other_events = conn.execute(
-                    """
-                    SELECT COUNT(*) AS cnt FROM download_events
-                    WHERE filename = ? AND user_id = ?
-                    """,
-                    (filename, owner_id),
-                ).fetchone()
-                if other_events and int(other_events["cnt"]) == 0:
-                    other_exports = conn.execute(
+                        ).fetchone()
+                        if export_row:
+                            for key in ("xlsx_filename", "pdf_filename"):
+                                value = export_row[key]
+                                if not value:
+                                    continue
+                                other_exports = conn.execute(
+                                    """
+                                    SELECT COUNT(*) AS cnt FROM file_exports
+                                    WHERE id != ?
+                                      AND (xlsx_filename = ? OR pdf_filename = ?)
+                                    """,
+                                    (export_id, value, value),
+                                ).fetchone()
+                                if other_exports and int(other_exports["cnt"]) == 0:
+                                    files_to_remove.append(str(value))
+                            conn.execute(
+                                "DELETE FROM file_exports WHERE id = ?",
+                                (export_id,),
+                            )
+                else:
+                    other_events = conn.execute(
                         """
-                        SELECT COUNT(*) AS cnt FROM file_exports
-                        WHERE user_id = ?
-                          AND (xlsx_filename = ? OR pdf_filename = ?)
+                        SELECT COUNT(*) AS cnt FROM download_events
+                        WHERE filename = ? AND user_id = ?
                         """,
-                        (owner_id, filename, filename),
+                        (filename, owner_id),
                     ).fetchone()
-                    if other_exports and int(other_exports["cnt"]) == 0:
-                        files_to_remove.append(filename)
+                    if other_events and int(other_events["cnt"]) == 0:
+                        other_exports = conn.execute(
+                            """
+                            SELECT COUNT(*) AS cnt FROM file_exports
+                            WHERE user_id = ?
+                              AND (xlsx_filename = ? OR pdf_filename = ?)
+                            """,
+                            (owner_id, filename, filename),
+                        ).fetchone()
+                        if other_exports and int(other_exports["cnt"]) == 0:
+                            files_to_remove.append(filename)
 
-            return {
-                "id": event_id,
-                "filename": filename,
-                "files_to_remove": sorted(set(files_to_remove)),
-            }
+                return {
+                    "id": event_id,
+                    "filename": filename,
+                    "files_to_remove": sorted(set(files_to_remove)),
+                }
 
     def list_upload_history(
         self,

@@ -12,6 +12,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from src.logging_config import setup_logging
 from src.services.app_state import get_processor, reload_processor
@@ -992,7 +993,7 @@ def api_set_markup(body: MarkupUpdate) -> dict[str, float]:
 
 
 @app.post("/api/process/demo")
-def api_process_demo(
+async def api_process_demo(
     use_ai: bool = True,
     task_mode: str = "task1",
     parse_only: bool | None = None,
@@ -1000,7 +1001,8 @@ def api_process_demo(
     if not DEMO_TZ_PATH.exists():
         raise HTTPException(status_code=404, detail="Демо-файл data/sample_tz.docx не найден")
     try:
-        return _process_tz_path(
+        return await run_in_threadpool(
+            _process_tz_path,
             DEMO_TZ_PATH,
             use_ai=use_ai,
             task_mode=task_mode,
@@ -1064,26 +1066,32 @@ def api_kp_toggle_lookup_item(body: KpLookupItemToggleRequest) -> dict[str, Any]
         raise HTTPException(status_code=500, detail=f"Ошибка: {exc}") from exc
 
 
-@app.post("/api/kp/chat")
-def api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
-    try:
-        service = _kp_chat_service()
-        session_id = body.session_id
-        session_recreated = False
-        if session_id:
-            session = service.store.get(session_id)
-            if not session:
-                session_id = service.create_free_session()
-                session_recreated = True
-        else:
+def _api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
+    service = _kp_chat_service()
+    session_id = body.session_id
+    session_recreated = False
+    if session_id:
+        session = service.store.get(session_id)
+        if not session:
             session_id = service.create_free_session()
             session_recreated = True
-        chat_result = service.chat(session_id, body.message)
-        response = _kp_chat_response(chat_result, session_id)
-        response["session_recreated"] = session_recreated
-        return response
+    else:
+        session_id = service.create_free_session()
+        session_recreated = True
+    chat_result = service.chat(session_id, body.message)
+    response = _kp_chat_response(chat_result, session_id)
+    response["session_recreated"] = session_recreated
+    return response
+
+
+@app.post("/api/kp/chat")
+async def api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(_api_kp_chat, body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("KP chat failed")
         raise HTTPException(status_code=500, detail=f"Ошибка чата: {exc}") from exc
@@ -1134,8 +1142,7 @@ def api_rag_query(body: RagQueryRequest) -> dict[str, Any]:
     }
 
 
-@app.post("/api/rag/query/sources")
-def api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
+def _api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
     index = _doc_rag_index_service()
     rows = index.query(
         body.query,
@@ -1163,6 +1170,11 @@ def api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
             for rank, row in enumerate(rows, start=1)
         ],
     }
+
+
+@app.post("/api/rag/query/sources")
+async def api_rag_query_sources(body: RagSourceQueryRequest) -> dict[str, Any]:
+    return await run_in_threadpool(_api_rag_query_sources, body)
 
 
 def _kp_selection_items(body: KpFormRequest) -> list:
@@ -1224,8 +1236,7 @@ def api_kp_selection_preview(body: KpFormRequest) -> dict[str, Any]:
     }
 
 
-@app.post("/api/kp/form")
-def api_kp_form(request: Request, body: KpFormRequest) -> dict[str, Any]:
+def _api_kp_form(request: Request, body: KpFormRequest) -> dict[str, Any]:
     from src.services.pdf_generator import PdfGenerator
 
     store = _kp_chat_service().store
@@ -1276,6 +1287,11 @@ def api_kp_form(request: Request, body: KpFormRequest) -> dict[str, Any]:
     return payload
 
 
+@app.post("/api/kp/form")
+async def api_kp_form(request: Request, body: KpFormRequest) -> dict[str, Any]:
+    return await run_in_threadpool(_api_kp_form, request, body)
+
+
 @app.post("/api/process/upload")
 async def api_process_upload(
     request: Request,
@@ -1297,13 +1313,17 @@ async def api_process_upload(
         with tempfile.TemporaryDirectory() as tmpdir:
             tz_path = Path(tmpdir) / filename
             tz_path.write_bytes(content)
-            payload = _process_tz_path(
-                tz_path,
-                use_ai=use_ai,
-                task_mode=task_mode,
-                parse_only=parse_only,
-                filename=filename,
-            )
+
+            def _run_upload() -> dict[str, Any]:
+                return _process_tz_path(
+                    tz_path,
+                    use_ai=use_ai,
+                    task_mode=task_mode,
+                    parse_only=parse_only,
+                    filename=filename,
+                )
+
+            payload = await run_in_threadpool(_run_upload)
             if payload.get("session_id"):
                 _record_tz_upload(
                     request,
@@ -1315,29 +1335,14 @@ async def api_process_upload(
             return payload
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Upload processing failed")
         raise HTTPException(status_code=500, detail=f"Ошибка обработки: {exc}") from exc
 
 
-@app.get("/api/files/{filename}")
-def api_download_file(request: Request, filename: str) -> FileResponse:
-    path = _safe_output_path(filename)
-    media_type = (
-        "application/pdf"
-        if path.suffix.lower() == ".pdf"
-        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    _record_download(request, path.name)
-    return FileResponse(
-        path,
-        media_type=media_type,
-        filename=path.name,
-    )
-
-
-@app.post("/api/lookup")
-def api_lookup(body: LookupRequest) -> dict[str, Any]:
+def _api_lookup(body: LookupRequest) -> dict[str, Any]:
     started = time.perf_counter()
     parsed = resolve_freeform_product_lookup(body.query)
     if not parsed:
@@ -1371,6 +1376,35 @@ def api_lookup(body: LookupRequest) -> dict[str, Any]:
         (time.perf_counter() - started) * 1000,
     )
     return _lookup_result_to_dict(result)
+
+
+@app.post("/api/lookup")
+async def api_lookup(body: LookupRequest) -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(_api_lookup, body)
+    except HTTPException:
+        raise
+    except TimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Lookup failed")
+        raise HTTPException(status_code=500, detail=f"Ошибка поиска: {exc}") from exc
+
+
+@app.get("/api/files/{filename}")
+def api_download_file(request: Request, filename: str) -> FileResponse:
+    path = _safe_output_path(filename)
+    media_type = (
+        "application/pdf"
+        if path.suffix.lower() == ".pdf"
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    _record_download(request, path.name)
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name,
+    )
 
 
 def _serialize_registry_block(registry: dict[str, object]) -> dict[str, object]:
@@ -1766,8 +1800,7 @@ def api_competitors_enrich_images(body: CompetitorEnrichImagesRequest) -> dict[s
     }
 
 
-@app.post("/api/competitors/search")
-def api_competitors_search(body: CompetitorSearchRequest) -> dict[str, Any]:
+def _api_competitors_search(body: CompetitorSearchRequest) -> dict[str, Any]:
     started = time.perf_counter()
     processor = get_processor()
     query = body.query.strip()
@@ -1795,6 +1828,11 @@ def api_competitors_search(body: CompetitorSearchRequest) -> dict[str, Any]:
         "sites_searched": sites_searched or len(_list_competitor_sites_payload()["items"]),
         "processing_seconds": round(time.perf_counter() - started, 2),
     }
+
+
+@app.post("/api/competitors/search")
+async def api_competitors_search(body: CompetitorSearchRequest) -> dict[str, Any]:
+    return await run_in_threadpool(_api_competitors_search, body)
 
 
 @app.get("/api/prices")
