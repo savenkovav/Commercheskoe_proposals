@@ -1701,6 +1701,7 @@ def api_competitors_search(body: CompetitorSearchRequest) -> dict[str, Any]:
     quotes = processor.tz_matcher.web_search.search_competitor_offers(
         query,
         limit=body.limit,
+        sort_by_match=True,
     )
     items = [_price_quote_to_dict(quote) for quote in quotes]
     sites_searched = len({quote.label for quote in quotes if quote.label})

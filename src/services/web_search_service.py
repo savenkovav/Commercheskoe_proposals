@@ -503,6 +503,7 @@ class WebSearchService:
         exact_threshold: int | None = None,
         deadline: _SearchDeadline | None = None,
         allow_fallback: bool = True,
+        sort_by_match: bool = False,
     ) -> list[PriceQuote]:
         if not COMPETITOR_SEARCH_ENABLED:
             return []
@@ -539,7 +540,9 @@ class WebSearchService:
                 )
             )
         if _ready_from_index():
-            return self._finalize_competitor_quotes(quotes, max_results)
+            return self._finalize_competitor_quotes(
+                quotes, max_results, sort_by_match=sort_by_match
+            )
 
         if COMPETITOR_NATIVE_SEARCH_ENABLED and not (deadline and deadline.expired()):
             _extend(
@@ -552,10 +555,14 @@ class WebSearchService:
                 )
             )
         if has_priced_competitor_quote(quotes):
-            return self._finalize_competitor_quotes(quotes, max_results)
+            return self._finalize_competitor_quotes(
+                quotes, max_results, sort_by_match=sort_by_match
+            )
 
         if deadline and deadline.expired():
-            return self._finalize_competitor_quotes(quotes, max_results)
+            return self._finalize_competitor_quotes(
+                quotes, max_results, sort_by_match=sort_by_match
+            )
 
         _extend(
             self._search_competitor_via_ddg(
@@ -566,7 +573,9 @@ class WebSearchService:
             )
         )
         if has_priced_competitor_quote(quotes):
-            return self._finalize_competitor_quotes(quotes, max_results)
+            return self._finalize_competitor_quotes(
+                quotes, max_results, sort_by_match=sort_by_match
+            )
 
         if (
             allow_fallback
@@ -585,7 +594,9 @@ class WebSearchService:
                     )
                 )
             if has_priced_competitor_quote(quotes):
-                return self._finalize_competitor_quotes(quotes, max_results)
+                return self._finalize_competitor_quotes(
+                    quotes, max_results, sort_by_match=sort_by_match
+                )
 
             if not (deadline and deadline.expired()):
                 _extend(
@@ -597,7 +608,9 @@ class WebSearchService:
                     )
                 )
 
-        return self._finalize_competitor_quotes(quotes, max_results)
+        return self._finalize_competitor_quotes(
+            quotes, max_results, sort_by_match=sort_by_match
+        )
 
     def _search_competitor_via_rag(
         self,
@@ -647,14 +660,21 @@ class WebSearchService:
     def _finalize_competitor_quotes(
         quotes: list[PriceQuote],
         limit: int,
+        *,
+        sort_by_match: bool = False,
     ) -> list[PriceQuote]:
-        from src.services.competitor_catalog_service import diversify_competitor_quotes_by_domain
+        from src.services.competitor_catalog_service import (
+            _diversify_catalog_quotes,
+            diversify_competitor_quotes_by_domain,
+        )
 
         valid = [
             quote
             for quote in quotes
             if not quote.url or is_competitor_product_page_url(quote.url)
         ]
+        if sort_by_match:
+            return _diversify_catalog_quotes(valid, limit=limit)
         return diversify_competitor_quotes_by_domain(valid, limit=limit)
 
     def _search_competitor_via_ddg(

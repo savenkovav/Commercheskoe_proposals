@@ -4095,6 +4095,35 @@ def _cheapest_quotes_per_domain(
     return selected
 
 
+def _best_match_quotes_per_domain(
+    domain_quotes: list[PriceQuote],
+    *,
+    count: int,
+) -> list[PriceQuote]:
+    """Для поиска по названию: сначала лучший score, затем цена."""
+    if not domain_quotes or count <= 0:
+        return []
+
+    ranked = sorted(
+        domain_quotes,
+        key=lambda quote: (
+            -(quote.match_score or 0),
+            _quote_price_value(quote) if _quote_price_value(quote) is not None else float("inf"),
+        ),
+    )
+    selected: list[PriceQuote] = []
+    seen: set[str] = set()
+    for quote in ranked:
+        key = quote.url or f"{_quote_domain_key(quote)}:{quote.matched_name}"
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(quote)
+        if len(selected) >= count:
+            break
+    return selected
+
+
 def diversify_competitor_quotes_by_domain(
     quotes: list[PriceQuote],
     *,
@@ -4138,11 +4167,34 @@ def _diversify_catalog_quotes(
     limit: int,
     max_per_domain: int | None = None,
 ) -> list[PriceQuote]:
-    return diversify_competitor_quotes_by_domain(
-        quotes,
-        limit=limit,
-        max_per_domain=max_per_domain,
+    if not quotes:
+        return []
+
+    per_domain = max_per_domain or COMPETITOR_SEARCH_PER_DOMAIN_MAX
+    by_domain: dict[str, list[PriceQuote]] = {}
+    for quote in quotes:
+        by_domain.setdefault(_quote_domain_key(quote), []).append(quote)
+
+    result: list[PriceQuote] = []
+    seen: set[str] = set()
+    for domain_quotes in by_domain.values():
+        for quote in _best_match_quotes_per_domain(domain_quotes, count=per_domain):
+            key = quote.url or f"{_quote_domain_key(quote)}:{quote.matched_name}"
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(quote)
+
+    result.sort(
+        key=lambda quote: (
+            -(quote.match_score or 0),
+            0 if _quote_price_value(quote) is not None else 1,
+            _quote_price_value(quote) if _quote_price_value(quote) is not None else 0,
+        )
     )
+    if limit > 0:
+        return result[:limit]
+    return result
 
 
 def search_competitor_catalog_rag(
