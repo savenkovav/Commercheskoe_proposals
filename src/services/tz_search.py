@@ -248,6 +248,37 @@ def name_anchor_tokens(tz_item: TZItem) -> list[str]:
     return fallback[:2]
 
 
+def _tz_name_is_category_only(tz_item: TZItem) -> bool:
+    """Наименование — только категория без марки, модели или артикула."""
+    words = [w for w in normalize_name(tz_item.name).split() if w]
+    if not words or len(words) > 2:
+        return False
+    for raw in re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", tz_item.name):
+        token = normalize_name(raw)
+        if any(ch.isdigit() for ch in token):
+            return False
+        if len(token) >= 4 and re.search(r"[a-z]", token):
+            return False
+    return True
+
+
+def spec_identity_tokens(tz_item: TZItem) -> list[str]:
+    """Марка, модель и артикул из характеристик — обязательны при общем наименовании."""
+    return [
+        token
+        for token in spec_required_tokens(tz_item)
+        if any(ch.isdigit() for ch in token)
+        or (len(token) >= 5 and re.search(r"[a-z]", token))
+    ]
+
+
+def _identity_tokens_present(identity: list[str], matched_name: str) -> bool:
+    if not identity:
+        return True
+    choice = normalize_name(matched_name)
+    return all(token in choice for token in identity)
+
+
 def spec_required_tokens(tz_item: TZItem) -> list[str]:
     from src.services.matcher import ItemMatcher
 
@@ -388,6 +419,8 @@ def combined_match_score(tz_item: TZItem, matched_name: str) -> float:
     combined_query = normalize_name(tz_match_query(tz_item))
     combined_score = name_match_score(combined_query, choice)
     spec_score = name_match_score(spec_norm, choice)
+    if _tz_name_is_category_only(tz_item) and spec_required_tokens(tz_item):
+        return max(combined_score, spec_score)
     return max(combined_score, name_score, spec_score)
 
 
@@ -418,10 +451,17 @@ def is_relevant_match(
         combined_score = min(float(score), combined_score)
 
     required = spec_required_tokens(tz_item)
+    identity = spec_identity_tokens(tz_item)
+    spec_bound_match = _tz_name_is_category_only(tz_item) and bool(identity)
     strong_spec_match = bool(
         required and len(required) >= 2 and _required_tokens_present(required, matched_name)
     )
-    strong_name_match = name_score >= LOCAL_MATCH_THRESHOLD
+    strong_name_match = name_score >= LOCAL_MATCH_THRESHOLD and not spec_bound_match
+
+    if spec_bound_match and not _identity_tokens_present(identity, matched_name):
+        spec_score = name_match_score(normalize_name(spec_line), choice)
+        if spec_score < min_score:
+            return False
 
     if (
         has_spec

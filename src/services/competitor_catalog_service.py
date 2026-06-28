@@ -132,11 +132,23 @@ _ROSTCOM_SAMPLE_URL = (
 _ROSTCOM_PRICE_HINT = '<div class="detail-product-price">'
 _ROSTCOM_DESCRIPTION_HINT = '<div class="catalog-detail-page__preview-text">'
 
+_MUSIC_EXPERT_SAMPLE_URL = (
+    "https://www.music-expert.ru/catalog/zvukovoe_oborudovanie/mikrofony_i_radiosistemy/"
+    "mikrofony_besprovodnye/radiosistemy_vokalnye/behringer/"
+    "behringer_ulm300usb_tsifrovaya_vokalnaya_radiosistema/"
+)
+
 _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
     "rostcom.com": CompetitorParsingHints(
         product_sample_url=_ROSTCOM_SAMPLE_URL,
         price_html_hint=_ROSTCOM_PRICE_HINT,
         description_html_hint=_ROSTCOM_DESCRIPTION_HINT,
+    ),
+    "music-expert.ru": CompetitorParsingHints(
+        product_sample_url=_MUSIC_EXPERT_SAMPLE_URL,
+        price_html_hint='<div class="product_card_price_actual"',
+        articul_html_hint='<span class="articul"',
+        description_html_hint='<div class="product_about"',
     ),
 }
 
@@ -922,6 +934,9 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "rostcom.com": [
         "https://rostcom.com/catalog/osnashchenie_shkol_po_prikazu/",
         "https://rostcom.com/sitemap.xml",
+    ],
+    "music-expert.ru": [
+        "https://www.music-expert.ru/catalog/",
     ],
 }
 
@@ -2477,6 +2492,252 @@ def fetch_zarnitza_catalog(
     )
 
 
+_MUSIC_EXPERT_DOMAIN = "music-expert.ru"
+_MUSIC_EXPERT_ROOT = "https://www.music-expert.ru/catalog/"
+_MUSIC_EXPERT_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=20.0)
+_MUSIC_EXPERT_MAX_CRAWL_PAGES = 6000
+_MUSIC_EXPERT_PRODUCT_CARD_RE = re.compile(
+    r'href="(?P<href>/catalog/[^"]+)"\s+class="product_card_img"',
+    re.I,
+)
+
+
+def _is_music_expert_domain(domain: str) -> bool:
+    return domain.lower().removeprefix("www.") == _MUSIC_EXPERT_DOMAIN
+
+
+def _normalize_music_expert_catalog_url(url: str) -> str:
+    parsed = urlparse(url.strip().split("#")[0])
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host != _MUSIC_EXPERT_DOMAIN:
+        return ""
+    path = parsed.path or "/"
+    if not path.startswith("/catalog"):
+        return ""
+    clean_path = path.rstrip("/") + "/"
+    return f"https://www.{_MUSIC_EXPERT_DOMAIN}{clean_path}"
+
+
+def _is_music_expert_product_page_html(html: str) -> bool:
+    return "product_card_price_actual" in html and "product_about" in html
+
+
+def _extract_music_expert_listing_product_urls(html: str, *, page_url: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in _MUSIC_EXPERT_PRODUCT_CARD_RE.finditer(html):
+        absolute = _absolute_url(_MUSIC_EXPERT_DOMAIN, match.group("href"), page_url)
+        normalized = _normalize_music_expert_catalog_url(absolute)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        urls.append(normalized)
+    return urls
+
+
+def _extract_music_expert_catalog_page_urls(
+    html: str,
+    *,
+    page_url: str,
+    product_urls_on_page: set[str],
+) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    parsed = urlparse(page_url.split("#")[0])
+    base_path = parsed.path.rstrip("/") + "/"
+
+    for href in _HREF_RE.findall(html):
+        lower = href.lower()
+        if not lower.startswith("/catalog/"):
+            continue
+        if any(token in lower for token in ("/search", "/compare", "/personal", "filter")):
+            continue
+        absolute = _absolute_url(_MUSIC_EXPERT_DOMAIN, href.split("#")[0], page_url)
+        normalized = _normalize_music_expert_catalog_url(absolute)
+        if not normalized or normalized in seen or normalized in product_urls_on_page:
+            continue
+        seen.add(normalized)
+        urls.append(normalized)
+
+    max_page = 1
+    for match in re.finditer(r"PAGEN_1=(\d+)", html):
+        try:
+            max_page = max(max_page, int(match.group(1)))
+        except ValueError:
+            continue
+    if max_page > 1:
+        for page_num in range(2, max_page + 1):
+            page_url_paged = f"{parsed.scheme}://{parsed.netloc}{base_path}?PAGEN_1={page_num}"
+            if page_url_paged not in seen:
+                seen.add(page_url_paged)
+                urls.append(page_url_paged)
+    return urls
+
+
+def _discover_music_expert_sitemap_urls() -> list[str]:
+    limit = COMPETITOR_INDEX_MAX_URLS
+    product_urls: list[str] = []
+    seen: set[str] = set()
+
+    append_index_log(_MUSIC_EXPERT_DOMAIN, "Загрузка sitemap music-expert.ru…")
+
+    try:
+        with httpx.Client(
+            timeout=_MUSIC_EXPERT_REQUEST_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            index_response = client.get("https://www.music-expert.ru/sitemap.xml")
+            index_response.raise_for_status()
+            sitemap_urls = [
+                loc.strip()
+                for loc in _SITEMAP_LOC_RE.findall(index_response.text)
+                if "sitemap_iblock_11" in loc.lower()
+            ]
+            append_index_log(
+                _MUSIC_EXPERT_DOMAIN,
+                f"Sitemap: {len(sitemap_urls)} файлов каталога",
+            )
+            for sitemap_url in sitemap_urls:
+                if len(product_urls) >= limit:
+                    break
+                try:
+                    response = client.get(sitemap_url)
+                    response.raise_for_status()
+                except Exception:
+                    logger.debug("Music-expert sitemap failed %s", sitemap_url, exc_info=True)
+                    continue
+                for loc in _SITEMAP_LOC_RE.findall(response.text[:12_000_000]):
+                    clean = loc.strip().split("#")[0]
+                    if "/catalog/" not in clean.lower():
+                        continue
+                    if not is_competitor_product_page_url(clean):
+                        continue
+                    if clean in seen:
+                        continue
+                    seen.add(clean)
+                    product_urls.append(clean)
+                    if len(product_urls) >= limit:
+                        break
+    except Exception:
+        logger.exception("Failed to fetch music-expert sitemap")
+
+    append_index_log(
+        _MUSIC_EXPERT_DOMAIN,
+        f"music-expert.ru: sitemap — {len(product_urls)} URL товаров (лимит {limit})",
+    )
+    return product_urls
+
+
+def _discover_music_expert_product_urls() -> list[str]:
+    limit = COMPETITOR_INDEX_MAX_URLS
+    queue: deque[str] = deque([_MUSIC_EXPERT_ROOT])
+    seen_pages: set[str] = set()
+    product_urls: list[str] = []
+    seen_products: set[str] = set()
+
+    append_index_log(_MUSIC_EXPERT_DOMAIN, "Обход каталога music-expert.ru (BFS)…")
+
+    try:
+        with httpx.Client(
+            timeout=_MUSIC_EXPERT_REQUEST_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            while (
+                queue
+                and len(product_urls) < limit
+                and len(seen_pages) < _MUSIC_EXPERT_MAX_CRAWL_PAGES
+            ):
+                page_url = queue.popleft()
+                page_key = page_url.split("#")[0]
+                if page_key in seen_pages:
+                    continue
+                seen_pages.add(page_key)
+
+                if len(seen_pages) % 50 == 0:
+                    append_index_log(
+                        _MUSIC_EXPERT_DOMAIN,
+                        f"  → обход: {len(seen_pages)} стр., "
+                        f"найдено {len(product_urls)} товаров",
+                    )
+
+                try:
+                    response = client.get(page_url)
+                    response.raise_for_status()
+                except Exception:
+                    logger.debug("Music-expert crawl failed %s", page_url, exc_info=True)
+                    continue
+
+                html = response.text[:700_000]
+                final_url = str(response.url).split("#")[0]
+
+                if _is_music_expert_product_page_html(html):
+                    product_url = _normalize_music_expert_catalog_url(final_url) or final_url
+                    if product_url and product_url not in seen_products:
+                        seen_products.add(product_url)
+                        product_urls.append(product_url)
+                    continue
+
+                listing_products = _extract_music_expert_listing_product_urls(
+                    html,
+                    page_url=final_url,
+                )
+                listing_set = set(listing_products)
+                for product_url in listing_products:
+                    if product_url in seen_products:
+                        continue
+                    seen_products.add(product_url)
+                    product_urls.append(product_url)
+                    if len(product_urls) >= limit:
+                        break
+
+                if len(product_urls) >= limit:
+                    break
+
+                for next_url in _extract_music_expert_catalog_page_urls(
+                    html,
+                    page_url=final_url,
+                    product_urls_on_page=listing_set,
+                ):
+                    if next_url.split("#")[0] not in seen_pages:
+                        queue.append(next_url)
+    except Exception:
+        logger.exception("Music-expert catalog crawl failed")
+
+    append_index_log(
+        _MUSIC_EXPERT_DOMAIN,
+        f"music-expert.ru: найдено {len(product_urls)} URL товаров "
+        f"({len(seen_pages)} страниц обхода, лимит {limit})",
+    )
+    return product_urls
+
+
+def fetch_music_expert_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_music_expert_sitemap_urls()
+    if not product_urls:
+        product_urls = _discover_music_expert_product_urls()
+    if not product_urls:
+        append_index_log(site.domain, "Каталог music-expert.ru пуст — обход seed URL", level="error")
+        return fetch_catalog_products(site, max_pages=24)
+
+    append_index_log(
+        site.domain,
+        f"Индексация music-expert.ru: {len(product_urls)} URL товаров",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
+        request_timeout=_MUSIC_EXPERT_REQUEST_TIMEOUT,
+        max_workers=min(8, COMPETITOR_INDEX_WORKERS),
+    )
+
+
 def _parse_n72_product_previews(
     html: str,
     *,
@@ -2968,14 +3229,30 @@ def _parse_product_detail_page(
 
     focused = _focus_product_price_html(html)
     hints = get_domain_parsing_hints(domain)
-    articul_match = re.search(
-        r'data-value="([A-Za-z0-9\-_.]+)"[^>]*>\s*<span>\s*Артикул:',
-        html[:120_000],
-        re.I | re.S,
+    articul = None
+    article_data_match = re.search(
+        r'class="articul"[^>]*data-article="([A-Za-z0-9\-_.]+)"',
+        html,
+        re.I,
     )
-    if not articul_match:
-        articul_match = _ARTICUL_RE.search(html[:120_000])
-    articul = articul_match.group(1) if articul_match else None
+    if not article_data_match:
+        article_data_match = re.search(
+            r'data-article="([A-Za-z0-9\-_.]+)"',
+            html,
+            re.I,
+        )
+    if article_data_match:
+        articul = article_data_match.group(1)
+    if not articul:
+        articul_match = re.search(
+            r'data-value="([A-Za-z0-9\-_.]+)"[^>]*>\s*<span>\s*Артикул:',
+            html[:120_000],
+            re.I | re.S,
+        )
+        if not articul_match:
+            articul_match = _ARTICUL_RE.search(html[:120_000])
+        if articul_match:
+            articul = articul_match.group(1)
     if not articul:
         code_match = re.search(
             r'id="product-code"[^>]*>\s*([^<]+)',
@@ -3358,6 +3635,8 @@ def fetch_catalog_products(
         return fetch_n72_catalog(site)
     if normalized_domain == "zarnitza.ru":
         return fetch_zarnitza_catalog(site)
+    if normalized_domain == "music-expert.ru":
+        return fetch_music_expert_catalog(site)
 
     apply_default_domain_parsing_hints(normalized_domain)
     hints = get_domain_parsing_hints(normalized_domain)
