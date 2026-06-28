@@ -520,7 +520,19 @@ a.btn.btn--disabled {
 }
 
 .kp-kit-row--excluded td,
-.kp-web-row--excluded td {
+.kp-web-description {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.competitor-result-item__description {
+  margin-top: 4px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
   opacity: 0.45;
 }
 

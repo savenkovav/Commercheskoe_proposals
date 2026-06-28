@@ -523,6 +523,39 @@ class CompetitorCatalogDatabase:
                 conn.execute("DELETE FROM competitor_products WHERE domain = ?", (normalized,))
                 conn.execute("DELETE FROM competitor_sites WHERE domain = ?", (normalized,))
 
+    def product_description_by_url(self, url: str) -> str | None:
+        normalized_url = url.strip()
+        if not normalized_url:
+            return None
+        url_key = competitor_product_url_key(normalized_url)
+        with self._lock:
+            with self._connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT description
+                    FROM competitor_products
+                    WHERE url_key = ?
+                      AND description IS NOT NULL
+                      AND TRIM(description) != ''
+                    LIMIT 1
+                    """,
+                    (url_key,),
+                ).fetchone()
+                if row:
+                    return str(row["description"])
+                row = conn.execute(
+                    """
+                    SELECT description
+                    FROM competitor_products
+                    WHERE url = ?
+                      AND description IS NOT NULL
+                      AND TRIM(description) != ''
+                    LIMIT 1
+                    """,
+                    (normalized_url.rstrip("/"),),
+                ).fetchone()
+                return str(row["description"]) if row else None
+
     def record_indexed_page(
         self,
         page_url: str,

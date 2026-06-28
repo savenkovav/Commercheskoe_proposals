@@ -674,8 +674,12 @@ class WebSearchService:
             if not quote.url or is_competitor_product_page_url(quote.url)
         ]
         if sort_by_match:
-            return _diversify_catalog_quotes(valid, limit=limit)
-        return diversify_competitor_quotes_by_domain(valid, limit=limit)
+            result = _diversify_catalog_quotes(valid, limit=limit)
+        else:
+            result = diversify_competitor_quotes_by_domain(valid, limit=limit)
+        from src.services.web_quote_priority import enrich_web_quotes_with_catalog_descriptions
+
+        return enrich_web_quotes_with_catalog_descriptions(result)
 
     def _search_competitor_via_ddg(
         self,
@@ -1064,9 +1068,9 @@ class WebSearchService:
             articul=articul,
             match_score=match_score,
             url=url,
-            notes=note,
-            image_url=image_url,
-        )
+                notes=note,
+                image_url=image_url,
+            )
 
     def search_internet_cascade(
         self,

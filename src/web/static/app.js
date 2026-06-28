@@ -1976,6 +1976,29 @@ function collectWebProductEntries(item) {
   return collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
 }
 
+function truncateDescription(text, maxLen = 220) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  if (value.length <= maxLen) return value;
+  return `${value.slice(0, maxLen - 1)}…`;
+}
+
+function webComparisonSectionTitle(entries) {
+  if (!entries.length) return "Интернет";
+  const allCompetitor = entries.every((q) => isCompetitorUrl(q.url));
+  if (allCompetitor) return "Сайты конкурентов";
+  const anyCompetitor = entries.some((q) => isCompetitorUrl(q.url));
+  return anyCompetitor ? "Интернет и сайты конкурентов" : "Интернет";
+}
+
+function webComparisonSectionNote(entries) {
+  const allCompetitor = entries.length > 0 && entries.every((q) => isCompetitorUrl(q.url));
+  if (allCompetitor) {
+    return "Отметьте позиции с сайтов конкурентов, чтобы добавить их стоимость в расчёт КП. Если цена не найдена — введите её вручную.";
+  }
+  return "Отметьте позиции из интернета, чтобы добавить их стоимость в расчёт КП. Если цена не найдена — введите её вручную.";
+}
+
 let kpWebManualPrices = {};
 
 function parseMoneyInput(value) {
@@ -2251,6 +2274,7 @@ function renderWebComparisonRows(item) {
   const productEntries = collectWebProductEntries(item);
   if (!productEntries.length) return "";
   const initialAddon = aggregateWebAddonPricing(item, getDefaultWebIndices(item));
+  const sectionTitle = webComparisonSectionTitle(productEntries);
   const rows = productEntries
     .map((q, webIndex) => {
       const checked = isWebQuoteChecked(item.number, webIndex);
@@ -2258,6 +2282,11 @@ function renderWebComparisonRows(item) {
       const webPrice = resolveWebQuoteBasePrice(item, webIndex, q);
       const kpPrice = webQuoteKpUnitPriceFromBase(webPrice);
       const manualValue = getWebManualPrice(item.number, webIndex);
+      const descriptionHtml = q.description
+        ? `<div class="muted kp-web-description" title="${escapeHtml(q.description)}">${escapeHtml(
+            truncateDescription(q.description),
+          )}</div>`
+        : "";
       const priceCell = hasApiPrice
         ? fmtMoney(webPrice)
         : `<input
@@ -2281,7 +2310,7 @@ function renderWebComparisonRows(item) {
           >
         </td>
         <td>${escapeHtml(q.label || "Интернет")}</td>
-        <td>${escapeHtml(q.matched_name || "—")}</td>
+        <td>${escapeHtml(q.matched_name || "—")}${descriptionHtml}</td>
         <td class="kp-web-price-cell">${priceCell}</td>
         <td>
           <span
@@ -2302,8 +2331,8 @@ function renderWebComparisonRows(item) {
     })
     .join("");
   return `
-      <h4 class="compare-block__subtitle">Интернет</h4>
-      <p class="muted compare-block__kit-note">Отметьте позиции из интернета, чтобы добавить их стоимость в расчёт КП. Если цена не найдена — введите её вручную.</p>
+      <h4 class="compare-block__subtitle">${escapeHtml(sectionTitle)}</h4>
+      <p class="muted compare-block__kit-note">${escapeHtml(webComparisonSectionNote(productEntries))}</p>
       <table class="compare-table compare-table--web">
         <thead>
           <tr>
@@ -4080,6 +4109,7 @@ function serializeLookupKpItem(item) {
     notes: item.notes || "",
     articul: item.articul || null,
     image_url: item.image_url || null,
+    description: item.description || null,
     has_price: item.has_price !== false,
   });
 }
@@ -4234,6 +4264,12 @@ function renderCompetitorResultItem(item, options = {}) {
     ? `<div class="muted">${Math.round(item.match_score)}% совпадение</div>`
     : "";
 
+  const descriptionHtml = item.description
+    ? `<div class="muted competitor-result-item__description" title="${escapeHtml(item.description)}">${escapeHtml(
+        truncateDescription(item.description, 280),
+      )}</div>`
+    : "";
+
   const linkHtml = item.url
     ? `<div class="chat-link-wrap">${renderChatLink(item.url, "Открыть на сайте")}</div>`
     : !showPriceKp && item.notes
@@ -4254,6 +4290,7 @@ function renderCompetitorResultItem(item, options = {}) {
           <span class="competitor-result-item__price">${escapeHtml(priceText)}</span>
         </div>
         <div class="competitor-result-item__name">${escapeHtml(matchedName)}</div>
+        ${descriptionHtml}
         ${articulHtml}
         ${matchHtml}
         ${missingPriceHtml}

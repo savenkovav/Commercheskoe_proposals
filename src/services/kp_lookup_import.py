@@ -88,6 +88,7 @@ def build_match_result_from_lookup_competitor(
         url=str(item.get("url") or "").strip() or None,
         notes=str(item.get("notes") or ""),
         image_url=item.get("image_url"),
+        description=item.get("description"),
     )
     tz_item = TZItem(
         number=number,

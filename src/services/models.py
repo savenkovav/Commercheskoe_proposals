@@ -63,6 +63,7 @@ class PriceQuote:
     url: Optional[str] = None
     notes: str = ""
     image_url: Optional[str] = None
+    description: Optional[str] = None
 
 
 @dataclass
