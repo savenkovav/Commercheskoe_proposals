@@ -15,6 +15,7 @@ from src.config import (
     COMPANY_OGRN,
     DELIVERY_DAYS,
     DELIVERY_TERMS,
+    KP_LOGO_PATH,
     KP_PDF_FONT_BOLD_PATH,
     KP_PDF_FONT_PATH,
     KP_STAMP_PATH,
@@ -39,6 +40,8 @@ TABLE_BOTTOM_Y = 760
 PAGE_BOTTOM_MARGIN = 36
 PAGE_MAX_Y = PAGE_HEIGHT - PAGE_BOTTOM_MARGIN
 STAMP_DISPLAY_WIDTH = 150
+LOGO_DISPLAY_HEIGHT = 38
+LOGO_TITLE_GAP = 12
 SINGLE_PAGE_MAX_ITEMS = 20
 SINGLE_PAGE_RELAXED_MAX_ITEMS = 16
 SINGLE_PAGE_HEADER_RESERVE = 240
@@ -69,6 +72,67 @@ def resolve_kp_stamp_image() -> Path | None:
         logger.warning("KP stamp image not found: %s", stamp_path)
         return None
     return stamp_path
+
+
+def resolve_kp_logo_image() -> Path | None:
+    logo_path = KP_LOGO_PATH
+    if not logo_path.exists():
+        logger.warning("KP logo image not found: %s", logo_path)
+        return None
+    return logo_path
+
+
+def _image_display_size(image_path: Path, display_height: float) -> tuple[float, float]:
+    from PIL import Image
+
+    with Image.open(image_path) as image:
+        width, height = image.size
+    if height <= 0:
+        return display_height, display_height
+    display_width = display_height * width / height
+    return display_width, display_height
+
+
+def _draw_title_with_logo(
+    page: fitz.Page,
+    *,
+    y: float,
+    title: str,
+    fontname: str,
+    font: fitz.Font,
+    fontsize: float,
+    logo_path: Path | None,
+) -> float:
+    text_width = font.text_length(title, fontsize=fontsize)
+    baseline_y = y + fontsize
+
+    if logo_path:
+        logo_width, logo_height = _image_display_size(logo_path, LOGO_DISPLAY_HEIGHT)
+        block_width = logo_width + LOGO_TITLE_GAP + text_width
+        block_x = max(MARGIN_X, (PAGE_WIDTH - block_width) / 2)
+        text_center_y = baseline_y - fontsize * 0.35
+        logo_y = text_center_y - logo_height / 2
+        page.insert_image(
+            fitz.Rect(
+                block_x,
+                logo_y,
+                block_x + logo_width,
+                logo_y + logo_height,
+            ),
+            filename=str(logo_path),
+        )
+        text_x = block_x + logo_width + LOGO_TITLE_GAP
+    else:
+        text_x = max(MARGIN_X, (PAGE_WIDTH - text_width) / 2)
+
+    page.insert_text(
+        fitz.Point(text_x, baseline_y),
+        title,
+        fontsize=fontsize,
+        fontname=fontname,
+        color=(0, 0, 0),
+    )
+    return baseline_y + 6
 
 
 def _stamp_display_size(stamp_path: Path) -> tuple[int, int]:
@@ -476,7 +540,16 @@ class PdfGenerator:
             stamp_height=stamp_display_height,
         )
 
-        write_line("КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ", size=16, bold=True, center=True)
+        logo_path = resolve_kp_logo_image()
+        y = _draw_title_with_logo(
+            page,
+            y=y,
+            title="КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ",
+            fontname=PDF_FONT_BOLD_NAME,
+            font=font_bold,
+            fontsize=16,
+            logo_path=logo_path,
+        )
         write_line(f"на запрос {request_number} от {today} г.", size=11, center=True)
 
         legal = [COMPANY_NAME]

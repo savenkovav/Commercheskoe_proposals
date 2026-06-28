@@ -1,11 +1,43 @@
+from pathlib import Path
+
+import fitz
+
 from src.services.pdf_generator import (
     PAGE_MAX_Y,
     ROW_FONT_SIZE,
     ROW_GAP,
     LINE_HEIGHT,
+    _draw_title_with_logo,
     _single_page_layout,
     resolve_stamp_y,
 )
+
+
+def test_draw_title_with_logo_advances_y(tmp_path: Path) -> None:
+    logo_path = Path(__file__).resolve().parents[1] / "data" / "templates" / "kp_logo.png"
+    if not logo_path.exists():
+        return
+
+    regular = Path(__file__).resolve().parents[1] / "data" / "templates" / "fonts" / "DejaVuSans-Bold.ttf"
+    if not regular.exists():
+        return
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_font(fontname="KpPdfBold", fontfile=str(regular))
+    font = fitz.Font(fontfile=str(regular))
+    next_y = _draw_title_with_logo(
+        page,
+        y=48,
+        title="КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ",
+        fontname="KpPdfBold",
+        font=font,
+        fontsize=16,
+        logo_path=logo_path,
+    )
+    assert next_y > 48
+    assert page.get_images()
+    doc.close()
 
 
 def test_single_page_layout_keeps_standard_rows_up_to_16_items() -> None:
