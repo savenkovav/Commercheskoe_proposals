@@ -141,6 +141,10 @@ _RENE_EDU_SAMPLE_URL = "https://www.rene-edu.ru/srednyaya-i-starshaya-shkola/327
 _PRIORITET1_SAMPLE_URL = (
     "https://prioritet1.com/katalog/interaktivnyj-kompleks-rychi-ne-molchi"
 )
+_ORIONEDU_SAMPLE_URL = (
+    "https://orionedu.ru/product/anatomicheskij-trenazher-dlja-otrabotki-"
+    "vnutrimyshechnyh-inekcij-v-jagodicu-prozrachnaja-model/"
+)
 
 _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
     "rostcom.com": CompetitorParsingHints(
@@ -165,6 +169,12 @@ _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
         price_html_hint='<div class="bCard__cost"',
         articul_html_hint='<div class="bCard__article">',
         description_html_hint='<ul class="bCard__features">',
+    ),
+    "orionedu.ru": CompetitorParsingHints(
+        product_sample_url=_ORIONEDU_SAMPLE_URL,
+        price_html_hint='<p class="price">',
+        articul_html_hint='elementor-heading-title',
+        description_html_hint='woocommerce-product-content',
     ),
 }
 
@@ -961,6 +971,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "prioritet1.com": [
         "https://prioritet1.com/sitemap.xml",
         "https://prioritet1.com/katalog",
+    ],
+    "orionedu.ru": [
+        "https://orionedu.ru/sitemap.xml",
+        "https://orionedu.ru/katalog/",
     ],
 }
 
@@ -3119,6 +3133,209 @@ def fetch_prioritet1_catalog(
     )
 
 
+_ORIONEDU_DOMAIN = "orionedu.ru"
+_ORIONEDU_SITEMAP_URL = "https://orionedu.ru/sitemap.xml"
+_ORIONEDU_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=45.0, write=20.0, pool=20.0)
+
+
+def _is_orionedu_domain(domain: str) -> bool:
+    return domain.lower().removeprefix("www.") == _ORIONEDU_DOMAIN
+
+
+def _is_orionedu_product_url(url: str) -> bool:
+    path = urlparse(url.split("#")[0]).path.lower()
+    return "/product/" in path and is_competitor_product_page_url(url)
+
+
+def _is_orionedu_product_page_html(html: str) -> bool:
+    return 'class="price"' in html and "woocommerce-Price-amount" in html
+
+
+def _parse_orionedu_price(html: str) -> float | None:
+    price_match = re.search(
+        r'<p class="price">.*?woocommerce-Price-amount[^>]*>(?P<body>.*?)</span>',
+        html,
+        re.I | re.S,
+    )
+    if not price_match:
+        return None
+    plain = _strip_html_text(price_match.group("body")).replace("\xa0", " ")
+    plain = plain.replace(",", ".").replace("₽", "").replace("руб.", "").strip()
+    prices = extract_prices_from_text(plain)
+    if prices:
+        return prices[0]
+    return _parse_price(plain)
+
+
+def _parse_orionedu_articul(html: str) -> str | None:
+    articul_match = re.search(
+        r'elementor-heading-title[^>]*>\s*Артикул\s*(\d+)',
+        html,
+        re.I | re.S,
+    )
+    if articul_match:
+        return articul_match.group(1).strip()
+    fallback = re.search(r"Артикул\s*(\d+)", html[:250_000], re.I)
+    return fallback.group(1).strip() if fallback else None
+
+
+def _parse_orionedu_description(html: str) -> str | None:
+    desc_match = re.search(
+        r'class="[^"]*orion-expandable-desc[^"]*woocommerce-product-content[^"]*"[^>]*>'
+        r".*?elementor-widget-container\">(?P<body>.*?)</div>\s*</div>\s*</div>",
+        html,
+        re.I | re.S,
+    )
+    if not desc_match:
+        for match in re.finditer(
+            r"widget-woocommerce-product-content[^>]*>.*?elementor-widget-container\">"
+            r"(?P<body>.*?)</div>\s*</div>\s*</div>",
+            html,
+            re.I | re.S,
+        ):
+            text = _strip_html_text(match.group("body"))
+            if not text or "о компании" in text.lower()[:40]:
+                continue
+            return text[:2000]
+        return None
+    text = _strip_html_text(desc_match.group("body"))
+    return text[:2000] if text else None
+
+
+def _parse_orionedu_image_url(html: str) -> str | None:
+    og_match = re.search(r'property="og:image"\s+content="([^"]+)"', html, re.I)
+    if og_match:
+        return og_match.group(1).strip()
+    return None
+
+
+def _parse_orionedu_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_orionedu_product_page_html(html):
+        return None
+
+    title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not title_match:
+        return None
+    name = re.sub(r"\s+", " ", title_match.group("name")).strip()
+    if len(name) < 4:
+        return None
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=_parse_orionedu_price(html),
+        url=page_url.split("#")[0],
+        articul=_parse_orionedu_articul(html),
+        description=_parse_orionedu_description(html),
+        image_url=_parse_orionedu_image_url(html),
+    )
+
+
+def _parse_orionedu_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if not _is_orionedu_domain(domain):
+        return []
+    product = _parse_orionedu_product_html(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    return [product] if product else []
+
+
+def _discover_orionedu_sitemap_urls() -> list[str]:
+    limit = COMPETITOR_INDEX_MAX_URLS
+    product_urls: list[str] = []
+    seen: set[str] = set()
+
+    append_index_log(_ORIONEDU_DOMAIN, "Загрузка sitemap orionedu.ru…")
+    try:
+        with httpx.Client(
+            timeout=_ORIONEDU_REQUEST_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            index_response = client.get(_ORIONEDU_SITEMAP_URL)
+            index_response.raise_for_status()
+            sitemap_urls = [
+                loc.strip()
+                for loc in _SITEMAP_LOC_RE.findall(index_response.text)
+                if "product-sitemap" in loc.lower()
+            ]
+            if not sitemap_urls:
+                sitemap_urls = ["https://orionedu.ru/product-sitemap.xml"]
+            append_index_log(
+                _ORIONEDU_DOMAIN,
+                f"Sitemap: {len(sitemap_urls)} файлов товаров",
+            )
+            for sitemap_url in sitemap_urls:
+                if len(product_urls) >= limit:
+                    break
+                try:
+                    response = client.get(sitemap_url)
+                    response.raise_for_status()
+                except Exception:
+                    logger.debug("Orionedu sitemap failed %s", sitemap_url, exc_info=True)
+                    continue
+                for loc in _SITEMAP_LOC_RE.findall(response.text[:5_000_000]):
+                    clean = loc.strip().split("#")[0]
+                    host = urlparse(clean).netloc.lower().removeprefix("www.")
+                    if host != _ORIONEDU_DOMAIN:
+                        continue
+                    if not _is_orionedu_product_url(clean):
+                        continue
+                    if clean in seen:
+                        continue
+                    seen.add(clean)
+                    product_urls.append(clean)
+                    if len(product_urls) >= limit:
+                        break
+    except Exception:
+        logger.exception("Failed to fetch orionedu sitemap")
+
+    append_index_log(
+        _ORIONEDU_DOMAIN,
+        f"orionedu.ru: sitemap — {len(product_urls)} URL товаров",
+    )
+    return product_urls
+
+
+def fetch_orionedu_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_orionedu_sitemap_urls()
+    if not product_urls:
+        append_index_log(site.domain, "Каталог orionedu.ru пуст — обход seed URL", level="error")
+        return fetch_catalog_products(site, max_pages=24)
+
+    append_index_log(
+        site.domain,
+        f"Индексация orionedu.ru: {len(product_urls)} URL товаров",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
+        request_timeout=_ORIONEDU_REQUEST_TIMEOUT,
+        max_workers=min(8, COMPETITOR_INDEX_WORKERS),
+    )
+
+
 def _parse_n72_product_previews(
     html: str,
     *,
@@ -3795,6 +4012,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if prioritet1_products:
         return prioritet1_products
 
+    orionedu_products = _parse_orionedu_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if orionedu_products:
+        return orionedu_products
+
     n72_products = _parse_n72_page(
         html,
         domain=domain,
@@ -4040,6 +4266,8 @@ def fetch_catalog_products(
         return fetch_rene_edu_catalog(site)
     if normalized_domain == "prioritet1.com":
         return fetch_prioritet1_catalog(site)
+    if normalized_domain == "orionedu.ru":
+        return fetch_orionedu_catalog(site)
 
     apply_default_domain_parsing_hints(normalized_domain)
     hints = get_domain_parsing_hints(normalized_domain)
