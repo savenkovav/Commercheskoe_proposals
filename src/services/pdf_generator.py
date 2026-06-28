@@ -77,7 +77,11 @@ def _stamp_display_size(stamp_path: Path) -> tuple[int, int]:
     return display_width, display_height
 
 
-def _footer_block_height(*, compact: bool = False) -> float:
+def _footer_block_height(
+    *,
+    compact: bool = False,
+    stamp_height: float = 0,
+) -> float:
     if compact:
         height = 2.0 + 8.0
         height += 11.0 + 4.0
@@ -87,6 +91,8 @@ def _footer_block_height(*, compact: bool = False) -> float:
         height += 9.0 + 4.0
         height += 8.0
         height += 11.0 + 4.0
+        if stamp_height:
+            height += 4.0 + stamp_height
         return height
 
     height = 4.0 + 12.0
@@ -97,6 +103,8 @@ def _footer_block_height(*, compact: bool = False) -> float:
     height += 9.0 + 6.0
     height += 18.0
     height += 11.0 + 6.0
+    if stamp_height:
+        height += 4.0 + stamp_height
     return height
 
 
@@ -137,6 +145,19 @@ def _tighten_single_page_layout(layout: dict[str, float | bool]) -> bool:
     if row_gap > 1.0:
         layout["row_gap"] = max(1.0, row_gap - 0.5)
     return True
+
+
+def resolve_stamp_y(
+    content_bottom_y: float,
+    stamp_height: float,
+    *,
+    page_max_y: float = PAGE_MAX_Y,
+    gap: float = 4.0,
+) -> float:
+    """Place stamp directly under footer text, not at the page bottom."""
+    stamp_y = content_bottom_y + gap
+    max_stamp_y = page_max_y - stamp_height
+    return min(stamp_y, max_stamp_y)
 
 
 def _single_page_layout(item_count: int) -> dict[str, float | bool]:
@@ -402,10 +423,18 @@ class PdfGenerator:
             y = 48
 
         stamp_path = resolve_kp_stamp_image()
+        stamp_display_width = 0
+        stamp_display_height = 0
+        if stamp_path:
+            stamp_display_width, stamp_display_height = _stamp_display_size(stamp_path)
+
         layout = _single_page_layout(len(results))
         if layout["single_page"]:
             while True:
-                footer_try = _footer_block_height(compact=True)
+                footer_try = _footer_block_height(
+                    compact=True,
+                    stamp_height=stamp_display_height,
+                )
                 table_try = _estimate_table_body_height(
                     results,
                     font_regular,
@@ -424,11 +453,10 @@ class PdfGenerator:
         row_gap = float(layout["row_gap"])
         compact_footer = bool(layout["compact_footer"])
 
-        stamp_display_width = 0
-        stamp_display_height = 0
-        if stamp_path:
-            stamp_display_width, stamp_display_height = _stamp_display_size(stamp_path)
-        footer_height = _footer_block_height(compact=compact_footer)
+        footer_height = _footer_block_height(
+            compact=compact_footer,
+            stamp_height=stamp_display_height,
+        )
 
         write_line("КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ", size=16, bold=True, center=True)
         write_line(f"на запрос {request_number} от {today} г.", size=11, center=True)
@@ -562,7 +590,7 @@ class PdfGenerator:
 
         if stamp_path:
             stamp_x = 305
-            stamp_y = PAGE_MAX_Y - stamp_display_height
+            stamp_y = resolve_stamp_y(y, stamp_display_height)
             page.insert_image(
                 fitz.Rect(
                     stamp_x,
