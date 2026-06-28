@@ -1,7 +1,18 @@
 from src.services.models import MatchResult, MatchSource, MatchStatus, TZItem
 from src.services.pricing_rules import apply_kp_pricing, item_margin_percent
-from src.services.tz_match_service import _missing_price_note
 from src.services.tz_parser import _parse_tz_tables
+
+
+def test_parse_table_without_price_column_does_not_use_row_number() -> None:
+    table = [
+        ["№ п/п", "Наименование товара", "Ед. изм.", "Кол-во"],
+        ["1", "Товар А", "шт", "5"],
+        ["2", "Товар Б", "шт", "3"],
+    ]
+    items = _parse_tz_tables([table])
+    assert len(items) == 2
+    assert items[0].target_sale_price is None
+    assert items[1].target_sale_price is None
 
 
 def test_parse_table_with_sale_price_column() -> None:
@@ -36,7 +47,27 @@ def test_apply_kp_pricing_uses_tz_sale_price() -> None:
     assert item_margin_percent(result.unit_cost, result.unit_price) == 25.0
 
 
+def test_apply_kp_pricing_ignores_tz_sale_price_without_cost() -> None:
+    tz_item = TZItem(
+        number=1,
+        name="Товар",
+        unit="шт",
+        quantity=1,
+        target_sale_price=1.0,
+    )
+    result = MatchResult(
+        tz_item=tz_item,
+        status=MatchStatus.SIMILAR,
+        source=MatchSource.NONE,
+    )
+    apply_kp_pricing(result)
+    assert result.unit_price is None
+    assert result.total_price is None
+
+
 def test_missing_price_note_for_task1() -> None:
+    from src.services.tz_match_service import _missing_price_note
+
     assert (
         _missing_price_note(internet_allowed=False, use_ai=True)
         == "Не найдено в каталогах, прайсах и остатках"

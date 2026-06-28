@@ -67,6 +67,11 @@ def apply_kp_pricing(result: MatchResult) -> None:
         result.total_cost = None
 
     if result.tz_item.target_sale_price is not None:
+        if result.unit_cost is None and result.unit_base_price is None:
+            result.unit_price = None
+            result.total_price = None
+            result.applied_markup_pct = None
+            return
         result.unit_price = round(float(result.tz_item.target_sale_price), 2)
         result.total_price = round(result.unit_price * qty, 2)
         result.applied_markup_pct = item_margin_percent(result.unit_cost, result.unit_price)

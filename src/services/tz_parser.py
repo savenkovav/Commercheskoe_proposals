@@ -491,7 +491,14 @@ def _build_column_map(header_cells: list[str]) -> _ColumnMap | None:
 
     sale_price_idx: int | None = None
     sale_price_priority = -1
+    reserved_cols = {number_idx, name_idx, unit_idx, qty_idx}
+    if specs_idx is not None:
+        reserved_cols.add(specs_idx)
+    if country_idx is not None:
+        reserved_cols.add(country_idx)
     for i, cell in enumerate(lower):
+        if i in reserved_cols:
+            continue
         if any(
             marker in cell
             for marker in ("себестоим", "закуп", "поставщ", "ндс", "итого")
@@ -499,7 +506,7 @@ def _build_column_map(header_cells: list[str]) -> _ColumnMap | None:
             continue
         if "сумма" in cell and "цена" not in cell:
             continue
-        priority = 0
+        priority = -1
         if any(marker in cell for marker in ("продаж", "отпуск", "реализац")):
             priority = 3
         elif "цена" in cell and ("ед" in cell or "единиц" in cell):
@@ -574,6 +581,13 @@ def _parse_row(
     sale_price = None
     if col.sale_price is not None and len(cells) > col.sale_price:
         sale_price = _parse_money(cells[col.sale_price])
+        if (
+            sale_price is not None
+            and number is not None
+            and sale_price == float(number)
+            and sale_price < 1000
+        ):
+            sale_price = None
 
     return TZItem(
         number=number,
