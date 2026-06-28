@@ -1976,6 +1976,13 @@ function collectWebProductEntries(item) {
   return collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
 }
 
+function truncateDescription(text, maxLen = 220) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  if (value.length <= maxLen) return value;
+  return `${value.slice(0, maxLen - 1)}…`;
+}
+
 let kpWebManualPrices = {};
 
 function parseMoneyInput(value) {
@@ -2258,6 +2265,11 @@ function renderWebComparisonRows(item) {
       const webPrice = resolveWebQuoteBasePrice(item, webIndex, q);
       const kpPrice = webQuoteKpUnitPriceFromBase(webPrice);
       const manualValue = getWebManualPrice(item.number, webIndex);
+      const descriptionHtml = q.description
+        ? `<div class="muted kp-web-description" title="${escapeHtml(q.description)}">${escapeHtml(
+            truncateDescription(q.description),
+          )}</div>`
+        : "";
       const priceCell = hasApiPrice
         ? fmtMoney(webPrice)
         : `<input
@@ -2281,7 +2293,7 @@ function renderWebComparisonRows(item) {
           >
         </td>
         <td>${escapeHtml(q.label || "Интернет")}</td>
-        <td>${escapeHtml(q.matched_name || "—")}</td>
+        <td>${escapeHtml(q.matched_name || "—")}${descriptionHtml}</td>
         <td class="kp-web-price-cell">${priceCell}</td>
         <td>
           <span

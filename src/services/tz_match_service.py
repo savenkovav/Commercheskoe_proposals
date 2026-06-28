@@ -743,6 +743,9 @@ class TZMatchService:
         if USE_AI_INTERNET_SEARCH and use_ai and self.ai.enabled:
             _append_quotes(self._fetch_internet_comparison_ai(tz_item))
 
+        from src.services.web_quote_priority import enrich_web_quotes_with_catalog_descriptions
+
+        quotes = enrich_web_quotes_with_catalog_descriptions(quotes)
         quotes = filter_web_quotes(quotes, preferences)
         quotes = self._filter_acceptable_web_quotes(
             tz_item,
@@ -758,6 +761,7 @@ class TZMatchService:
             _append_quotes(
                 self._fetch_internet_comparison_fast(tz_item, preferences)[1]
             )
+            quotes = enrich_web_quotes_with_catalog_descriptions(quotes)
             quotes = self._filter_acceptable_web_quotes(
                 tz_item,
                 filter_web_quotes(quotes, preferences),

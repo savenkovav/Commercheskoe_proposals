@@ -524,6 +524,13 @@ a.btn.btn--disabled {
   opacity: 0.45;
 }
 
+.kp-web-description {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
 .compare-row--kit-total td,
 .compare-row--web-total td {
   border-top: 1px solid var(--border);

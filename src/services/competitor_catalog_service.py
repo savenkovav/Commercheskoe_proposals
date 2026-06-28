@@ -4048,6 +4048,7 @@ def _score_catalog_products(
                     else "Индекс каталога конкурента"
                 ),
                 image_url=product.image_url,
+                description=product.description,
             )
         )
     return quotes

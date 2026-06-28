@@ -392,3 +392,24 @@ def pick_internet_url(
         if fallbacks:
             return fallbacks[0]
     return None
+
+
+def enrich_web_quotes_with_catalog_descriptions(
+    quotes: list[PriceQuote],
+) -> list[PriceQuote]:
+    from dataclasses import replace
+
+    from src.services.competitor_product_store import get_competitor_product_store
+
+    store = get_competitor_product_store()
+    enriched: list[PriceQuote] = []
+    for quote in quotes:
+        if quote.description or not quote.url or not is_competitor_url(quote.url):
+            enriched.append(quote)
+            continue
+        description = store.description_for_url(quote.url)
+        if description:
+            enriched.append(replace(quote, description=description))
+        else:
+            enriched.append(quote)
+    return enriched
