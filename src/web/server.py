@@ -295,7 +295,6 @@ def _price_quote_to_dict(quote: PriceQuote) -> dict[str, Any]:
         "url": quote.url,
         "notes": quote.notes,
         "image_url": quote.image_url,
-        "description": quote.description,
     }
 
 

@@ -119,9 +119,6 @@ class CompetitorProductStore:
     def products_for_domain(self, domain: str) -> list[CompetitorCatalogProduct]:
         return self._db.products_for_domain(domain)
 
-    def description_for_url(self, url: str) -> str | None:
-        return self._db.product_description_by_url(url)
-
     def replace_site_products(
         self,
         domain: str,

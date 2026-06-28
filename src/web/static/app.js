@@ -523,10 +523,6 @@ function shouldDeferInternetRowPrice(item, selection = {}) {
   const variant = selection.variant || savedVariantIdForItem(item.number) || "primary";
   if (variant !== "primary") return false;
   if (item.kit_components?.length) return false;
-  if (collectLocalComparisonEntries(item).length) return false;
-  if (item.unit_base_price != null && !collectInternetProductEntries(item).length) {
-    return false;
-  }
   if (isLocalDataSource(item) && item.unit_base_price != null) return false;
   return Boolean(item.internet_priced || item.source === "web");
 }
@@ -672,44 +668,9 @@ function getKitIndicesFromUI(itemNumber) {
   return boxes.filter((box) => box.checked).map((box) => Number(box.dataset.kitIndex));
 }
 
-function collectLocalComparisonEntries(item) {
-  return (item.comparison || []).filter(
-    (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
-  );
-}
-
-const COMPETITOR_KP_MIN_MATCH_PERCENT = 100;
-
-function collectCompetitorProductEntries(item) {
-  return collectWebProductEntries(item).filter(
-    (q) =>
-      isCompetitorUrl(q.url) &&
-      (q.match_score == null || q.match_score >= COMPETITOR_KP_MIN_MATCH_PERCENT),
-  );
-}
-
-function collectInternetProductEntries(item) {
-  return collectWebProductEntries(item).filter((q) => !isCompetitorUrl(q.url));
-}
-
-function quoteToKpCompetitorCard(q) {
-  const base = q.price ?? q.cost;
-  const kp = base != null ? webQuoteKpUnitPriceFromBase(base) : null;
-  return {
-    label: q.label,
-    matched_name: q.matched_name,
-    name: q.matched_name,
-    match_score: q.match_score,
-    price: base != null ? fmtMoney(base) : q.price_label || "—",
-    price_kp: kp != null ? fmtMoney(kp) : null,
-    price_label: q.price_label,
-    url: q.url,
-    notes: q.notes,
-    articul: q.articul,
-    image_url: q.image_url,
-    description: q.description,
-    has_price: base != null,
-  };
+function shouldAutoSelectSingleWebRow(item) {
+  if (!shouldDeferInternetRowPrice(item)) return false;
+  return collectWebProductEntries(item).length === 1;
 }
 
 function getDefaultWebIndices(item) {
@@ -717,14 +678,8 @@ function getDefaultWebIndices(item) {
   if (saved?.web_indices) {
     return [...saved.web_indices];
   }
-  if (collectLocalComparisonEntries(item).length) {
-    return [];
-  }
-  const all = collectWebProductEntries(item);
-  if (!all.length) return [];
-  const internetIndex = all.findIndex((q) => !isCompetitorUrl(q.url));
-  if (internetIndex >= 0) {
-    return [internetIndex];
+  if (shouldAutoSelectSingleWebRow(item)) {
+    return [0];
   }
   return [];
 }
@@ -747,24 +702,15 @@ function hasPositionDetailSelection(item, selection = {}) {
     selection.web_indices !== undefined
       ? selection.web_indices
       : getWebIndicesFromUI(item.number);
-  const webEntries = collectWebProductEntries(item);
   const hasKitSelection = Boolean(item.kit_components?.length && kitIndices?.length);
-  const hasLocalMatch = Boolean(
-    collectLocalComparisonEntries(item).length &&
-      (item.unit_base_price != null || item.unit_cost != null),
-  );
   const hasWebSelection = Boolean(
-    webEntries.length &&
-      webIndices?.length &&
-      webIndices.some((index) => {
-        const quote = webEntries[index];
-        return quote && resolveWebQuoteBasePrice(item, index, quote, selection) != null;
+    collectWebProductEntries(item).length &&
+      webIndices?.some((index) => {
+        const quote = collectWebProductEntries(item)[index];
+        return quote && resolveWebQuoteBasePrice(item, index, quote) != null;
       }),
   );
-  if (hasKitSelection) return true;
-  if (hasLocalMatch) return true;
-  if (hasWebSelection) return true;
-  return false;
+  return hasKitSelection || hasWebSelection;
 }
 
 function kitSelectedBaseTotal(item, itemNumber = item.number) {
@@ -785,13 +731,12 @@ function updateKitComponentTotal(itemNumber) {
 }
 
 function isWebQuoteChecked(itemNumber, index) {
-  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
   const saved = kpSavedSelections?.find((selection) => selection.number === itemNumber);
   if (saved?.web_indices) {
     return saved.web_indices.includes(index);
   }
-  if (!item) return false;
-  return getDefaultWebIndices(item).includes(index);
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  return Boolean(item && shouldAutoSelectSingleWebRow(item) && index === 0);
 }
 
 function isKitComponentChecked(itemNumber, index) {
@@ -1321,13 +1266,7 @@ async function saveKpSelection() {
   for (const selection of included) {
     const item = kpProcessData.items.find((row) => row.number === selection.number);
     if (!item) continue;
-    if (
-      !item.kit_components?.length &&
-      !collectWebProductEntries(item).length &&
-      !collectLocalComparisonEntries(item).length
-    ) {
-      continue;
-    }
+    if (!item.kit_components?.length && !collectWebProductEntries(item).length) continue;
     if (!hasPositionDetailSelection(item, selection)) {
       showToast(
         `Позиция ${selection.number}: выберите состав комплекта и/или позиции из интернета`,
@@ -1531,7 +1470,7 @@ function bindKpSelectionHandlers() {
       updateTzRowPricing(itemNumber);
       return;
     }
-    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell, .competitor-result-item__kp-select")) {
+    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell")) {
       event.stopPropagation();
     }
   });
@@ -1554,13 +1493,7 @@ async function formKpDocument() {
   for (const selection of included) {
     const item = kpProcessData?.items?.find((row) => row.number === selection.number);
     if (!item) continue;
-    if (
-      !item.kit_components?.length &&
-      !collectWebProductEntries(item).length &&
-      !collectLocalComparisonEntries(item).length
-    ) {
-      continue;
-    }
+    if (!item.kit_components?.length && !collectWebProductEntries(item).length) continue;
     if (!hasPositionDetailSelection(item, selection)) {
       showToast(
         `Позиция ${selection.number}: выберите состав комплекта и/или позиции из интернета`,
@@ -2043,29 +1976,6 @@ function collectWebProductEntries(item) {
   return collectWebEntries(item).filter((q) => !isMarketEstimateQuote(q));
 }
 
-function truncateDescription(text, maxLen = 220) {
-  const value = String(text || "").trim();
-  if (!value) return "";
-  if (value.length <= maxLen) return value;
-  return `${value.slice(0, maxLen - 1)}…`;
-}
-
-function webComparisonSectionTitle(entries) {
-  if (!entries.length) return "Интернет";
-  const allCompetitor = entries.every((q) => isCompetitorUrl(q.url));
-  if (allCompetitor) return "Сайты конкурентов";
-  const anyCompetitor = entries.some((q) => isCompetitorUrl(q.url));
-  return anyCompetitor ? "Интернет и сайты конкурентов" : "Интернет";
-}
-
-function webComparisonSectionNote(entries) {
-  const allCompetitor = entries.length > 0 && entries.every((q) => isCompetitorUrl(q.url));
-  if (allCompetitor) {
-    return "Отметьте позиции с сайтов конкурентов, чтобы добавить их стоимость в расчёт КП. Если цена не найдена — введите её вручную.";
-  }
-  return "Отметьте позиции из интернета, чтобы добавить их стоимость в расчёт КП. Если цена не найдена — введите её вручную.";
-}
-
 let kpWebManualPrices = {};
 
 function parseMoneyInput(value) {
@@ -2180,7 +2090,7 @@ function aggregateWebAddonPricing(item, webIndices, selection = null) {
 }
 
 function mergeItemPricing(base, addon) {
-  if (!addon?.unitPrice && !addon?.unitBasePrice) return base;
+  if (!addon?.totalPrice) return base;
   const merge = (left, right) => {
     if (left == null && right == null) return null;
     return roundMoney((left || 0) + (right || 0));
@@ -2337,44 +2247,12 @@ function updateWebRowKpPrice(itemNumber, webIndex) {
   kpEl.textContent = fmtMoney(webQuoteKpUnitPriceFromBase(base));
 }
 
-function renderKpCompetitorBlock(item) {
-  const all = collectWebProductEntries(item);
-  const indexed = all
-    .map((q, idx) => ({ q, idx }))
-    .filter(
-      ({ q }) =>
-        isCompetitorUrl(q.url) &&
-        (q.match_score == null || q.match_score >= COMPETITOR_KP_MIN_MATCH_PERCENT),
-    );
-  if (!indexed.length) return "";
-
-  const rows = indexed
-    .map(({ q, idx }) =>
-      renderCompetitorResultItem(quoteToKpCompetitorCard(q), {
-        showPriceKp: true,
-        kpWebSelect: {
-          itemNumber: item.number,
-          webIndex: idx,
-          checked: isWebQuoteChecked(item.number, idx),
-        },
-      }),
-    )
-    .join("");
-
-  return `
-      <h4 class="compare-block__subtitle">Сайты конкурентов</h4>
-      <p class="muted compare-block__kit-note">Отметьте товар конкурента, чтобы добавить его стоимость к позиции. По умолчанию галочки пустые, если цена уже взята из каталога, прайса или остатков.</p>
-      <div class="competitor-result-list competitor-result-list--kp">${rows}</div>`;
-}
-
 function renderWebComparisonRows(item) {
-  const indexed = collectWebProductEntries(item)
-    .map((q, webIndex) => ({ q, webIndex }))
-    .filter(({ q }) => !isCompetitorUrl(q.url));
-  if (!indexed.length) return "";
+  const productEntries = collectWebProductEntries(item);
+  if (!productEntries.length) return "";
   const initialAddon = aggregateWebAddonPricing(item, getDefaultWebIndices(item));
-  const rows = indexed
-    .map(({ q, webIndex }) => {
+  const rows = productEntries
+    .map((q, webIndex) => {
       const checked = isWebQuoteChecked(item.number, webIndex);
       const hasApiPrice = q.price != null || q.cost != null;
       const webPrice = resolveWebQuoteBasePrice(item, webIndex, q);
@@ -2451,7 +2329,9 @@ function renderWebComparisonRows(item) {
 }
 
 function renderComparisonTable(item) {
-  const comparison = collectLocalComparisonEntries(item);
+  const comparison = (item.comparison || []).filter(
+    (q) => q.source !== "web" && quoteMeetsMatchThreshold(q),
+  );
   const webEntries = collectWebEntries(item);
   const primaryBlock = renderPrimaryMatchBlock(item);
   if (
@@ -2534,6 +2414,7 @@ function renderComparisonTable(item) {
       ${renderMarketEstimateInfo(item)}
       ${primaryBlock}
       ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
+      ${renderWebComparisonRows(item)}
       ${
         comparisonRows
           ? `
@@ -2554,8 +2435,6 @@ function renderComparisonTable(item) {
       </table>`
           : ""
       }
-      ${renderKpCompetitorBlock(item)}
-      ${renderWebComparisonRows(item)}
       ${
         kitRows
           ? `
@@ -4201,7 +4080,6 @@ function serializeLookupKpItem(item) {
     notes: item.notes || "",
     articul: item.articul || null,
     image_url: item.image_url || null,
-    description: item.description || null,
     has_price: item.has_price !== false,
   });
 }
@@ -4312,19 +4190,7 @@ function renderCompetitorResultItem(item, options = {}) {
       )}</div>`
     : "";
 
-  const selectHtml = options.kpWebSelect
-    ? `<label class="competitor-result-item__kp-select" title="Добавить к стоимости позиции">
-        <input
-          type="checkbox"
-          class="kp-web-include"
-          data-item="${options.kpWebSelect.itemNumber}"
-          data-web-index="${options.kpWebSelect.webIndex}"
-          ${options.kpWebSelect.checked ? "checked" : ""}
-          aria-label="Добавить «${escapeHtml(matchedName)}» к стоимости позиции"
-        >
-        <span class="competitor-result-item__kp-select-label">В КП</span>
-      </label>`
-    : options.kpSelect
+  const selectHtml = options.kpSelect
     ? `<label class="competitor-result-item__kp-select" title="Добавить в детализацию КП">
         <input
           type="checkbox"
@@ -4368,12 +4234,6 @@ function renderCompetitorResultItem(item, options = {}) {
     ? `<div class="muted">${Math.round(item.match_score)}% совпадение</div>`
     : "";
 
-  const descriptionHtml = item.description
-    ? `<div class="muted competitor-result-item__description" title="${escapeHtml(item.description)}">${escapeHtml(
-        truncateDescription(item.description, 280),
-      )}</div>`
-    : "";
-
   const linkHtml = item.url
     ? `<div class="chat-link-wrap">${renderChatLink(item.url, "Открыть на сайте")}</div>`
     : !showPriceKp && item.notes
@@ -4394,7 +4254,6 @@ function renderCompetitorResultItem(item, options = {}) {
           <span class="competitor-result-item__price">${escapeHtml(priceText)}</span>
         </div>
         <div class="competitor-result-item__name">${escapeHtml(matchedName)}</div>
-        ${descriptionHtml}
         ${articulHtml}
         ${matchHtml}
         ${missingPriceHtml}

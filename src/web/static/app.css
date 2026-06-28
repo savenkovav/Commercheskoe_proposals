@@ -513,30 +513,15 @@ a.btn.btn--disabled {
 }
 
 .kp-kit-select-cell,
-.kp-web-select-cell,
-.kp-local-select-cell {
+.kp-web-select-cell {
   width: 48px;
   text-align: center;
   vertical-align: middle;
 }
 
 .kp-kit-row--excluded td,
-.kp-web-row--excluded td,
-.kp-local-row--excluded td {
+.kp-web-row--excluded td {
   opacity: 0.45;
-}
-
-.kp-web-description {
-  margin-top: 4px;
-  font-size: 12px;
-  line-height: 1.35;
-  white-space: normal;
-}
-
-.competitor-result-item__description {
-  margin-top: 4px;
-  line-height: 1.35;
-  white-space: normal;
 }
 
 .compare-row--kit-total td,

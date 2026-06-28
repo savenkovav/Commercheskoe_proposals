@@ -191,21 +191,20 @@ class TZMatchService:
                 comparison.append(extra_price)
 
         local_miss = local_floor is None
-        local_catalog_or_price_hit = local_floor is not None and has_local_catalog_or_price_list_price(
+        skip_competitors = local_floor is not None and has_local_catalog_or_price_list_price(
             tz_item,
             catalog_hit,
             price_hit,
             self.matcher,
             min_score=local_floor,
         )
-        internet_searched = WEB_SEARCH_ENABLED and not local_catalog_or_price_hit
+        internet_searched = WEB_SEARCH_ENABLED and not skip_competitors
         web_quote, competitors = self._fetch_internet_comparison(
             tz_item,
             prefs,
             use_ai=use_ai,
             local_miss=local_miss,
-            skip_competitors=False,
-            competitors_only=local_catalog_or_price_hit,
+            skip_competitors=skip_competitors,
         )
         comparison.extend(competitors)
         comparison = self._filter_comparison_quotes(tz_item, comparison)
@@ -275,7 +274,7 @@ class TZMatchService:
         )
         self._ensure_internet_comparison(primary)
         self._normalize_result_metadata(primary)
-        if local_miss and not local_catalog_or_price_hit:
+        if local_miss and not skip_competitors:
             self._ensure_mandatory_internet_pricing(
                 primary,
                 prefs,
@@ -716,7 +715,6 @@ class TZMatchService:
         use_ai: bool = True,
         local_miss: bool = True,
         skip_competitors: bool = False,
-        competitors_only: bool = False,
     ) -> tuple[PriceQuote | None, list[PriceQuote]]:
         if "web" in preferences.disabled_sources:
             return None, []
@@ -732,35 +730,19 @@ class TZMatchService:
                     seen_urls.add(quote.url)
                 quotes.append(quote)
 
-        search_text = internet_search_text(tz_item)
         if WEB_SEARCH_ENABLED and not skip_competitors:
-            if competitors_only:
-                _append_quotes(
-                    self.web_search.search_competitor_offers(
-                        search_text,
-                        sort_by_match=True,
-                    )
+            search_text = internet_search_text(tz_item)
+            _append_quotes(
+                self.web_search.search_internet_cascade(
+                    search_text,
+                    skip_competitors=skip_competitors,
+                    competitor_fallback=False,
                 )
-            else:
-                _append_quotes(
-                    self.web_search.search_internet_cascade(
-                        search_text,
-                        skip_competitors=skip_competitors,
-                        competitor_fallback=False,
-                    )
-                )
+            )
 
-        if (
-            USE_AI_INTERNET_SEARCH
-            and use_ai
-            and self.ai.enabled
-            and not competitors_only
-        ):
+        if USE_AI_INTERNET_SEARCH and use_ai and self.ai.enabled:
             _append_quotes(self._fetch_internet_comparison_ai(tz_item))
 
-        from src.services.web_quote_priority import enrich_web_quotes_with_catalog_descriptions
-
-        quotes = enrich_web_quotes_with_catalog_descriptions(quotes)
         quotes = filter_web_quotes(quotes, preferences)
         quotes = self._filter_acceptable_web_quotes(
             tz_item,
@@ -771,13 +753,11 @@ class TZMatchService:
             local_miss
             and WEB_SEARCH_ENABLED
             and "web" not in preferences.disabled_sources
-            and not competitors_only
             and not quotes
         ):
             _append_quotes(
                 self._fetch_internet_comparison_fast(tz_item, preferences)[1]
             )
-            quotes = enrich_web_quotes_with_catalog_descriptions(quotes)
             quotes = self._filter_acceptable_web_quotes(
                 tz_item,
                 filter_web_quotes(quotes, preferences),
