@@ -40,8 +40,8 @@ def test_draw_title_with_logo_advances_y(tmp_path: Path) -> None:
     doc.close()
 
 
-def test_single_page_layout_keeps_standard_rows_up_to_16_items() -> None:
-    for count in (1, 2, 10, 16):
+def test_single_page_layout_keeps_standard_rows_up_to_10_items() -> None:
+    for count in (1, 2, 10):
         layout = _single_page_layout(count)
         assert layout["single_page"] is True
         assert layout["row_font_size"] == ROW_FONT_SIZE
@@ -50,12 +50,13 @@ def test_single_page_layout_keeps_standard_rows_up_to_16_items() -> None:
         assert layout["allow_tighten"] is False
 
 
-def test_single_page_layout_compresses_rows_for_17_to_20_items() -> None:
-    layout = _single_page_layout(18)
-    assert layout["single_page"] is True
-    assert layout["row_font_size"] == 8.5
-    assert layout["row_gap"] == 2.0
-    assert layout["allow_tighten"] is True
+def test_single_page_layout_compresses_rows_for_11_to_20_items() -> None:
+    for count in (11, 18, 20):
+        layout = _single_page_layout(count)
+        assert layout["single_page"] is True
+        assert layout["row_font_size"] == 8.5
+        assert layout["row_gap"] == 2.0
+        assert layout["allow_tighten"] is True
 
 
 def test_resolve_stamp_y_places_stamp_under_content() -> None:
