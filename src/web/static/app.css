@@ -1486,6 +1486,10 @@ a.btn.btn--disabled {
   word-break: break-word;
 }
 
+.source-block .competitor-result-list {
+  margin: 0;
+}
+
 .source-block ul {
   margin: 0;
   padding-left: 18px;

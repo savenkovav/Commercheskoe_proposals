@@ -403,6 +403,7 @@ class ProductLookupService:
                     "price_label": quote.price_label,
                     "url": quote.url,
                     "notes": quote.notes or "",
+                    "articul": quote.articul,
                     "has_price": base_price is not None,
                     "image_url": quote.image_url,
                     "_sort_price": base_price if base_price is not None else float("inf"),

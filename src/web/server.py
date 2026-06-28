@@ -848,15 +848,6 @@ def _lookup_result_to_dict(result: ProductLookupResult) -> dict[str, Any]:
 
     registry = _serialize_registry_block(result.registry)
     photo_urls = list(registry.get("photo_urls") or [])
-    if not photo_urls:
-        items = (result.competitors or {}).get("items")
-        if isinstance(items, list):
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                image_url = item.get("image_url")
-                if isinstance(image_url, str) and image_url.strip():
-                    photo_urls.append(image_url.strip())
 
     return {
         "query_name": result.query_name,

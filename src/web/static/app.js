@@ -3214,32 +3214,7 @@ function renderLookupResultPhotos(registry, competitors, lookupData) {
       </div>`;
   }
 
-  const competitorItems = competitors?.items?.length
-    ? competitors.items
-    : competitors?.found
-      ? [competitors]
-      : [];
-  const competitorUrls = competitorItems
-    .map((item) => item.image_url)
-    .filter(Boolean);
-  if (!competitorUrls.length) {
-    return renderRegistryPhotos(registry);
-  }
-
-  const alt =
-    competitorItems.find((item) => item.name)?.name ||
-    competitorItems.find((item) => item.matched_name)?.matched_name ||
-    "Фото товара";
-  const [mainUrl, ...extraUrls] = competitorUrls;
-  const extras = extraUrls
-    .map((url) => renderPhotoButton(url, alt, "lookup-result__photo lookup-result__photo--thumb"))
-    .join("");
-
-  return `
-    <div class="lookup-result__photos">
-      ${renderPhotoButton(mainUrl, alt)}
-      ${extras ? `<div class="lookup-result__photo-stack">${extras}</div>` : ""}
-    </div>`;
+  return renderRegistryPhotos(registry);
 }
 
 function fitPhotoModalImage(img) {
@@ -3369,22 +3344,26 @@ function renderAiInsightBlock(ai) {
 }
 
 function renderCompetitorsBlock(competitors) {
-  return renderMatchVariants(
-    "Сайты конкурентов",
-    competitors || {},
-    (item) => [
-      item.label ? `Источник: ${escapeHtml(item.label)}` : null,
-      item.price || item.price_label
-        ? `Цена: ${escapeHtml(item.price || item.price_label)}`
-        : item.has_price === false
-          ? "Цена не указана на сайте"
-          : null,
-      item.price_kp ? `Цена КП (−5%): ${item.price_kp}` : null,
-      item.url ? renderChatLink(item.url, "Открыть на сайте") : null,
-      item.notes ? escapeHtml(item.notes) : null,
-    ],
-    "На сайтах конкурентов не найдено",
-  );
+  const items = competitors?.items?.length
+    ? competitors.items
+    : competitors?.found
+      ? [competitors]
+      : [];
+  if (!items.length) {
+    return `
+      <div class="source-block source-block--missing">
+        <h4>Сайты конкурентов</h4>
+        <p>На сайтах конкурентов не найдено</p>
+      </div>`;
+  }
+
+  const rows = items.map((item) => renderCompetitorResultItem(item, { showPriceKp: true })).join("");
+
+  return `
+    <div class="source-block">
+      <h4>Сайты конкурентов <span class="muted match-count">${items.length}</span></h4>
+      <div class="competitor-result-list">${rows}</div>
+    </div>`;
 }
 
 function renderLookupResultHtml(data) {
@@ -4091,39 +4070,81 @@ function formatCompetitorSiteLabel(label) {
   return label.replace(/^Конкурент:\s*/i, "").trim() || label;
 }
 
+function renderCompetitorResultItem(item, options = {}) {
+  const showPriceKp = Boolean(options.showPriceKp);
+  const matchedName = item.matched_name || item.name || "—";
+  const title = formatCompetitorSiteLabel(item.label) || "—";
+
+  const photoHtml = item.image_url
+    ? `<div class="competitor-result-item__photo">${renderPhotoButton(
+        item.image_url,
+        matchedName,
+        "competitor-result-item__image",
+      )}</div>`
+    : "";
+
+  const priceText =
+    item.has_price === false
+      ? "—"
+      : showPriceKp && item.price
+        ? item.price
+        : fmtCompetitorPrice(item);
+
+  const priceKpHtml =
+    showPriceKp && item.price_kp
+      ? `<div class="muted">Цена КП (−5%): ${escapeHtml(item.price_kp)}</div>`
+      : "";
+
+  const missingPriceHtml =
+    showPriceKp && item.has_price === false
+      ? `<div class="muted">Цена не указана на сайте</div>`
+      : "";
+
+  const articulHtml = item.articul
+    ? `<div class="muted">Артикул: ${escapeHtml(item.articul)}</div>`
+    : "";
+
+  const matchHtml = item.match_score
+    ? `<div class="muted">${Math.round(item.match_score)}% совпадение</div>`
+    : "";
+
+  const linkHtml = item.url
+    ? `<div class="chat-link-wrap">${renderChatLink(item.url, "Открыть на сайте")}</div>`
+    : !showPriceKp && item.notes
+      ? `<div class="muted">${escapeHtml(item.notes)}</div>`
+      : "";
+
+  const notesHtml =
+    showPriceKp && item.notes
+      ? `<div class="muted">${escapeHtml(item.notes)}</div>`
+      : "";
+
+  return `
+    <div class="competitor-result-item">
+      ${photoHtml}
+      <div class="competitor-result-item__body">
+        <div class="competitor-result-item__head">
+          <strong class="competitor-result-item__title">${escapeHtml(title)}</strong>
+          <span class="competitor-result-item__price">${escapeHtml(priceText)}</span>
+        </div>
+        <div class="competitor-result-item__name">${escapeHtml(matchedName)}</div>
+        ${articulHtml}
+        ${matchHtml}
+        ${missingPriceHtml}
+        ${priceKpHtml}
+        ${linkHtml}
+        ${notesHtml}
+      </div>
+    </div>`;
+}
+
 function renderCompetitorSearchResults(data) {
   if (!data.items?.length) {
     return `<p>По запросу «${escapeHtml(data.query)}» на сайтах конкурентов ничего не найдено.</p>`;
   }
 
   const rows = data.items
-    .map((item) => {
-      const photoHtml = item.image_url
-        ? `<div class="competitor-result-item__photo">${renderPhotoButton(
-            item.image_url,
-            item.matched_name || "Фото товара",
-            "competitor-result-item__image",
-          )}</div>`
-        : "";
-      return `
-        <div class="competitor-result-item">
-          ${photoHtml}
-          <div class="competitor-result-item__body">
-          <div class="competitor-result-item__head">
-            <strong class="competitor-result-item__title">${escapeHtml(formatCompetitorSiteLabel(item.label))}</strong>
-            <span class="competitor-result-item__price">${escapeHtml(fmtCompetitorPrice(item))}</span>
-          </div>
-          <div class="competitor-result-item__name">${escapeHtml(item.matched_name || "—")}</div>
-          ${item.articul ? `<div class="muted">Артикул: ${escapeHtml(item.articul)}</div>` : ""}
-          <div class="muted">${item.match_score ? `${Math.round(item.match_score)}% совпадение` : ""}</div>
-          ${
-            item.url
-              ? `<div class="chat-link-wrap">${renderChatLink(item.url, "Открыть на сайте")}</div>`
-              : `<div class="muted">${escapeHtml(item.notes || "")}</div>`
-          }
-          </div>
-        </div>`;
-    })
+    .map((item) => renderCompetitorResultItem(item))
     .join("");
 
   return `
