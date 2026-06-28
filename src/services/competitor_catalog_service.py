@@ -145,6 +145,9 @@ _ORIONEDU_SAMPLE_URL = (
     "https://orionedu.ru/product/anatomicheskij-trenazher-dlja-otrabotki-"
     "vnutrimyshechnyh-inekcij-v-jagodicu-prozrachnaja-model/"
 )
+_TYI_YA_SAMPLE_URL = (
+    "https://xn--54-vlc3b6bza.xn--p1ai/products/stellazh-uyutbuk-s-zonoy-dlya-chteniya/"
+)
 
 _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
     "rostcom.com": CompetitorParsingHints(
@@ -175,6 +178,12 @@ _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
         price_html_hint='<p class="price">',
         articul_html_hint='elementor-heading-title',
         description_html_hint='woocommerce-product-content',
+    ),
+    "xn--54-vlc3b6bza.xn--p1ai": CompetitorParsingHints(
+        product_sample_url=_TYI_YA_SAMPLE_URL,
+        price_html_hint='<div class="product-buy__price"',
+        articul_html_hint='Артикул:',
+        description_html_hint='<dl class="product-info__list"',
     ),
 }
 
@@ -975,6 +984,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "orionedu.ru": [
         "https://orionedu.ru/sitemap.xml",
         "https://orionedu.ru/katalog/",
+    ],
+    "xn--54-vlc3b6bza.xn--p1ai": [
+        "https://xn--54-vlc3b6bza.xn--p1ai/sitemap.xml",
+        "https://xn--54-vlc3b6bza.xn--p1ai/catalog/",
     ],
 }
 
@@ -3336,6 +3349,220 @@ def fetch_orionedu_catalog(
     )
 
 
+_TYI_YA_DOMAIN = "xn--54-vlc3b6bza.xn--p1ai"
+_TYI_YA_SITEMAP_URL = f"https://{_TYI_YA_DOMAIN}/sitemap.xml"
+_TYI_YA_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=45.0, write=20.0, pool=20.0)
+
+
+def _is_ty_i_ya_domain(domain: str) -> bool:
+    return domain.lower().removeprefix("www.") == _TYI_YA_DOMAIN
+
+
+def _is_ty_i_ya_product_url(url: str) -> bool:
+    path = urlparse(url.split("#")[0]).path.lower().rstrip("/")
+    segments = [segment for segment in path.split("/") if segment]
+    return len(segments) == 2 and segments[0] == "products" and len(segments[1]) >= 5
+
+
+def _is_ty_i_ya_product_page_html(html: str) -> bool:
+    return 'class="product-buy__price"' in html and "Артикул:" in html
+
+
+def _parse_ty_i_ya_price(html: str) -> float | None:
+    price_match = re.search(
+        r'class="product-buy__price"[^>]*>(?P<body>.*?)</div>',
+        html,
+        re.I | re.S,
+    )
+    if not price_match:
+        return None
+    plain = _strip_html_text(price_match.group("body")).replace("\xa0", " ")
+    prices = extract_prices_from_text(plain)
+    if prices:
+        return prices[0]
+    return _parse_price(plain)
+
+
+def _parse_ty_i_ya_articul(html: str) -> str | None:
+    articul_match = re.search(
+        r"Артикул:\s*<b[^>]*>(?P<art>[^<]+)</b>",
+        html,
+        re.I | re.S,
+    )
+    if articul_match:
+        return articul_match.group("art").strip()
+    fallback = re.search(r"Артикул:\s*<b[^>]*>([^<]+)</b>", html[:250_000], re.I)
+    return fallback.group(1).strip() if fallback else None
+
+
+def _parse_ty_i_ya_details(html: str) -> str | None:
+    list_match = re.search(
+        r'class="product-info__list"[^>]*>(?P<body>.*?)</dl>',
+        html,
+        re.I | re.S,
+    )
+    if not list_match:
+        return None
+    parts: list[str] = []
+    for row_match in re.finditer(
+        r"<dt>(?P<label>[^<]+)</dt>.*?product-info__list-text\">(?P<value>[^<]+)",
+        list_match.group("body"),
+        re.I | re.S,
+    ):
+        label = _strip_html_text(row_match.group("label"))
+        value = _strip_html_text(row_match.group("value"))
+        if label and value:
+            parts.append(f"{label}: {value}")
+    return "; ".join(parts)[:2000] if parts else None
+
+
+def _parse_ty_i_ya_description(html: str) -> str | None:
+    tab_match = re.search(
+        r'class="product-tabs__content[^"]*"[^>]*>(?P<body>.*?)</div>',
+        html,
+        re.I | re.S,
+    )
+    if tab_match:
+        text = _strip_html_text(tab_match.group("body"))
+        if text:
+            return text[:2000]
+    desc_match = re.search(
+        r'class="product-description[^"]*"[^>]*>(?P<body>.*?)</div>',
+        html,
+        re.I | re.S,
+    )
+    if desc_match:
+        text = _strip_html_text(desc_match.group("body"))
+        return text[:2000] if text else None
+    return None
+
+
+def _parse_ty_i_ya_image_url(html: str, *, domain: str, page_url: str) -> str | None:
+    og_match = re.search(r'property="og:image"\s+content="([^"]+)"', html, re.I)
+    if og_match:
+        return _absolute_url(domain, og_match.group(1).strip(), page_url)
+    gallery_match = re.search(
+        r'<img[^>]+src="([^"]+)"[^>]*(?:title|alt)="[^"]*фото',
+        html,
+        re.I | re.S,
+    )
+    if gallery_match:
+        return _absolute_url(domain, gallery_match.group(1).strip(), page_url)
+    return None
+
+
+def _parse_ty_i_ya_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_ty_i_ya_product_page_html(html):
+        return None
+
+    title_match = re.search(r"<h1[^>]*>\s*(?P<name>[^<]+?)\s*</h1>", html, re.I | re.S)
+    if not title_match:
+        return None
+    name = re.sub(r"\s+", " ", title_match.group("name")).strip()
+    if len(name) < 4:
+        return None
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=_parse_ty_i_ya_price(html),
+        url=page_url.split("#")[0],
+        articul=_parse_ty_i_ya_articul(html),
+        details=_parse_ty_i_ya_details(html),
+        description=_parse_ty_i_ya_description(html),
+        image_url=_parse_ty_i_ya_image_url(html, domain=domain, page_url=page_url),
+    )
+
+
+def _parse_ty_i_ya_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if not _is_ty_i_ya_domain(domain):
+        return []
+    product = _parse_ty_i_ya_product_html(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    return [product] if product else []
+
+
+def _discover_ty_i_ya_sitemap_urls() -> list[str]:
+    limit = COMPETITOR_INDEX_MAX_URLS
+    product_urls: list[str] = []
+    seen: set[str] = set()
+
+    append_index_log(_TYI_YA_DOMAIN, "Загрузка sitemap Ты и Я…")
+    try:
+        with httpx.Client(
+            timeout=_TYI_YA_REQUEST_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; KP-Assistant/1.0)"},
+        ) as client:
+            response = client.get(_TYI_YA_SITEMAP_URL)
+            response.raise_for_status()
+            for loc in _SITEMAP_LOC_RE.findall(response.text[:8_000_000]):
+                clean = loc.strip().split("#")[0]
+                host = urlparse(clean).netloc.lower().removeprefix("www.")
+                if host != _TYI_YA_DOMAIN:
+                    continue
+                if not _is_ty_i_ya_product_url(clean):
+                    continue
+                if clean in seen:
+                    continue
+                seen.add(clean)
+                product_urls.append(clean)
+                if len(product_urls) >= limit:
+                    break
+    except Exception:
+        logger.exception("Failed to fetch ty-i-ya sitemap")
+
+    append_index_log(
+        _TYI_YA_DOMAIN,
+        f"Ты и Я: sitemap — {len(product_urls)} URL товаров",
+    )
+    return product_urls
+
+
+def fetch_ty_i_ya_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    product_urls = _discover_ty_i_ya_sitemap_urls()
+    if not product_urls:
+        append_index_log(
+            site.domain,
+            "Каталог Ты и Я пуст — обход seed URL",
+            level="error",
+        )
+        return fetch_catalog_products(site, max_pages=24)
+
+    append_index_log(
+        site.domain,
+        f"Индексация Ты и Я: {len(product_urls)} URL товаров",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
+        request_timeout=_TYI_YA_REQUEST_TIMEOUT,
+        max_workers=min(8, COMPETITOR_INDEX_WORKERS),
+    )
+
+
 def _parse_n72_product_previews(
     html: str,
     *,
@@ -4021,6 +4248,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if orionedu_products:
         return orionedu_products
 
+    ty_i_ya_products = _parse_ty_i_ya_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if ty_i_ya_products:
+        return ty_i_ya_products
+
     n72_products = _parse_n72_page(
         html,
         domain=domain,
@@ -4268,6 +4504,8 @@ def fetch_catalog_products(
         return fetch_prioritet1_catalog(site)
     if normalized_domain == "orionedu.ru":
         return fetch_orionedu_catalog(site)
+    if normalized_domain == _TYI_YA_DOMAIN:
+        return fetch_ty_i_ya_catalog(site)
 
     apply_default_domain_parsing_hints(normalized_domain)
     hints = get_domain_parsing_hints(normalized_domain)

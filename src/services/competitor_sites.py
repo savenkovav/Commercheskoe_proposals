@@ -82,7 +82,7 @@ COMPETITOR_SITES: tuple[CompetitorSite, ...] = (
     CompetitorSite("orionedu.ru", "Орион", "https://orionedu.ru/?s={query}"),
     CompetitorSite(
         "xn--54-vlc3b6bza.xn--p1ai",
-        "Школьный мир",
+        "Ты и Я",
         "https://xn--54-vlc3b6bza.xn--p1ai/index.php?search={query}",
     ),
     CompetitorSite(
@@ -544,6 +544,10 @@ def is_competitor_product_page_url(url: str) -> bool:
 
     # prioritet1.com: /katalog/product-slug
     if len(segments) == 2 and segments[0] in ("katalog", "catalog"):
+        return len(last) >= 5
+
+    # xn--54-vlc3b6bza.xn--p1ai (Ты и Я): /products/product-slug
+    if len(segments) == 2 and segments[0] == "products":
         return len(last) >= 5
 
     # stronikum.ru: /1061_Fizika/15145_Komplekt_...
