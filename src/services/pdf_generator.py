@@ -40,6 +40,7 @@ PAGE_BOTTOM_MARGIN = 36
 PAGE_MAX_Y = PAGE_HEIGHT - PAGE_BOTTOM_MARGIN
 STAMP_DISPLAY_WIDTH = 150
 SINGLE_PAGE_MAX_ITEMS = 20
+SINGLE_PAGE_RELAXED_MAX_ITEMS = 16
 SINGLE_PAGE_HEADER_RESERVE = 240
 
 ROW_FONT_SIZE = 9
@@ -160,19 +161,27 @@ def resolve_stamp_y(
     return min(stamp_y, max_stamp_y)
 
 
+def _standard_table_layout(*, single_page: bool) -> dict[str, float | bool]:
+    return {
+        "single_page": single_page,
+        "row_font_size": float(ROW_FONT_SIZE),
+        "line_height": float(LINE_HEIGHT),
+        "row_gap": float(ROW_GAP),
+        "compact_footer": single_page,
+        "allow_tighten": False,
+    }
+
+
 def _single_page_layout(item_count: int) -> dict[str, float | bool]:
     if item_count > SINGLE_PAGE_MAX_ITEMS:
-        return {
-            "single_page": False,
-            "row_font_size": float(ROW_FONT_SIZE),
-            "line_height": float(LINE_HEIGHT),
-            "row_gap": float(ROW_GAP),
-            "compact_footer": False,
-        }
+        return _standard_table_layout(single_page=False)
 
-    row_font_size = 8.5 if item_count >= 12 else float(ROW_FONT_SIZE)
+    if item_count <= SINGLE_PAGE_RELAXED_MAX_ITEMS:
+        return _standard_table_layout(single_page=True)
+
+    row_font_size = 8.5
     line_height = row_font_size + 2.0
-    row_gap = 2.0 if item_count >= 10 else 3.0
+    row_gap = 2.0
 
     return {
         "single_page": True,
@@ -180,6 +189,7 @@ def _single_page_layout(item_count: int) -> dict[str, float | bool]:
         "line_height": line_height,
         "row_gap": row_gap,
         "compact_footer": True,
+        "allow_tighten": True,
     }
 
 
@@ -444,7 +454,12 @@ class PdfGenerator:
                 )
                 if SINGLE_PAGE_HEADER_RESERVE + table_try + footer_try <= PAGE_MAX_Y:
                     break
-                if not _tighten_single_page_layout(layout):
+                if layout.get("allow_tighten"):
+                    if not _tighten_single_page_layout(layout):
+                        layout.update(_standard_table_layout(single_page=False))
+                        break
+                else:
+                    layout.update(_standard_table_layout(single_page=False))
                     break
 
         single_page = bool(layout["single_page"])

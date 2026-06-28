@@ -1,4 +1,29 @@
-from src.services.pdf_generator import PAGE_MAX_Y, resolve_stamp_y
+from src.services.pdf_generator import (
+    PAGE_MAX_Y,
+    ROW_FONT_SIZE,
+    ROW_GAP,
+    LINE_HEIGHT,
+    _single_page_layout,
+    resolve_stamp_y,
+)
+
+
+def test_single_page_layout_keeps_standard_rows_up_to_16_items() -> None:
+    for count in (1, 2, 10, 16):
+        layout = _single_page_layout(count)
+        assert layout["single_page"] is True
+        assert layout["row_font_size"] == ROW_FONT_SIZE
+        assert layout["line_height"] == LINE_HEIGHT
+        assert layout["row_gap"] == ROW_GAP
+        assert layout["allow_tighten"] is False
+
+
+def test_single_page_layout_compresses_rows_for_17_to_20_items() -> None:
+    layout = _single_page_layout(18)
+    assert layout["single_page"] is True
+    assert layout["row_font_size"] == 8.5
+    assert layout["row_gap"] == 2.0
+    assert layout["allow_tighten"] is True
 
 
 def test_resolve_stamp_y_places_stamp_under_content() -> None:
