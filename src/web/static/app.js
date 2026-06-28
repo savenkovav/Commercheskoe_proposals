@@ -2505,7 +2505,48 @@ async function ensureKpSession() {
   return kpSessionPromise;
 }
 
-function renderKpChatMessages() {
+const lookupCheckboxScrollTops = new WeakMap();
+
+function captureLookupCheckboxScroll(checkbox) {
+  const chatBox = checkbox?.closest?.(".chat-messages");
+  if (!chatBox) return;
+  lookupCheckboxScrollTops.set(checkbox, {
+    box: chatBox,
+    scrollTop: chatBox.scrollTop,
+  });
+}
+
+function restoreLookupCheckboxScroll(checkbox) {
+  const saved = lookupCheckboxScrollTops.get(checkbox);
+  if (!saved?.box) return;
+  requestAnimationFrame(() => {
+    saved.box.scrollTop = saved.scrollTop;
+  });
+}
+
+function getChatScrollContainers() {
+  return [$("#chatMessages"), $("#kpChatMessages")].filter(Boolean);
+}
+
+function captureChatScrollPositions() {
+  return getChatScrollContainers().map((box) => ({
+    box,
+    scrollTop: box.scrollTop,
+    scrollHeight: box.scrollHeight,
+  }));
+}
+
+function restoreChatScrollPositions(snapshot) {
+  requestAnimationFrame(() => {
+    for (const item of snapshot) {
+      if (!item.box) continue;
+      const delta = item.box.scrollHeight - item.scrollHeight;
+      item.box.scrollTop = item.scrollTop + delta;
+    }
+  });
+}
+
+function renderKpChatMessages({ scrollToBottom = false } = {}) {
   const box = $("#kpChatMessages");
   if (!box) return;
 
@@ -2573,10 +2614,13 @@ function renderKpChatMessages() {
     );
   }
 
-  requestAnimationFrame(() => {
-    box.scrollTop = box.scrollHeight;
+  if (scrollToBottom) {
+    requestAnimationFrame(() => {
+      box.scrollTop = box.scrollHeight;
+    });
+  } else {
     syncLookupKpCheckboxes();
-  });
+  }
 }
 
 function updateKpChatFormState() {
@@ -2595,7 +2639,7 @@ function resetKpChat(sessionId) {
   kpChatMessages = [];
   kpChatLoading = false;
   updateKpChatFormState();
-  renderKpChatMessages();
+  renderKpChatMessages({ scrollToBottom: true });
 }
 
 async function sendKpChatMessage(text, isRetry = false) {
@@ -2607,7 +2651,7 @@ async function sendKpChatMessage(text, isRetry = false) {
   }
   kpChatLoading = true;
   updateKpChatFormState();
-  renderKpChatMessages();
+  renderKpChatMessages({ scrollToBottom: true });
 
   try {
     await ensureKpSession();
@@ -2657,7 +2701,7 @@ async function sendKpChatMessage(text, isRetry = false) {
   } finally {
     kpChatLoading = false;
     updateKpChatFormState();
-    renderKpChatMessages();
+    renderKpChatMessages({ scrollToBottom: true });
   }
 }
 
@@ -2668,7 +2712,7 @@ function initKpChat() {
   ensureKpSession()
     .then(() => {
       updateKpChatFormState();
-      renderKpChatMessages();
+      renderKpChatMessages({ scrollToBottom: true });
     })
     .catch((e) => showToast(e.message, true));
 
@@ -2697,7 +2741,8 @@ function initKpChat() {
   });
 }
 
-function renderProcessResult(data) {
+function renderProcessResult(data, options = {}) {
+  const fromLookupToggle = Boolean(options.fromLookupToggle);
   kpProcessData = data;
   kpFormed = Boolean(data.kp_formed);
   kpExportSummary = kpFormed ? data.summary : null;
@@ -2791,12 +2836,19 @@ function renderProcessResult(data) {
       if (data.welcome_reply) {
         kpChatMessages.push({ role: "assistant", text: data.welcome_reply, ts: Date.now() });
       }
+      if (!fromLookupToggle) {
+        renderKpChatMessages({ scrollToBottom: true });
+      }
     }
     updateKpChatFormState();
-    renderKpChatMessages();
+    if (!fromLookupToggle) {
+      renderKpChatMessages({ scrollToBottom: false });
+    }
   }
 
-  syncLookupKpCheckboxes();
+  if (!fromLookupToggle) {
+    syncLookupKpCheckboxes();
+  }
 }
 
 async function processUpload(taskMode) {
@@ -2972,7 +3024,6 @@ function scrollChatToBottom() {
   const box = $("#chatMessages");
   requestAnimationFrame(() => {
     box.scrollTop = box.scrollHeight;
-    syncLookupKpCheckboxes();
   });
 }
 
@@ -4064,6 +4115,7 @@ async function toggleLookupKpItem(checkbox) {
   }
 
   const included = checkbox.checked;
+  const scrollSnapshot = captureChatScrollPositions();
   checkbox.dataset.lookupKpBusy = "1";
   try {
     await ensureKpSession();
@@ -4077,12 +4129,16 @@ async function toggleLookupKpItem(checkbox) {
         included,
       }),
     });
-    renderProcessResult(data);
+    renderProcessResult(data, { fromLookupToggle: true });
     resetKpSavedSelection();
+    restoreChatScrollPositions(scrollSnapshot);
+    restoreLookupCheckboxScroll(checkbox);
     showToast(included ? "Добавлено в детализацию КП" : "Удалено из детализации КП");
     syncLookupKpCheckboxes();
   } catch (error) {
     checkbox.checked = !included;
+    restoreChatScrollPositions(scrollSnapshot);
+    restoreLookupCheckboxScroll(checkbox);
     showToast(error.message, true);
   } finally {
     delete checkbox.dataset.lookupKpBusy;
@@ -4106,6 +4162,12 @@ function initLookupKpSelection() {
     if (!checkbox) return;
     event.stopPropagation();
     toggleLookupKpItem(checkbox);
+  });
+
+  document.addEventListener("mousedown", (event) => {
+    const checkbox = event.target.closest?.(".lookup-kp-select");
+    if (!checkbox) return;
+    captureLookupCheckboxScroll(checkbox);
   });
 
   document.addEventListener("click", (event) => {
