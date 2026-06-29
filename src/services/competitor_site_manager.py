@@ -168,10 +168,12 @@ class CompetitorSiteManager:
 
     @staticmethod
     def domain_from_url(url: str) -> str:
+        from src.services.competitor_sites import canonical_competitor_domain
+
         host = urlparse(url).netloc.lower().removeprefix("www.")
         if not host:
             raise ValueError("Не удалось определить домен")
-        return host
+        return canonical_competitor_domain(host)
 
     @staticmethod
     def _make_id(domain: str) -> str:
@@ -345,11 +347,11 @@ class CompetitorSiteManager:
         price_html_hint: str | None = None,
         articul_html_hint: str | None = None,
     ) -> tuple[CompetitorSiteDraft, dict[str, str | bool | None]]:
-        analysis = self.analyze_url(url, label=label)
-        domain = str(analysis["domain"])
-        normalized = domain.lower().removeprefix("www.")
+        from src.services.competitor_sites import canonical_competitor_domain, get_builtin_competitor_site
 
-        from src.services.competitor_sites import get_builtin_competitor_site
+        analysis = self.analyze_url(url, label=label)
+        domain = canonical_competitor_domain(str(analysis["domain"]))
+        normalized = domain
 
         builtin_site = get_builtin_competitor_site(domain)
         resolved_label = str(analysis.get("label") or label.strip() or domain)

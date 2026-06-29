@@ -48,6 +48,7 @@ _SITEMAP_CATALOG_MIN_PRODUCTS: dict[str, int] = {
     "n-72.ru": 1000,
     "epp24.ru": 1000,
     "zarnitza.ru": 500,
+    "xn--54-vlc3b6bza.xn--p1ai": 400,
 }
 
 _TD_SCHOOL_DEFAULT_SAMPLE_URL = "https://td-school.ru/index.php?page=100"
@@ -3398,7 +3399,9 @@ _TYI_YA_REQUEST_TIMEOUT = httpx.Timeout(connect=20.0, read=45.0, write=20.0, poo
 
 
 def _is_ty_i_ya_domain(domain: str) -> bool:
-    return domain.lower().removeprefix("www.") == _TYI_YA_DOMAIN
+    from src.services.competitor_sites import canonical_competitor_domain
+
+    return canonical_competitor_domain(domain) == _TYI_YA_DOMAIN
 
 
 def _is_ty_i_ya_product_url(url: str) -> bool:
@@ -4526,7 +4529,9 @@ def fetch_catalog_products(
     max_pages: int = 6,
     extra_urls: list[str] | None = None,
 ) -> list[CompetitorCatalogProduct]:
-    normalized_domain = site.domain.lower().removeprefix("www.")
+    from src.services.competitor_sites import canonical_competitor_domain
+
+    normalized_domain = canonical_competitor_domain(site.domain)
     if normalized_domain == "stronikum.ru":
         return fetch_stronikum_catalog(site)
     if normalized_domain == "labkabinet.ru":
@@ -4924,17 +4929,34 @@ def index_competitor_site_catalog(
 
     append_index_log(site.domain, f"Запись {len(products)} товаров в RAG-индекс…")
     text = products_to_rag_text(products, site=site)
-    result = doc_rag_index.index_text(
-        doc_id=doc_id,
-        source_type="competitor",
-        source_name=site.label,
-        text=text,
-        filename=f"{site.domain}-catalog",
-        force=True,
-    )
+    try:
+        result = doc_rag_index.index_text(
+            doc_id=doc_id,
+            source_type="competitor",
+            source_name=site.label,
+            text=text,
+            filename=f"{site.domain}-catalog",
+            force=True,
+        )
+    except Exception as exc:
+        logger.exception("Per-site RAG index failed for %s", site.domain)
+        append_index_log(
+            site.domain,
+            f"Предупреждение: RAG-индекс сайта не обновлён ({exc})",
+            level="error",
+        )
+        result = {"indexed": False, "chunks": 0, "vectorized": False, "rag_error": str(exc)}
     result["products"] = len(products)
     result["store_products"] = store_count
-    sync_unified_competitor_rag(doc_rag_index)
+    try:
+        sync_unified_competitor_rag(doc_rag_index)
+    except Exception as exc:
+        logger.exception("Unified competitor RAG sync failed after %s", site.domain)
+        append_index_log(
+            site.domain,
+            f"Предупреждение: общий RAG-индекс не обновлён ({exc})",
+            level="error",
+        )
     return result
 
 

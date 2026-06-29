@@ -9,6 +9,19 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from src.config import COMPETITOR_SEARCH_FALLBACK_THRESHOLD, WEB_SEARCH_EXACT_THRESHOLD
 
 
+def canonical_competitor_domain(domain: str) -> str:
+    """Нормализует домен: www., нижний регистр, кириллица → punycode (IDN)."""
+    host = domain.strip().lower().removeprefix("www.")
+    if not host or host.isascii():
+        return host
+    try:
+        import idna
+
+        return idna.encode(host).decode("ascii")
+    except Exception:
+        return host
+
+
 @dataclass(frozen=True)
 class CompetitorSite:
     domain: str
@@ -250,9 +263,9 @@ def competitor_sites_with_search() -> tuple[CompetitorSite, ...]:
 
 
 def get_builtin_competitor_site(domain: str) -> CompetitorSite | None:
-    normalized = domain.lower().removeprefix("www.")
+    normalized = canonical_competitor_domain(domain)
     for site in COMPETITOR_SITES:
-        if site.domain.lower().removeprefix("www.") == normalized:
+        if canonical_competitor_domain(site.domain) == normalized:
             return site
     return None
 
