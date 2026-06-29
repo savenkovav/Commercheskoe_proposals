@@ -1518,7 +1518,17 @@ def api_competitors_index_status(url: str) -> dict[str, Any]:
     draft = manager.get_draft(domain)
     job = get_reindex_job(normalized)
     running = bool(job and job.get("running"))
+    queued = bool(job and job.get("queued"))
+    queue_position = job.get("queue_position") if job else None
     phase = str(job.get("phase") or "") if job else ""
+    if queued:
+        phase_label = (
+            f"В очереди индексации (позиция {queue_position})"
+            if queue_position
+            else get_index_phase_label("queued")
+        )
+    else:
+        phase_label = get_index_phase_label(phase if phase else None)
     analysis = (job or {}).get("analysis") or (draft.analysis if draft else None)
     from src.services.competitor_product_store import get_competitor_product_store
 
@@ -1531,9 +1541,11 @@ def api_competitors_index_status(url: str) -> dict[str, Any]:
     return {
         "domain": domain,
         "running": running,
+        "queued": queued,
+        "queue_position": queue_position,
         "phase": phase or None,
-        "phase_label": get_index_phase_label(phase if phase else None),
-        "index_completed": bool(draft and draft.indexed and not running),
+        "phase_label": phase_label,
+        "index_completed": bool(draft and draft.indexed and not running and not queued),
         "is_builtin": is_builtin,
         "catalog": draft.index_result if draft else None,
         "analysis": analysis,
@@ -1580,6 +1592,8 @@ def api_competitors_index(body: CompetitorSiteIndexRequest) -> dict[str, Any]:
     return {
         "started": result.get("started", False),
         "running": result.get("running", False),
+        "queued": result.get("queued", False),
+        "queue_position": result.get("queue_position"),
         "domain": result.get("domain"),
         "phase": result.get("phase"),
         "is_builtin": bool(result.get("is_builtin")),

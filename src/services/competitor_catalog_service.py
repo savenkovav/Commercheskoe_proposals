@@ -61,6 +61,7 @@ index_queue.bind_job_registry(_reindex_jobs)
 
 _INDEX_PHASE_LABELS: dict[str, str] = {
     "starting": "Запуск индексации…",
+    "queued": "В очереди индексации…",
     "analyze": "Изучаю структуру сайта…",
     "sample": "Индексирую образец карточки товара…",
     "sitemap": "Поиск карты сайта (sitemap)…",

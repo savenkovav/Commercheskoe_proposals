@@ -3957,8 +3957,11 @@ async function pollCompetitorIndexProgress(domain, pollToken) {
     appendCompetitorIndexLogLines(logsData.logs || []);
 
     if (statusData.phase_label) {
-      setCompetitorIndexStatus(statusData.phase_label, statusData.running ? "running" : "running");
+      const pollState = statusData.running || statusData.queued ? "running" : "running";
+      setCompetitorIndexStatus(statusData.phase_label, pollState);
     }
+
+    const isQueued = Boolean(statusData.queued || statusData.phase === "queued");
 
     if (statusData.catalog_products) {
       applyCompetitorCatalogStats(statusData.catalog_products);
@@ -3991,7 +3994,7 @@ async function pollCompetitorIndexProgress(domain, pollToken) {
       throw new Error(String(statusData.error));
     }
 
-    if (!statusData.running && !statusData.index_completed) {
+    if (!statusData.running && !statusData.index_completed && !isQueued) {
       setCompetitorIndexStatus("Индексация остановлена", "error");
       return statusData;
     }
@@ -4035,7 +4038,7 @@ async function indexCompetitorSite() {
       body: JSON.stringify(payload),
     });
 
-    if (!data.started) {
+    if (!data.started && !data.queued && !data.running) {
       throw new Error(data.message || "Не удалось запустить индексацию");
     }
 
@@ -4044,11 +4047,37 @@ async function indexCompetitorSite() {
       throw new Error("Не удалось определить домен сайта");
     }
 
+    if (data.queued) {
+      appendCompetitorIndexLogLines([
+        {
+          id: competitorIndexLogSince + 1,
+          ts: Date.now() / 1000,
+          level: "info",
+          message: data.message || "Задача поставлена в очередь индексации",
+        },
+      ]);
+      setCompetitorIndexStatus(
+        data.message || "В очереди индексации — дождитесь освобождения слота",
+      );
+    } else if (data.running && !data.started) {
+      appendCompetitorIndexLogLines([
+        {
+          id: competitorIndexLogSince + 1,
+          ts: Date.now() / 1000,
+          level: "info",
+          message: data.message || "Индексация уже выполняется",
+        },
+      ]);
+      setCompetitorIndexStatus(data.message || "Индексация уже выполняется");
+    }
+
     competitorSiteBuiltin = Boolean(data.is_builtin);
     competitorIndexedDomain = domain;
-    setCompetitorIndexStatus(
-      data.is_builtin ? "Обновление каталога встроенного сайта…" : "Изучаю структуру сайта…",
-    );
+    if (data.started) {
+      setCompetitorIndexStatus(
+        data.is_builtin ? "Обновление каталога встроенного сайта…" : "Изучаю структуру сайта…",
+      );
+    }
     await pollCompetitorIndexProgress(domain, pollToken);
   } catch (e) {
     setCompetitorIndexStatus(e.message || "Ошибка индексации", "error");
