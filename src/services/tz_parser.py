@@ -226,11 +226,9 @@ def _is_tz_table_header(header_cells: list[str]) -> bool:
     joined = " ".join(cell.strip().lower() for cell in header_cells if cell.strip())
     if "наимен" not in joined and not _looks_like_price_request_header(joined):
         return False
-    if "товар" in joined:
-        return _build_column_map(header_cells) is not None
     if _looks_like_price_request_header(joined):
         return _build_price_request_column_map(header_cells) is not None
-    return False
+    return _build_column_map(header_cells) is not None
 
 
 _VENDOR_CODE_RE = re.compile(r"\b([A-Z]{2,5}\d{3,7})\b")
@@ -249,10 +247,15 @@ _PRICE_REQUEST_MARKERS = (
 
 def _looks_like_price_request_header(header: str) -> bool:
     lower = header.lower()
-    if "наимен" in lower or "haumen" in lower or "haumeh" in lower:
-        if any(marker in lower for marker in ("кол", "kon", "цена", "lena", "сумм", "cymma")):
-            return True
-    return False
+    if "товар" in lower:
+        return False
+    if ("ед" in lower and "изм" in lower) or "единиц" in lower:
+        return False
+    has_name = "наимен" in lower or "haumen" in lower or "haumeh" in lower
+    has_price = any(marker in lower for marker in ("цен", "lena", "сумм", "cymma"))
+    if not has_name or not has_price:
+        return False
+    return True
 
 
 def _looks_like_price_request_document(text: str) -> bool:
@@ -747,13 +750,17 @@ def _parse_price_request_tables(tables: Iterable[list[list[str]]]) -> list[TZIte
         if not col:
             continue
 
+        auto_number = 0
         for row in table[1:]:
             cells = [_cell_str(cell) for cell in row]
             if len(cells) <= col.name:
                 continue
             number_raw = cells[col.number].rstrip(".")
-            if not number_raw.isdigit():
-                continue
+            if number_raw.isdigit():
+                number = int(number_raw)
+            else:
+                auto_number += 1
+                number = auto_number
             row_text = " | ".join(cells)
             vendor_match = _VENDOR_CODE_RE.search(row_text)
             vendor_code = vendor_match.group(1).upper() if vendor_match else ""
@@ -773,7 +780,7 @@ def _parse_price_request_tables(tables: Iterable[list[list[str]]]) -> list[TZIte
             specs = f"Код производителя: {vendor_code}" if vendor_code else ""
             items.append(
                 TZItem(
-                    number=int(number_raw),
+                    number=number,
                     name=name,
                     unit="шт.",
                     quantity=quantity,
@@ -1397,12 +1404,8 @@ def _parse_tz_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
             cells = [_cell_str(cell) for cell in row]
             if not any(cells):
                 continue
-            item: TZItem | None = None
-            if col.has_number:
-                item = _parse_row(cells, col)
-            else:
-                auto_number += 1
-                item = _parse_row(cells, col, fallback_number=auto_number)
+            auto_number += 1
+            item = _parse_row(cells, col, fallback_number=auto_number)
             if item:
                 items.append(item)
 

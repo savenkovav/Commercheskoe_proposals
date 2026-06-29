@@ -25,6 +25,24 @@ def test_parse_table_with_sale_price_column() -> None:
     assert items[0].target_sale_price == 150.5
 
 
+def test_parse_equipment_request_table_without_row_numbers() -> None:
+    table = [
+        ["№ п/п", "Наименование", "Стоимость", "Количество"],
+        ["", "Набор перкуссии модели FLT-PS5", "", "1"],
+        ["", "Палочка эбонитовая", "", "1"],
+        ["", "Демонстрационное оборудование «Сосуды сообщающиеся»", "", "1"],
+        ["", "Набор муляжей овощей (большой)", "", "1"],
+    ]
+    items = _parse_tz_tables([table])
+    assert len(items) == 4
+    assert items[0].number == 1
+    assert "перкуссии" in items[0].name.lower()
+    assert items[0].quantity == 1.0
+    assert items[2].number == 3
+    assert "сосуды сообщающиеся" in items[2].name.lower()
+    assert items[3].quantity == 1.0
+
+
 def test_apply_kp_pricing_uses_tz_sale_price() -> None:
     tz_item = TZItem(
         number=1,
