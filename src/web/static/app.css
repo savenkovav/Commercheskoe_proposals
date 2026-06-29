@@ -407,6 +407,7 @@ a.btn.btn--disabled {
 .kp-select-cell input[type="checkbox"],
 .kp-kit-select-cell input[type="checkbox"],
 .kp-web-select-cell input[type="checkbox"],
+.kp-custom-select-cell input[type="checkbox"],
 #selectAllKpItems {
   width: 18px;
   height: 18px;
@@ -522,6 +523,24 @@ a.btn.btn--disabled {
 .kp-kit-row--excluded td,
 .kp-web-row--excluded td {
   opacity: 0.45;
+}
+
+.kp-custom-row--excluded td {
+  opacity: 0.45;
+}
+
+.kp-custom-price-input,
+.kp-custom-qty-input {
+  width: 100%;
+  max-width: 8.5rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.compare-table--custom {
+  margin-top: 0.75rem;
 }
 
 .kp-web-description {

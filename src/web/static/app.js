@@ -609,6 +609,7 @@ function getCurrentMarkupPercent() {
 
 function shouldDeferInternetRowPrice(item, selection = {}) {
   if (!collectWebProductEntries(item).length) return false;
+  if (allowsCustomEntry(item) && isCustomEntryChecked(item.number, selection)) return false;
   const variant = selection.variant || savedVariantIdForItem(item.number) || "primary";
   if (variant !== "primary") return false;
   if (item.kit_components?.length) return false;
@@ -626,6 +627,97 @@ function emptyItemPricing(item) {
     totalCost: 0,
     totalBasePrice: 0,
     totalPrice: 0,
+  };
+}
+
+function allowsCustomEntry(item) {
+  return Boolean(item?.allows_custom_entry);
+}
+
+function shouldAutoEnableCustomEntry(item) {
+  if (!allowsCustomEntry(item)) return false;
+  if (item.kit_components?.length) return false;
+  if (isLocalDataSource(item) && item.unit_base_price != null && item.status !== "not_found") {
+    return false;
+  }
+  return true;
+}
+
+let kpCustomDraft = {};
+
+function getCustomDraft(itemNumber) {
+  return kpCustomDraft[itemNumber] || {};
+}
+
+function setCustomDraft(itemNumber, patch) {
+  kpCustomDraft[itemNumber] = { ...getCustomDraft(itemNumber), ...patch };
+}
+
+function isCustomEntryChecked(itemNumber, selection = null) {
+  if (selection?.custom_enabled != null) return Boolean(selection.custom_enabled);
+  const saved = kpSavedSelections?.find((row) => row.number === itemNumber);
+  if (saved?.custom_enabled != null) return Boolean(saved.custom_enabled);
+  const box = document.querySelector(`.kp-custom-include[data-item="${itemNumber}"]`);
+  if (box) return box.checked;
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  return Boolean(item && shouldAutoEnableCustomEntry(item));
+}
+
+function getCustomUnitPrice(itemNumber, selection = null) {
+  const fromSelection = selection?.custom_unit_price;
+  if (fromSelection != null) return roundMoney(fromSelection);
+  const saved = kpSavedSelections?.find((row) => row.number === itemNumber);
+  if (saved?.custom_unit_price != null) return roundMoney(saved.custom_unit_price);
+  const draft = getCustomDraft(itemNumber).price;
+  if (draft != null) return roundMoney(draft);
+  const input = document.querySelector(`.kp-custom-price-input[data-item="${itemNumber}"]`);
+  if (input) return parseMoneyInput(input.value);
+  return null;
+}
+
+function getCustomQuantity(item, itemNumber = item?.number, selection = null) {
+  const fromSelection = selection?.custom_quantity;
+  if (fromSelection != null && fromSelection > 0) return fromSelection;
+  const saved = kpSavedSelections?.find((row) => row.number === itemNumber);
+  if (saved?.custom_quantity != null && saved.custom_quantity > 0) {
+    return saved.custom_quantity;
+  }
+  const draft = getCustomDraft(itemNumber).quantity;
+  if (draft != null && draft > 0) return draft;
+  const input = document.querySelector(`.kp-custom-qty-input[data-item="${itemNumber}"]`);
+  if (input) {
+    const parsed = Number(String(input.value || "").replace(",", "."));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return item?.quantity || 1;
+}
+
+function hasCustomEntryPricing(item, selection = {}) {
+  if (!allowsCustomEntry(item)) return false;
+  if (!isCustomEntryChecked(item.number, selection)) return false;
+  return getCustomUnitPrice(item.number, selection) != null;
+}
+
+function customEntryKpUnitPrice(base) {
+  if (base == null) return null;
+  const markup = getCurrentMarkupPercent();
+  return roundMoney(base * (1 + markup / 100));
+}
+
+function buildCustomEntryPricing(item, selection = {}) {
+  const base = getCustomUnitPrice(item.number, selection);
+  const qty = getCustomQuantity(item, item.number, selection);
+  if (base == null) return emptyItemPricing(item);
+  const unitPrice = customEntryKpUnitPrice(base);
+  return {
+    status: item.status,
+    internetPriced: false,
+    unitCost: base,
+    unitBasePrice: base,
+    unitPrice,
+    totalCost: roundMoney(base * qty),
+    totalBasePrice: roundMoney(base * qty),
+    totalPrice: roundMoney(unitPrice * qty),
   };
 }
 
@@ -812,7 +904,8 @@ function hasPositionDetailSelection(item, selection = {}) {
         return quote && resolveWebQuoteBasePrice(item, index, quote) != null;
       }),
   );
-  return hasKitSelection || hasWebSelection;
+  const hasCustomSelection = hasCustomEntryPricing(item, selection);
+  return hasKitSelection || hasWebSelection || hasCustomSelection;
 }
 
 function kitSelectedBaseTotal(item, itemNumber = item.number) {
@@ -853,6 +946,13 @@ function isKitComponentChecked(itemNumber, index) {
 }
 
 function computeItemPricing(item, selection = {}) {
+  if (allowsCustomEntry(item) && isCustomEntryChecked(item.number, selection)) {
+    const customPricing = buildCustomEntryPricing(item, selection);
+    if (customPricing.unitBasePrice != null) {
+      return applyTzSalePriceOverride(item, customPricing, selection.variant || "primary");
+    }
+  }
+
   const variant = selection.variant || savedVariantIdForItem(item.number) || "primary";
   const kitIndices =
     selection.kit_indices !== undefined
@@ -1243,6 +1343,11 @@ function resolveSelectionPreview(item, selection) {
   };
 
   const pricing = computeItemPricing(item, selection);
+  let quantity = item.quantity;
+  if (selection.custom_enabled && selection.custom_quantity > 0) {
+    quantity = selection.custom_quantity;
+  }
+
   const variantLabel =
     selection.variant === "primary"
       ? "Основное совпадение"
@@ -1278,7 +1383,9 @@ function resolveSelectionPreview(item, selection) {
     }
   }
 
-  if (selection.web_indices?.length) {
+  if (selection.custom_enabled && selection.custom_unit_price != null) {
+    matched = item.name;
+  } else if (selection.web_indices?.length) {
     const webParts = selection.web_indices
       .map((index) => collectWebProductEntries(item)[index]?.matched_name)
       .filter(Boolean);
@@ -1289,8 +1396,14 @@ function resolveSelectionPreview(item, selection) {
 
   return {
     ...base,
+    quantity,
     matched,
-    source: selection.variant === "primary" ? SOURCE_LABELS[item.source] || item.source || "—" : variantLabel,
+    source:
+      selection.custom_enabled && selection.custom_unit_price != null
+        ? "Ручной ввод"
+        : selection.variant === "primary"
+          ? SOURCE_LABELS[item.source] || item.source || "—"
+          : variantLabel,
     unitPrice: pricing.unitPrice ?? pricing.unitBasePrice,
     total: pricing.totalPrice,
   };
@@ -1373,10 +1486,9 @@ async function saveKpSelection() {
   for (const selection of included) {
     const item = kpProcessData.items.find((row) => row.number === selection.number);
     if (!item) continue;
-    if (!item.kit_components?.length && !collectWebProductEntries(item).length) continue;
-    if (!hasPositionDetailSelection(item, selection)) {
+    if (itemRequiresPricingSource(item, selection)) {
       showToast(
-        `Позиция ${selection.number}: выберите состав комплекта и/или позиции из интернета`,
+        `Позиция ${selection.number}: укажите цену вручную или выберите источник`,
         true,
       );
       return;
@@ -1478,6 +1590,17 @@ function getSelectionsFromUI() {
         selection.web_manual_prices = manualPrices;
       }
     }
+    if (allowsCustomEntry(item)) {
+      selection.custom_enabled = isCustomEntryChecked(item.number);
+      const customPrice = getCustomUnitPrice(item.number);
+      const customQty = getCustomQuantity(item, item.number);
+      if (selection.custom_enabled && customPrice != null) {
+        selection.custom_unit_price = customPrice;
+      }
+      if (selection.custom_enabled && customQty > 0) {
+        selection.custom_quantity = customQty;
+      }
+    }
     return selection;
   });
 }
@@ -1533,20 +1656,53 @@ function bindKpSelectionHandlers() {
       updateKitComponentTotal(itemNumber);
       return;
     }
+    if (target.classList.contains("kp-custom-include")) {
+      const itemNumber = Number(target.dataset.item);
+      const row = target.closest(".kp-custom-row");
+      if (row) {
+        row.classList.toggle("kp-custom-row--excluded", !target.checked);
+      }
+      setCustomDraft(itemNumber, { enabled: target.checked });
+      resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
+      updateCustomEntryTotals(itemNumber);
+      return;
+    }
   });
 
   tbody?.addEventListener("input", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
-    if (!target.classList.contains("kp-web-price-input")) return;
-    const itemNumber = Number(target.dataset.item);
-    const webIndex = Number(target.dataset.webIndex);
-    const price = parseMoneyInput(target.value);
-    setWebManualPrice(itemNumber, webIndex, price);
-    updateWebRowKpPrice(itemNumber, webIndex);
-    resetKpSavedSelection();
-    updateTzRowPricing(itemNumber);
-    updateWebAddonTotal(itemNumber);
+    if (target.classList.contains("kp-web-price-input")) {
+      const itemNumber = Number(target.dataset.item);
+      const webIndex = Number(target.dataset.webIndex);
+      const price = parseMoneyInput(target.value);
+      setWebManualPrice(itemNumber, webIndex, price);
+      updateWebRowKpPrice(itemNumber, webIndex);
+      resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
+      updateWebAddonTotal(itemNumber);
+      return;
+    }
+    if (target.classList.contains("kp-custom-price-input")) {
+      const itemNumber = Number(target.dataset.item);
+      const price = parseMoneyInput(target.value);
+      setCustomDraft(itemNumber, { price });
+      resetKpSavedSelection();
+      updateCustomEntryTotals(itemNumber);
+      updateTzRowPricing(itemNumber);
+      return;
+    }
+    if (target.classList.contains("kp-custom-qty-input")) {
+      const itemNumber = Number(target.dataset.item);
+      const parsed = Number(String(target.value || "").replace(",", "."));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        setCustomDraft(itemNumber, { quantity: parsed });
+      }
+      resetKpSavedSelection();
+      updateCustomEntryTotals(itemNumber);
+      updateTzRowPricing(itemNumber);
+    }
   });
 
   tbody?.addEventListener(
@@ -1554,10 +1710,18 @@ function bindKpSelectionHandlers() {
     (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement)) return;
-      if (!target.classList.contains("kp-web-price-input")) return;
-      const price = parseMoneyInput(target.value);
-      if (price != null) {
-        target.value = formatMoneyInputValue(price);
+      if (target.classList.contains("kp-web-price-input")) {
+        const price = parseMoneyInput(target.value);
+        if (price != null) {
+          target.value = formatMoneyInputValue(price);
+        }
+        return;
+      }
+      if (target.classList.contains("kp-custom-price-input")) {
+        const price = parseMoneyInput(target.value);
+        if (price != null) {
+          target.value = formatMoneyInputValue(price);
+        }
       }
     },
     true,
@@ -1577,7 +1741,7 @@ function bindKpSelectionHandlers() {
       updateTzRowPricing(itemNumber);
       return;
     }
-    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell")) {
+    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell, .kp-custom-select-cell, .kp-custom-price-cell, .kp-custom-qty-input")) {
       event.stopPropagation();
     }
   });
@@ -1600,10 +1764,9 @@ async function formKpDocument() {
   for (const selection of included) {
     const item = kpProcessData?.items?.find((row) => row.number === selection.number);
     if (!item) continue;
-    if (!item.kit_components?.length && !collectWebProductEntries(item).length) continue;
-    if (!hasPositionDetailSelection(item, selection)) {
+    if (itemRequiresPricingSource(item, selection)) {
       showToast(
-        `Позиция ${selection.number}: выберите состав комплекта и/или позиции из интернета`,
+        `Позиция ${selection.number}: укажите цену вручную или выберите источник`,
         true,
       );
       return;
@@ -2361,6 +2524,93 @@ function updateWebRowKpPrice(itemNumber, webIndex) {
   kpEl.textContent = fmtMoney(webQuoteKpUnitPriceFromBase(base));
 }
 
+function renderCustomManualBlock(item) {
+  if (!allowsCustomEntry(item)) return "";
+  const checked = isCustomEntryChecked(item.number);
+  const manualPrice = getCustomUnitPrice(item.number);
+  const qtyValue = getCustomQuantity(item, item.number);
+  const kpPrice = customEntryKpUnitPrice(manualPrice);
+  const lineTotal = manualPrice != null && kpPrice != null ? roundMoney(kpPrice * qtyValue) : 0;
+  return `
+      <h4 class="compare-block__subtitle">Ручной ввод</h4>
+      <p class="muted compare-block__kit-note">Позиция не найдена в прайсах, каталоге, реестре и на сайтах конкурентов. Укажите цену и количество для включения в КП.</p>
+      <table class="compare-table compare-table--custom">
+        <thead>
+          <tr>
+            <th class="kp-custom-select-cell"></th>
+            <th>Наименование</th>
+            <th>Цена закупки</th>
+            <th>Цена КП</th>
+            <th>Кол-во</th>
+            <th>Сумма КП</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="kp-custom-row compare-row--custom${checked ? "" : " kp-custom-row--excluded"}" data-item="${item.number}">
+            <td class="kp-custom-select-cell">
+              <input
+                type="checkbox"
+                class="kp-custom-include"
+                data-item="${item.number}"
+                ${checked ? "checked" : ""}
+              >
+            </td>
+            <td>${escapeHtml(item.name)}</td>
+            <td class="kp-custom-price-cell">
+              <input
+                type="text"
+                class="kp-custom-price-input"
+                data-item="${item.number}"
+                inputmode="decimal"
+                placeholder="0,00"
+                value="${manualPrice != null ? escapeHtml(formatMoneyInputValue(manualPrice)) : ""}"
+              >
+            </td>
+            <td>
+              <span class="kp-custom-kp-price" data-item="${item.number}">${fmtMoney(kpPrice)}</span>
+            </td>
+            <td>
+              <input
+                type="text"
+                class="kp-custom-qty-input"
+                data-item="${item.number}"
+                inputmode="decimal"
+                value="${escapeHtml(String(qtyValue).replace(".", ","))}"
+              >
+            </td>
+            <td>
+              <strong class="kp-custom-line-total" data-item="${item.number}">${fmtMoney(lineTotal)}</strong>
+            </td>
+          </tr>
+        </tbody>
+      </table>`;
+}
+
+function updateCustomEntryTotals(itemNumber) {
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  if (!item) return;
+  const base = getCustomUnitPrice(itemNumber);
+  const qty = getCustomQuantity(item, itemNumber);
+  const kpPrice = customEntryKpUnitPrice(base);
+  const kpEl = document.querySelector(`.kp-custom-kp-price[data-item="${itemNumber}"]`);
+  const totalEl = document.querySelector(`.kp-custom-line-total[data-item="${itemNumber}"]`);
+  if (kpEl) kpEl.textContent = fmtMoney(kpPrice);
+  if (totalEl) totalEl.textContent = fmtMoney(kpPrice != null ? roundMoney(kpPrice * qty) : 0);
+}
+
+function itemRequiresPricingSource(item, selection = {}) {
+  if (item.kit_components?.length || collectWebProductEntries(item).length) {
+    return !hasPositionDetailSelection(item, selection);
+  }
+  if (allowsCustomEntry(item)) {
+    if (hasCustomEntryPricing(item, selection)) return false;
+    if (!shouldDeferInternetRowPrice(item, selection) && item.unit_base_price != null) return false;
+    return true;
+  }
+  if (!shouldDeferInternetRowPrice(item, selection) && item.unit_base_price != null) return false;
+  return item.status === "not_found";
+}
+
 function renderWebComparisonRows(item) {
   const productEntries = collectWebProductEntries(item);
   if (!productEntries.length) return "";
@@ -2457,6 +2707,7 @@ function renderComparisonTable(item) {
     !comparison.length &&
     !webEntries.length &&
     !(item.kit_components || []).length &&
+    !allowsCustomEntry(item) &&
     !primaryBlock
   ) {
     return "";
@@ -2533,6 +2784,7 @@ function renderComparisonTable(item) {
       ${renderMarketEstimateInfo(item)}
       ${primaryBlock}
       ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
+      ${renderCustomManualBlock(item)}
       ${renderWebComparisonRows(item)}
       ${
         comparisonRows
@@ -2938,7 +3190,10 @@ function renderProcessResult(data, options = {}) {
 
   data.items
     .filter(
-      (item) => item.kit_components?.length || collectWebProductEntries(item).length,
+      (item) =>
+        item.kit_components?.length ||
+        collectWebProductEntries(item).length ||
+        allowsCustomEntry(item),
     )
     .forEach((item) => updateTzRowPricing(item.number));
 

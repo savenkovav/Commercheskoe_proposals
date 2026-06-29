@@ -19,6 +19,9 @@ class KpSelectionItem:
     kit_indices: tuple[int, ...] | None = None
     web_indices: tuple[int, ...] | None = None
     web_manual_prices: tuple[tuple[int, float], ...] | None = None
+    custom_enabled: bool = False
+    custom_unit_price: float | None = None
+    custom_quantity: float | None = None
 
 
 def _is_market_estimate_quote(quote: PriceQuote) -> bool:
@@ -252,6 +255,31 @@ def apply_web_addon_selection(
     return cloned
 
 
+def apply_custom_manual_selection(
+    result: MatchResult,
+    *,
+    enabled: bool,
+    unit_price: float | None,
+    quantity: float | None,
+) -> MatchResult:
+    if not enabled or unit_price is None or unit_price <= 0:
+        return result
+
+    cloned = copy.deepcopy(result)
+    if quantity is not None and quantity > 0:
+        cloned.tz_item.quantity = float(quantity)
+    cloned.matched_name = cloned.tz_item.name
+    cloned.source = MatchSource.NONE
+    cloned.match_score = 0.0
+    cloned.unit_cost = round(float(unit_price), 2)
+    cloned.unit_base_price = round(float(unit_price), 2)
+    cloned.internet_priced = False
+    cloned.notes = "Ручной ввод цены"
+    cloned.source_detail = ""
+    apply_kp_pricing(cloned)
+    return cloned
+
+
 def apply_kp_selections(
     results: list[MatchResult],
     selections: list[KpSelectionItem],
@@ -277,5 +305,16 @@ def apply_kp_selections(
             else None
         )
         with_kit = apply_kit_component_selection(applied, kit_indices)
-        selected.append(apply_web_addon_selection(with_kit, web_indices, manual_prices))
+        with_web = apply_web_addon_selection(with_kit, web_indices, manual_prices)
+        if selection.custom_enabled and selection.custom_unit_price is not None:
+            selected.append(
+                apply_custom_manual_selection(
+                    with_web,
+                    enabled=True,
+                    unit_price=selection.custom_unit_price,
+                    quantity=selection.custom_quantity,
+                )
+            )
+        else:
+            selected.append(with_web)
     return selected

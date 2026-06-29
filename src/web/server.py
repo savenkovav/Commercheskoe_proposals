@@ -35,7 +35,7 @@ from src.services.auth_service import AUTH_COOKIE_NAME, ensure_default_admin, re
 from src.services.user_db import get_user_database
 from src.web.auth_routes import admin_router, auth_router, history_router
 from src.services.kp_chat_service import KpChatService, WELCOME_MESSAGE
-from src.services.kp_preferences import KpPreferences
+from src.services.kp_manual_entry import allows_custom_manual_entry
 from src.services.markup_settings import get_markup_percent, set_markup_percent
 from src.services.pricing_rules import effective_markup_percent, format_markup_percent, is_internet_sourced_result, item_margin_percent
 from src.services.meilisearch_service import meilisearch_health
@@ -197,6 +197,9 @@ class KpSelectionItemRequest(BaseModel):
     kit_indices: list[int] | None = None
     web_indices: list[int] | None = None
     web_manual_prices: dict[str, float] | None = None
+    custom_enabled: bool = False
+    custom_unit_price: float | None = Field(default=None, ge=0)
+    custom_quantity: float | None = Field(default=None, gt=0)
 
 
 class KpFormRequest(BaseModel):
@@ -403,6 +406,7 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
             else None
         ),
         "lookup_kp_key": _lookup_kp_key_from_result(result),
+        "allows_custom_entry": allows_custom_manual_entry(result),
     }
 
 
@@ -1192,6 +1196,9 @@ def _kp_selection_items(body: KpFormRequest) -> list:
                 for index, price in (item.web_manual_prices or {}).items()
             )
             or None,
+            custom_enabled=item.custom_enabled,
+            custom_unit_price=item.custom_unit_price,
+            custom_quantity=item.custom_quantity,
         )
         for item in body.selections
     ]
