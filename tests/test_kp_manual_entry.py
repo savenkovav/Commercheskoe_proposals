@@ -61,8 +61,63 @@ def test_allows_custom_for_marketplace_only() -> None:
     assert allows_custom_manual_entry(_marketplace_only_result()) is True
 
 
+def test_allows_custom_when_competitor_quote_has_no_score() -> None:
+    result = MatchResult(
+        tz_item=TZItem(number=6, name="Товар", unit="шт.", quantity=1),
+        status=MatchStatus.NOT_FOUND,
+        source=MatchSource.NONE,
+        comparison=[
+            PriceQuote(
+                source="web",
+                label="EPP24",
+                matched_name="Что-то",
+                url="https://epp24.ru/product/x",
+                match_score=None,
+            ),
+        ],
+    )
+    assert allows_custom_manual_entry(result) is True
+
+
+def test_disallows_custom_for_confident_competitor() -> None:
+    result = MatchResult(
+        tz_item=TZItem(number=7, name="Товар", unit="шт.", quantity=1),
+        status=MatchStatus.NOT_FOUND,
+        source=MatchSource.NONE,
+        comparison=[
+            PriceQuote(
+                source="web",
+                label="EPP24",
+                matched_name="Товар",
+                url="https://epp24.ru/product/x",
+                match_score=100.0,
+            ),
+        ],
+    )
+    assert allows_custom_manual_entry(result) is False
+
+
 def test_disallows_custom_for_catalog_match() -> None:
     assert allows_custom_manual_entry(_catalog_result()) is False
+
+
+def test_disallows_custom_for_registry_primary() -> None:
+    result = MatchResult(
+        tz_item=TZItem(number=8, name="Мольберт", unit="шт.", quantity=1),
+        status=MatchStatus.EXACT,
+        source=MatchSource.REGISTRY,
+        matched_name="Мольберт (тренога)",
+        match_score=100.0,
+        comparison=[
+            PriceQuote(
+                source="registry",
+                label="Реестр",
+                matched_name="Мольберт (тренога)",
+                match_score=100.0,
+            ),
+        ],
+    )
+    assert allows_custom_manual_entry(result) is False
 
 
 def test_custom_manual_price_applied_to_kp() -> None:

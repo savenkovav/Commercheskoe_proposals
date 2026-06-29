@@ -2385,6 +2385,7 @@ function mergeItemPricing(base, addon) {
 
 function hasItemDetails(item) {
   return (
+    allowsCustomEntry(item) ||
     item.internet_priced ||
     collectWebEntries(item).length > 0 ||
     item.status === "similar" ||
@@ -3143,13 +3144,16 @@ function renderProcessResult(data, options = {}) {
         const detailId = `tz-detail-${item.number}`;
         const showInternetLabels = initialPricing.internetPriced;
         const tzSalePriceNote = item.target_sale_price != null ? '<br><small class="muted">из ТЗ</small>' : "";
+        const customEntryNote = allowsCustomEntry(item)
+          ? '<br><small class="muted tz-row__custom-hint">▼ ручной ввод цены</small>'
+          : "";
         return `
       <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" data-item-number="${item.number}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
         <td class="kp-select-cell">
           <input type="checkbox" class="kp-item-include" data-item="${item.number}" checked>
         </td>
         <td>${item.number}</td>
-        <td>${escapeHtml(item.name)}${hasDetails ? ' <span class="tz-row__hint">▼</span>' : ""}</td>
+        <td>${escapeHtml(item.name)}${hasDetails ? ' <span class="tz-row__hint">▼</span>' : ""}${customEntryNote}</td>
         <td>${escapeHtml(item.matched_name || "—")}${
           item.source && item.source !== "none"
             ? `<br><small class="muted">${escapeHtml(SOURCE_LABELS[item.source] || item.source)}</small>`
