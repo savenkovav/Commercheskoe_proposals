@@ -15,7 +15,7 @@ import xlrd
 from docx import Document
 from openpyxl import load_workbook
 
-from src.config import TZ_OCR_LANG, TZ_PDF_OCR_ENABLED, TESSERACT_CMD
+from src.config import TZ_OCR_LANG, TZ_OCR_PSM, TZ_OCR_SCALE, TZ_PDF_OCR_ENABLED, TESSERACT_CMD
 from src.services.models import TZItem
 
 logger = logging.getLogger(__name__)
@@ -298,29 +298,350 @@ def _build_price_request_column_map(header_cells: list[str]) -> _PriceRequestCol
     return _PriceRequestColumnMap(number=number_idx, name=name_idx, qty=qty_idx)
 
 
+_OCR_LATIN_TO_CYRILLIC = str.maketrans(
+    {
+        "A": "А",
+        "B": "В",
+        "C": "С",
+        "E": "Е",
+        "H": "Н",
+        "K": "К",
+        "M": "М",
+        "O": "О",
+        "P": "Р",
+        "T": "Т",
+        "X": "Х",
+        "Y": "У",
+        "a": "а",
+        "c": "с",
+        "e": "е",
+        "o": "о",
+        "p": "р",
+        "x": "х",
+        "y": "у",
+        "k": "к",
+        "m": "м",
+        "t": "т",
+        "s": "с",
+        "u": "у",
+        "i": "и",
+        "l": "л",
+        "n": "н",
+        "d": "д",
+        "g": "г",
+        "r": "р",
+        "f": "ф",
+        "v": "в",
+        "w": "в",
+        "z": "з",
+        "j": "й",
+        "q": "я",
+        "h": "н",
+        "b": "в",
+    }
+)
+
+_OCR_CYRILLIC_TO_LATIN = str.maketrans(
+    {
+        "А": "A",
+        "В": "B",
+        "С": "C",
+        "Е": "E",
+        "Н": "H",
+        "К": "K",
+        "М": "M",
+        "О": "O",
+        "Р": "P",
+        "Т": "T",
+        "Х": "X",
+        "У": "Y",
+        "а": "a",
+        "в": "b",
+        "с": "c",
+        "е": "e",
+        "н": "h",
+        "к": "k",
+        "м": "m",
+        "о": "o",
+        "р": "p",
+        "т": "t",
+        "х": "x",
+        "у": "y",
+        "и": "i",
+        "л": "l",
+        "д": "d",
+        "г": "g",
+        "ф": "f",
+        "з": "z",
+        "й": "j",
+        "я": "q",
+        "ш": "w",
+        "щ": "w",
+        "ь": "",
+        "ъ": "",
+        "ы": "y",
+        "э": "e",
+        "ю": "u",
+        "ё": "e",
+    }
+)
+
+_KIT_ELEMENT_MARKERS = (
+    r"элемент|"
+    r"3[l1i][eе][mм][eе][nн][tт]|"
+    r"3ЛЕМ|"
+    r"3IIЕМ|"
+    r"3IИЕМ|"
+    r"9II@|"
+    r"ЛЕМЕН|"
+    r"J[LlЛ1][EeЕе][MmМm][EeЕе][NnНn]|"
+    r"JЛЕМ|"
+    r"@MCH|"
+    r"@МСН|"
+    r"МСНТ|"
+    r"9JIEM|"
+    r"9II@MCH|"
+    r"element|"
+    r"EHTOV|EHTOB|EMEH|@MCH|"
+    r"карто"
+)
+
+_OCR_WORD_FIXES: dict[str, str] = {
+    "po6or": "робот",
+    "po6ot": "робот",
+    "po6o": "робо",
+    "borm": "ботли",
+    "botli": "ботли",
+    "berm": "ботли",
+    "bota": "ботли",
+    "bora": "бота",
+    "paspuparomaa": "развивающая",
+    "paspuparomat": "развивающая",
+    "passaparomaa": "развивающая",
+    "passaparomat": "развивающая",
+    "raspuraromaa": "развивающая",
+    "raspuraromat": "развивающая",
+    "urpyuma": "игрушка",
+    "urpyuika": "игрушка",
+    "urpyuka": "игрушка",
+    "urpyua": "игрушка",
+    "urruuma": "игрушка",
+    "yrryuma": "игрушка",
+    "axceccyapbi": "аксессуары",
+    "akceccyapbi": "аксессуары",
+    "axceccyapsi": "аксессуары",
+    "axceccyapbl": "аксессуары",
+    "axcessuarybi": "аксессуары",
+    "axceccuarybi": "аксессуары",
+    "crpountes": "строитель",
+    "crpoutems": "строитель",
+    "crpoums": "строитель",
+    "crpoumes": "строитель",
+    "crpoumems": "строитель",
+    "kommiexr": "комплект",
+    "kommexr": "комплект",
+    "kommaext": "комплект",
+    "kommiext": "комплект",
+    "kommieht": "комплект",
+    "tematuyeckux": "тематических",
+    "tematuyecskux": "тематических",
+    "tematuyeckuxx": "тематических",
+    "tematuyesckmx": "тематических",
+    "tematuyesckmxx": "тематических",
+    "temathyecckmxh": "тематических",
+    "temathyecckmxx": "тематических",
+    "tomel": "полей",
+    "tome": "полей",
+    "hoel": "полей",
+    "hoel": "полей",
+    "jlentoxc": "делюкс",
+    "jlemoxc": "делюкс",
+    "dentoxc": "делюкс",
+    "jemoxc": "делюкс",
+    "lenetoxc": "делюкс",
+    "lentoxc": "делюкс",
+    "лentoxc": "делюкс",
+    "bepcua": "версия",
+    "bepcusa": "версия",
+    "bepcus": "версия",
+    "bercua": "версия",
+    "bercusa": "версия",
+    "po6omsmubto": "робомышью",
+    "po6omsuupt0": "робомышью",
+    "po6ompmubio": "робомышью",
+    "po6bompmubio": "робомышью",
+    "po6boMpmubio": "робомышью",
+    "ctpomm": "строим",
+    "ctromm": "строим",
+    "ctpoim": "строим",
+    "ctpoMM": "строим",
+    "maprlpytbi": "маршруты",
+    "mapulpytbi": "маршруты",
+    "maplipyTBI": "маршруты",
+    "mapLIpyTBI": "маршруты",
+    "maplipytbi": "маршруты",
+    "duia": "для",
+    "dua": "для",
+    "quia": "для",
+    "pobota": "робота",
+    "pobora": "робота",
+    "kaptoqkami": "карточками",
+    "kapto ukami": "карточками",
+    "delioks": "делюкс",
+    "botley": "botley",
+    "botli": "ботли",
+    "vorm": "ботли",
+}
+
+
+def _ocr_word_fix_lookup(word: str) -> str:
+    return word.translate(_OCR_CYRILLIC_TO_LATIN).lower().strip(".,;:\"«»-'")
+
+
+def _apply_ocr_word_fix(word: str, *lookups: str) -> str | None:
+    keys = [_ocr_word_fix_lookup(word), word.lower().strip(".,;:\"«»-'")]
+    keys.extend(lookups)
+    for key in keys:
+        if not key:
+            continue
+        fixed = _OCR_WORD_FIXES.get(key)
+        if fixed:
+            if word[:1].isupper():
+                return fixed[:1].upper() + fixed[1:]
+            return fixed
+    return None
+
+
+def _repair_ocr_cyrillic_word(word: str) -> str:
+    if not word:
+        return word
+    if re.search(r"<<<VC\d+>>>", word):
+        return word
+    if re.fullmatch(r"[A-Z]{2,5}\d{3,7}", word):
+        return word
+    if re.fullmatch(r"[\d.,]+", word):
+        return word
+
+    repaired = re.sub(r"(?<=[A-Za-zА-Яа-я])6(?=[A-Za-zА-Яа-я])", "б", word)
+    repaired = re.sub(r"J[lI1]", "Л", repaired)
+    repaired = re.sub(r"(?<=[A-Za-zА-Яa-я])r(?=$)", "т", repaired)
+    repaired = repaired.translate(_OCR_LATIN_TO_CYRILLIC)
+    repaired = re.sub(r"J[lI1]", "Л", repaired)
+
+    fixed = _apply_ocr_word_fix(word, _ocr_word_fix_lookup(word))
+    if fixed:
+        return fixed
+    fixed = _apply_ocr_word_fix(repaired, _ocr_word_fix_lookup(repaired))
+    if fixed:
+        return fixed
+
+    if re.search(r"[A-Za-z]", repaired) and re.search(r"[А-Яа-я]", repaired):
+        merged = repaired.translate(_OCR_LATIN_TO_CYRILLIC)
+        fixed = _apply_ocr_word_fix(merged, _ocr_word_fix_lookup(merged))
+        if fixed:
+            return fixed
+        return merged
+    return repaired
+
+
+def _repair_ocr_cyrillic_text(text: str) -> str:
+    if not text.strip():
+        return text
+
+    protected: dict[str, str] = {}
+
+    def _protect(match: re.Match[str]) -> str:
+        token = f"<<<VC{len(protected)}>>>"
+        protected[token] = match.group(0)
+        return token
+
+    shielded = re.sub(r"\b[A-Z]{2,5}\d{3,7}\b", _protect, text)
+    words = re.split(r"(\s+)", shielded)
+    repaired_words = [
+        _repair_ocr_cyrillic_word(part) if part.strip() and not part.isspace() else part
+        for part in words
+    ]
+    repaired = "".join(repaired_words)
+    for token, original in protected.items():
+        repaired = repaired.replace(token, original)
+    return repaired
+
+
+def _trim_price_request_name_segment(segment: str) -> str:
+    trimmed = segment.strip()
+    kit_match = re.search(
+        rf"\(\s*\d+\s*[\s\S]{{0,80}}?(?:{_KIT_ELEMENT_MARKERS})",
+        trimmed,
+        re.I,
+    )
+    if kit_match:
+        trimmed = trimmed[: kit_match.start()].strip()
+    return trimmed
+
+
 def _extract_quoted_product_name(segment: str) -> str:
+    quoted_parts: list[str] = []
     for pattern in (
-        r'"([^"\n]{4,200})"',
-        r"'([^'\n]{4,200})'",
-        r"«([^»\n]{4,200})»",
+        r'"([^"]{2,500})"',
+        r"'([^']{2,500})'",
+        r"«([^»]{2,500})»",
     ):
-        match = re.search(pattern, segment, re.S)
-        if match:
-            return re.sub(r"\s+", " ", match.group(1)).strip()
-    return ""
+        for match in re.finditer(pattern, segment, re.S):
+            cleaned = re.sub(r"\s+", " ", match.group(1)).strip(" .")
+            if cleaned and cleaned not in quoted_parts:
+                quoted_parts.append(cleaned)
+
+    if not quoted_parts and '"' in segment:
+        unclosed = re.search(
+            rf'"([\s\S]{{2,500}}?)(?=\(\s*\d+\s*[\s\S]{{0,20}}?(?:{_KIT_ELEMENT_MARKERS})|\Z)',
+            segment,
+            re.I,
+        )
+        if unclosed:
+            cleaned = re.sub(r"\s+", " ", unclosed.group(1)).strip(" .")
+            if cleaned:
+                quoted_parts.append(cleaned)
+
+    return " ".join(quoted_parts)
+
+
+_PRICE_REQUEST_PHRASE_FIXES: tuple[tuple[str, str], ...] = (
+    (r"робота\s+бота\b", "робота Ботли"),
+    (r"робота\s+bota\b", "робота Ботли"),
+    (r"робота\s+bora\b", "робота Ботли"),
+)
+
+
+def _polish_price_request_name(name: str, vendor_code: str) -> str:
+    if not name.upper().startswith(vendor_code.upper()):
+        return name
+    tail = name[len(vendor_code) :].strip()
+    if not tail:
+        return name
+    polished_tail = " ".join(_repair_ocr_cyrillic_word(word) for word in tail.split())
+    for pattern, replacement in _PRICE_REQUEST_PHRASE_FIXES:
+        polished_tail = re.sub(pattern, replacement, polished_tail, flags=re.I)
+    polished_tail = re.sub(r"\s+", " ", polished_tail).strip(' "')
+    return f"{vendor_code} {polished_tail}".strip()
 
 
 def _extract_price_request_name(segment: str, vendor_code: str) -> str:
-    quoted = _extract_quoted_product_name(segment)
-    if quoted:
-        return f"{vendor_code} {quoted}".strip()
+    work = _trim_price_request_name_segment(segment)
+    work = re.sub(re.escape(vendor_code), "", work, count=1, flags=re.I).strip()
+    work = re.sub(r"^[|:\-\s]+", "", work)
 
-    cleaned = re.sub(r"\s+", " ", segment).strip()
-    cleaned = re.sub(r"^\W+", "", cleaned)
-    if cleaned:
-        line = cleaned.split("\n", 1)[0].strip()
-        if line and line.upper() != vendor_code:
-            return f"{vendor_code} {line}".strip()
+    quoted = _extract_quoted_product_name(work)
+    prefix = work
+    first_quote = re.search(r'["«\']', work)
+    if first_quote:
+        prefix = work[: first_quote.start()]
+    prefix = re.sub(r"\s+", " ", prefix).strip(' "|')
+
+    parts = [part for part in (prefix, quoted) if part]
+    if parts:
+        combined = " ".join(parts)
+        combined = re.sub(r"\s+", " ", combined).strip()
+        return _polish_price_request_name(f"{vendor_code} {combined}".strip(), vendor_code)
     return vendor_code
 
 
@@ -345,7 +666,7 @@ def _parse_price_request_quantity(segment: str) -> float:
 
 def _parse_price_request_kit_elements(segment: str) -> int | None:
     match = re.search(
-        r"\(\s*(\d+)\s*[\s\S]{0,40}?(?:элемент|9JIEM|9II@MCH|element|EHTOV|EHTOB|EMEH|@MCH)",
+        rf"\(\s*(\d+)\s*[\s\S]{{0,80}}?(?:{_KIT_ELEMENT_MARKERS})",
         segment,
         re.I,
     )
@@ -360,6 +681,8 @@ def _parse_price_request_kit_elements(segment: str) -> int | None:
 def _parse_price_request_text(text: str) -> list[TZItem]:
     if not text.strip():
         return []
+
+    text = _repair_ocr_cyrillic_text(text)
 
     item_pattern = re.compile(
         r"(?:^|[\n\r])\s*(\d+)\s*\|\s*([A-Z]{2,5}\d{3,7})\b",
@@ -1739,6 +2062,7 @@ def _extract_pdf_full_text(path: Path) -> str:
     elif not text.strip() and TZ_PDF_OCR_ENABLED:
         text = _ocr_pdf(path)
 
+    text = _repair_ocr_cyrillic_text(text)
     _PDF_TEXT_CACHE[cache_key] = text
     return text
 
@@ -1830,6 +2154,13 @@ def _tesseract_available() -> bool:
         return False
 
 
+def _preprocess_ocr_image(image):
+    from PIL import ImageOps
+
+    gray = ImageOps.grayscale(image)
+    return ImageOps.autocontrast(gray)
+
+
 def _ocr_pdf(path: Path) -> str:
     try:
         import fitz
@@ -1847,12 +2178,21 @@ def _ocr_pdf(path: Path) -> str:
             "(macOS) или apt install tesseract-ocr tesseract-ocr-rus (Linux)."
         )
 
+    config = f"--psm {TZ_OCR_PSM}" if TZ_OCR_PSM > 0 else ""
     texts: list[str] = []
+    matrix = fitz.Matrix(TZ_OCR_SCALE, TZ_OCR_SCALE)
     with fitz.open(path) as doc:
         for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            pix = page.get_pixmap(matrix=matrix)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
-            texts.append(pytesseract.image_to_string(img, lang=TZ_OCR_LANG))
+            img = _preprocess_ocr_image(img)
+            texts.append(
+                pytesseract.image_to_string(
+                    img,
+                    lang=TZ_OCR_LANG,
+                    config=config,
+                )
+            )
 
     return "\n".join(texts)
 

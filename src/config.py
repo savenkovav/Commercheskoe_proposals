@@ -225,6 +225,8 @@ TZ_PDF_OCR_ENABLED = os.getenv("TZ_PDF_OCR_ENABLED", "true").lower() in {
     "on",
 }
 TZ_OCR_LANG = os.getenv("TZ_OCR_LANG", "rus+eng")
+TZ_OCR_PSM = max(0, int(os.getenv("TZ_OCR_PSM", "4")))
+TZ_OCR_SCALE = max(1, int(os.getenv("TZ_OCR_SCALE", "3")))
 TESSERACT_CMD = os.getenv("TESSERACT_CMD", "").strip()
 
 RAG_ENABLED = os.getenv("RAG_ENABLED", "true").lower() in {
