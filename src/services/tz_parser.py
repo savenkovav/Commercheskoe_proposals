@@ -325,20 +325,36 @@ def _extract_price_request_name(segment: str, vendor_code: str) -> str:
 
 
 def _parse_price_request_quantity(segment: str) -> float:
+    """Кол-во заказа (шт.), не путать с «N элементов в комплекте»."""
     for pattern in (
-        r"\(\s*(\d+)\s*(?:элемент|9JIEM|element)",
-        r"(?:кол[- ]?во|kon[- ]?bo)[^\d]{0,12}(\d+(?:[.,]\d+)?)",
-        r"\b(\d+)\s*(?:шт|ur)\b",
+        r"(?:кол[- ]?во|kon[- ]?bo)\s*[^\d]{0,12}(\d+(?:[.,]\d+)?)",
+        r"\(\s*(\d+)\s*(?:шт\.?|ur\.?)\s*\)",
+        r"(?:\|\s*){1,3}(\d+(?:[.,]\d+)?)\s*(?:шт\.?|ur\.?)?\s*(?:\||$)",
+        r"(?<![(\d])(\d+(?:[.,]\d+)?)\s*(?:шт\.?|ur\.?)\s*$",
     ):
-        match = re.search(pattern, segment, re.I)
+        match = re.search(pattern, segment.strip(), re.I | re.S)
         if match:
             try:
                 value = float(match.group(1).replace(",", "."))
-                if value > 0:
+                if 0 < value <= 9999:
                     return value
             except ValueError:
                 continue
     return 1.0
+
+
+def _parse_price_request_kit_elements(segment: str) -> int | None:
+    match = re.search(
+        r"\(\s*(\d+)\s*[\s\S]{0,40}?(?:элемент|9JIEM|9II@MCH|element|EHTOV|EHTOB|EMEH|@MCH)",
+        segment,
+        re.I,
+    )
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def _parse_price_request_text(text: str) -> list[TZItem]:
@@ -378,9 +394,9 @@ def _parse_price_request_text(text: str) -> list[TZItem]:
             continue
 
         specs_parts = [f"Код производителя: {vendor_code}"]
-        elem_match = re.search(r"\(\s*(\d+)\s*(?:элемент|9JIEM|element)", segment, re.I)
-        if elem_match:
-            specs_parts.append(f"Элементов в комплекте: {elem_match.group(1)}")
+        kit_elements = _parse_price_request_kit_elements(segment)
+        if kit_elements is not None:
+            specs_parts.append(f"Комплектация: {kit_elements} элементов")
 
         items.append(
             TZItem(
@@ -1684,12 +1700,55 @@ def _table_from_sheet_rows(sheet_rows: list[list[str]]) -> list[list[str]] | Non
     return None
 
 
+def _pdf_page_is_image_only(path: Path) -> bool:
+    try:
+        import fitz
+    except ImportError:
+        return False
+
+    try:
+        with fitz.open(path) as doc:
+            saw_image = False
+            for page in doc:
+                if page.get_text("text").strip():
+                    return False
+                blocks = page.get_text("dict").get("blocks") or []
+                for block in blocks:
+                    if block.get("type") == 0:
+                        return False
+                    if block.get("type") == 1:
+                        saw_image = True
+            return saw_image
+    except Exception:
+        logger.debug("Failed to inspect PDF structure %s", path, exc_info=True)
+        return False
+
+
+_PDF_TEXT_CACHE: dict[str, str] = {}
+
+
+def _extract_pdf_full_text(path: Path) -> str:
+    cache_key = str(path.resolve())
+    cached = _PDF_TEXT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    text = _extract_pdf_text(path)
+    if not text.strip() and TZ_PDF_OCR_ENABLED and _pdf_page_is_image_only(path):
+        text = _ocr_pdf(path)
+    elif not text.strip() and TZ_PDF_OCR_ENABLED:
+        text = _ocr_pdf(path)
+
+    _PDF_TEXT_CACHE[cache_key] = text
+    return text
+
+
 def _parse_tz_pdf(path: Path) -> list[TZItem]:
     items = _parse_pdf_with_pdfplumber(path)
     if items:
         return items
 
-    text = _extract_pdf_text(path)
+    text = _extract_pdf_full_text(path)
     items = _parse_price_request_text(text)
     if items:
         return items
@@ -1698,14 +1757,12 @@ def _parse_tz_pdf(path: Path) -> list[TZItem]:
     if items:
         return items
 
-    if TZ_PDF_OCR_ENABLED:
-        ocr_text = _ocr_pdf(path)
-        items = _parse_price_request_text(ocr_text)
-        if items:
-            return items
-        items = _parse_tz_tables(_tables_from_text(ocr_text))
-        if items:
-            return items
+    if _pdf_page_is_image_only(path) and not _tesseract_available():
+        raise ValueError(
+            "PDF загружен как изображение (скан) без текстового слоя. "
+            "Для распознавания нужен Tesseract OCR "
+            "(Docker: tesseract-ocr tesseract-ocr-rus; macOS: brew install tesseract tesseract-lang)."
+        )
 
     raise ValueError(
         "Не удалось извлечь таблицу позиций из PDF. "
@@ -1715,12 +1772,7 @@ def _parse_tz_pdf(path: Path) -> list[TZItem]:
 
 
 def _extract_pdf_document_text(path: Path) -> str:
-    text = _extract_pdf_text(path)
-    if text.strip():
-        return text
-    if TZ_PDF_OCR_ENABLED:
-        return _ocr_pdf(path)
-    return ""
+    return _extract_pdf_full_text(path)
 
 
 def _parse_pdf_with_pdfplumber(path: Path) -> list[TZItem]:
@@ -1767,6 +1819,17 @@ def _configure_tesseract() -> None:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+def _tesseract_available() -> bool:
+    try:
+        import pytesseract
+
+        _configure_tesseract()
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
 def _ocr_pdf(path: Path) -> str:
     try:
         import fitz
@@ -1778,13 +1841,11 @@ def _ocr_pdf(path: Path) -> str:
         ) from exc
 
     _configure_tesseract()
-    try:
-        pytesseract.get_tesseract_version()
-    except Exception as exc:
+    if not _tesseract_available():
         raise ValueError(
             "Tesseract OCR не найден. Установите: brew install tesseract tesseract-lang "
             "(macOS) или apt install tesseract-ocr tesseract-ocr-rus (Linux)."
-        ) from exc
+        )
 
     texts: list[str] = []
     with fitz.open(path) as doc:

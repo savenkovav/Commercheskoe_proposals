@@ -43,11 +43,17 @@ def test_parse_price_request_text_extracts_three_items() -> None:
     assert items[0].number == 1
     assert "LER2938" in items[0].name
     assert "Po6or bormm" in items[0].name
+    assert items[0].quantity == 1.0
     assert items[0].specifications and "LER2938" in items[0].specifications
+    assert "78 элементов" in items[0].specifications
     assert items[1].number == 2
     assert "LER2939" in items[1].name
+    assert items[1].quantity == 1.0
+    assert "10 элементов" in items[1].specifications
     assert items[2].number == 3
     assert "RM6001" in items[2].name
+    assert items[2].quantity == 1.0
+    assert "6 элементов" in items[2].specifications
 
 
 def test_parse_price_request_pdf_file() -> None:
