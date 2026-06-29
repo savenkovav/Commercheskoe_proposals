@@ -224,11 +224,224 @@ def _is_valid_tz_product_name(name: str) -> bool:
 
 def _is_tz_table_header(header_cells: list[str]) -> bool:
     joined = " ".join(cell.strip().lower() for cell in header_cells if cell.strip())
-    if "наимен" not in joined:
+    if "наимен" not in joined and not _looks_like_price_request_header(joined):
         return False
-    if "товар" not in joined:
+    if "товар" in joined:
+        return _build_column_map(header_cells) is not None
+    if _looks_like_price_request_header(joined):
+        return _build_price_request_column_map(header_cells) is not None
+    return False
+
+
+_VENDOR_CODE_RE = re.compile(r"\b([A-Z]{2,5}\d{3,7})\b")
+_PRICE_REQUEST_MARKERS = (
+    "коммерческ",
+    "koммерч",
+    "koммep",
+    "ценов",
+    "wehoby",
+    "wehoв",
+    "ценовой запрос",
+    "предоставлен",
+    "npedocma",
+)
+
+
+def _looks_like_price_request_header(header: str) -> bool:
+    lower = header.lower()
+    if "наимен" in lower or "haumen" in lower or "haumeh" in lower:
+        if any(marker in lower for marker in ("кол", "kon", "цена", "lena", "сумм", "cymma")):
+            return True
+    return False
+
+
+def _looks_like_price_request_document(text: str) -> bool:
+    if len(_VENDOR_CODE_RE.findall(text)) < 1:
         return False
-    return _build_column_map(header_cells) is not None
+    lower = text.lower()
+    if re.search(r"(?:^|[\n\r])\s*\d+\s*\|\s*[A-Z]{2,5}\d{3,7}\b", text, re.MULTILINE):
+        return True
+    if re.search(r"(?:^|[\n\r])\s*\d+\s+[A-Z]{2,5}\d{3,7}\b", text, re.MULTILINE):
+        return any(marker in lower for marker in _PRICE_REQUEST_MARKERS)
+    return False
+
+
+@dataclass
+class _PriceRequestColumnMap:
+    number: int
+    name: int
+    qty: int | None = None
+
+
+def _build_price_request_column_map(header_cells: list[str]) -> _PriceRequestColumnMap | None:
+    lower = [cell.strip().lower() for cell in header_cells]
+    name_idx: int | None = None
+    for index, cell in enumerate(lower):
+        if "наимен" in cell or "haumen" in cell or "haumeh" in cell:
+            name_idx = index
+            break
+    if name_idx is None:
+        return None
+
+    number_idx = 0
+    for index, cell in enumerate(lower):
+        if cell in {"№", "п/п", "пп", "n", "no", "wn"} or cell.startswith("№"):
+            number_idx = index
+            break
+
+    qty_idx: int | None = None
+    for index, cell in enumerate(lower):
+        if "кол" in cell or "kon" in cell:
+            qty_idx = index
+            break
+
+    return _PriceRequestColumnMap(number=number_idx, name=name_idx, qty=qty_idx)
+
+
+def _extract_quoted_product_name(segment: str) -> str:
+    for pattern in (
+        r'"([^"\n]{4,200})"',
+        r"'([^'\n]{4,200})'",
+        r"«([^»\n]{4,200})»",
+    ):
+        match = re.search(pattern, segment, re.S)
+        if match:
+            return re.sub(r"\s+", " ", match.group(1)).strip()
+    return ""
+
+
+def _extract_price_request_name(segment: str, vendor_code: str) -> str:
+    quoted = _extract_quoted_product_name(segment)
+    if quoted:
+        return f"{vendor_code} {quoted}".strip()
+
+    cleaned = re.sub(r"\s+", " ", segment).strip()
+    cleaned = re.sub(r"^\W+", "", cleaned)
+    if cleaned:
+        line = cleaned.split("\n", 1)[0].strip()
+        if line and line.upper() != vendor_code:
+            return f"{vendor_code} {line}".strip()
+    return vendor_code
+
+
+def _parse_price_request_quantity(segment: str) -> float:
+    for pattern in (
+        r"\(\s*(\d+)\s*(?:элемент|9JIEM|element)",
+        r"(?:кол[- ]?во|kon[- ]?bo)[^\d]{0,12}(\d+(?:[.,]\d+)?)",
+        r"\b(\d+)\s*(?:шт|ur)\b",
+    ):
+        match = re.search(pattern, segment, re.I)
+        if match:
+            try:
+                value = float(match.group(1).replace(",", "."))
+                if value > 0:
+                    return value
+            except ValueError:
+                continue
+    return 1.0
+
+
+def _parse_price_request_text(text: str) -> list[TZItem]:
+    if not text.strip():
+        return []
+
+    item_pattern = re.compile(
+        r"(?:^|[\n\r])\s*(\d+)\s*\|\s*([A-Z]{2,5}\d{3,7})\b",
+        re.MULTILINE,
+    )
+    matches = list(item_pattern.finditer(text))
+    if len(matches) < 1:
+        item_pattern = re.compile(
+            r"(?:^|[\n\r])\s*(\d+)\s+([A-Z]{2,5}\d{3,7})\b",
+            re.MULTILINE,
+        )
+        matches = [match for match in item_pattern.finditer(text) if int(match.group(1)) <= 50]
+
+    if not matches or not _looks_like_price_request_document(text):
+        return []
+
+    items: list[TZItem] = []
+    for index, match in enumerate(matches):
+        number = int(match.group(1))
+        if number <= 0 or number > 200:
+            continue
+        vendor_code = match.group(2).upper()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        segment = text[start:end]
+        itogo = re.search(r"\b(?:ИТОГО|uTOTO|ITOGO)\b", segment, re.I)
+        if itogo:
+            segment = segment[: itogo.start()]
+
+        name = _extract_price_request_name(segment, vendor_code)
+        if not _is_valid_tz_product_name(name) and name == vendor_code:
+            continue
+
+        specs_parts = [f"Код производителя: {vendor_code}"]
+        elem_match = re.search(r"\(\s*(\d+)\s*(?:элемент|9JIEM|element)", segment, re.I)
+        if elem_match:
+            specs_parts.append(f"Элементов в комплекте: {elem_match.group(1)}")
+
+        items.append(
+            TZItem(
+                number=number,
+                name=name,
+                unit="шт.",
+                quantity=_parse_price_request_quantity(segment),
+                specifications="; ".join(specs_parts),
+            )
+        )
+
+    return items
+
+
+def _parse_price_request_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
+    items: list[TZItem] = []
+    for table in tables:
+        if len(table) < 2:
+            continue
+        header_cells = [_cell_str(cell) for cell in table[0]]
+        joined = " ".join(cell.strip().lower() for cell in header_cells if cell.strip())
+        if not _looks_like_price_request_header(joined):
+            continue
+        col = _build_price_request_column_map(header_cells)
+        if not col:
+            continue
+
+        for row in table[1:]:
+            cells = [_cell_str(cell) for cell in row]
+            if len(cells) <= col.name:
+                continue
+            number_raw = cells[col.number].rstrip(".")
+            if not number_raw.isdigit():
+                continue
+            row_text = " | ".join(cells)
+            vendor_match = _VENDOR_CODE_RE.search(row_text)
+            vendor_code = vendor_match.group(1).upper() if vendor_match else ""
+            raw_name = _normalize_tz_product_name(cells[col.name])
+            name = raw_name
+            if vendor_code and vendor_code not in raw_name.upper():
+                name = f"{vendor_code} {raw_name}".strip()
+            if not _is_valid_tz_product_name(name):
+                continue
+
+            quantity = 1.0
+            if col.qty is not None and len(cells) > col.qty:
+                parsed_qty = _parse_quantity(cells[col.qty])
+                if parsed_qty is not None and parsed_qty > 0:
+                    quantity = parsed_qty
+
+            specs = f"Код производителя: {vendor_code}" if vendor_code else ""
+            items.append(
+                TZItem(
+                    number=int(number_raw),
+                    name=name,
+                    unit="шт.",
+                    quantity=quantity,
+                    specifications=specs,
+                )
+            )
+    return items
 
 
 _EIS_KNOWN_CHARACTERISTICS: tuple[str, ...] = (
@@ -823,6 +1036,10 @@ def _parse_vertical_spec_tables(tables: Iterable[list[list[str]]]) -> list[TZIte
 
 
 def _parse_tz_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
+    items = _parse_price_request_tables(tables)
+    if items:
+        return items
+
     items: list[TZItem] = []
 
     for table in tables:
@@ -1473,12 +1690,19 @@ def _parse_tz_pdf(path: Path) -> list[TZItem]:
         return items
 
     text = _extract_pdf_text(path)
+    items = _parse_price_request_text(text)
+    if items:
+        return items
+
     items = _parse_tz_tables(_tables_from_text(text))
     if items:
         return items
 
     if TZ_PDF_OCR_ENABLED:
         ocr_text = _ocr_pdf(path)
+        items = _parse_price_request_text(ocr_text)
+        if items:
+            return items
         items = _parse_tz_tables(_tables_from_text(ocr_text))
         if items:
             return items

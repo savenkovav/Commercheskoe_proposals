@@ -170,11 +170,32 @@ def tz_match_query(tz_item: TZItem) -> str:
     return name
 
 
+_VENDOR_CODE_RE = re.compile(r"\b([A-Z]{2,5}\d{3,7})\b")
+
+
+def extract_vendor_codes(*texts: str) -> list[str]:
+    seen: set[str] = set()
+    codes: list[str] = []
+    for text in texts:
+        if not text:
+            continue
+        for match in _VENDOR_CODE_RE.finditer(text.upper()):
+            code = match.group(1)
+            if code in seen:
+                continue
+            seen.add(code)
+            codes.append(code)
+    return codes
+
+
 def build_search_queries(tz_item: TZItem) -> list[str]:
     name = tz_item.name.strip()
     combined = tz_match_query(tz_item)
     spec_line = primary_spec_line(tz_item.specifications)
     queries: list[str] = []
+
+    for vendor_code in extract_vendor_codes(tz_item.name, tz_item.specifications):
+        queries.append(vendor_code)
 
     if combined:
         queries.append(combined)

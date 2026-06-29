@@ -72,6 +72,11 @@ class ItemMatcher:
         self._catalog_names = [normalize_name(i.name) for i in searchable_catalog]
         self._registry_names = [normalize_name(i.name) for i in registry]
         self._price_names = [normalize_name(i.name) for i in price_lists]
+        self._price_by_code: dict[str, PriceListItem] = {}
+        for item in price_lists:
+            code = str(item.code or "").strip().upper()
+            if code:
+                self._price_by_code[code] = item
 
     def _best_fuzzy(
         self,
@@ -367,6 +372,22 @@ class ItemMatcher:
                 break
         return unique
 
+    def _find_by_vendor_code(self, tz_item: TZItem) -> FuzzyHit | None:
+        from src.services.tz_search import extract_vendor_codes
+
+        for code in extract_vendor_codes(tz_item.name, tz_item.specifications):
+            item = self._price_by_code.get(code)
+            if item is None:
+                continue
+            return FuzzyHit(
+                name=item.name,
+                score=100.0,
+                payload=item,
+                source=MatchSource.PRICE_LIST,
+                detail=f"{item.supplier} / {item.sheet} / код {item.code}",
+            )
+        return None
+
     def find_candidates(self, tz_item: TZItem) -> dict:
         catalog_hits = self._search_source(
             tz_item,
@@ -386,6 +407,9 @@ class ItemMatcher:
             self.price_lists,
             MatchSource.PRICE_LIST,
         )
+        code_hit = self._find_by_vendor_code(tz_item)
+        if code_hit:
+            price_hits = [code_hit] + [hit for hit in price_hits if hit.name != code_hit.name]
 
         return {
             "catalog": catalog_hits,
