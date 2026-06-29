@@ -35,6 +35,7 @@ from src.services.auth_service import AUTH_COOKIE_NAME, ensure_default_admin, re
 from src.services.user_db import get_user_database
 from src.web.auth_routes import admin_router, auth_router, history_router
 from src.services.kp_chat_service import KpChatService, WELCOME_MESSAGE
+from src.services.kp_preferences import KpPreferences
 from src.services.kp_manual_entry import allows_custom_manual_entry
 from src.services.markup_settings import get_markup_percent, set_markup_percent
 from src.services.pricing_rules import effective_markup_percent, format_markup_percent, is_internet_sourced_result, item_margin_percent
