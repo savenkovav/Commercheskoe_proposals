@@ -13,6 +13,22 @@ def _not_found_result() -> MatchResult:
     )
 
 
+def _ler2939_like_result() -> MatchResult:
+    return MatchResult(
+        tz_item=TZItem(
+            number=2,
+            name="LER2939 Развивающая игрушка аксессуары для робота Ботли. Строитель",
+            unit="шт.",
+            quantity=1,
+        ),
+        status=MatchStatus.SIMILAR,
+        source=MatchSource.NONE,
+        matched_name="LER2939 Развивающая игрушка аксессуары для робота Ботли. Строитель",
+        match_score=0.0,
+        notes="Поиск цены в интернете",
+    )
+
+
 def _marketplace_only_result() -> MatchResult:
     return MatchResult(
         tz_item=TZItem(number=4, name="Редкая игрушка", unit="шт.", quantity=1),
@@ -57,43 +73,40 @@ def test_allows_custom_for_not_found() -> None:
     assert allows_custom_manual_entry(_not_found_result()) is True
 
 
+def test_allows_custom_for_ler2939_like() -> None:
+    assert allows_custom_manual_entry(_ler2939_like_result()) is True
+
+
 def test_allows_custom_for_marketplace_only() -> None:
     assert allows_custom_manual_entry(_marketplace_only_result()) is True
 
 
-def test_allows_custom_when_competitor_quote_has_no_score() -> None:
-    result = MatchResult(
-        tz_item=TZItem(number=6, name="Товар", unit="шт.", quantity=1),
-        status=MatchStatus.NOT_FOUND,
-        source=MatchSource.NONE,
-        comparison=[
-            PriceQuote(
-                source="web",
-                label="EPP24",
-                matched_name="Что-то",
-                url="https://epp24.ru/product/x",
-                match_score=None,
-            ),
-        ],
-    )
+def test_allows_custom_when_competitor_quote_has_no_price() -> None:
+    result = _ler2939_like_result()
+    result.comparison = [
+        PriceQuote(
+            source="web",
+            label="EPP24",
+            matched_name="Аксессуары Botley",
+            url="https://epp24.ru/product/botley-accessories",
+            match_score=100.0,
+        ),
+    ]
     assert allows_custom_manual_entry(result) is True
 
 
-def test_disallows_custom_for_confident_competitor() -> None:
-    result = MatchResult(
-        tz_item=TZItem(number=7, name="Товар", unit="шт.", quantity=1),
-        status=MatchStatus.NOT_FOUND,
-        source=MatchSource.NONE,
-        comparison=[
-            PriceQuote(
-                source="web",
-                label="EPP24",
-                matched_name="Товар",
-                url="https://epp24.ru/product/x",
-                match_score=100.0,
-            ),
-        ],
-    )
+def test_disallows_custom_for_confident_competitor_with_price() -> None:
+    result = _ler2939_like_result()
+    result.comparison = [
+        PriceQuote(
+            source="web",
+            label="EPP24",
+            matched_name="Аксессуары Botley",
+            url="https://epp24.ru/product/botley-accessories",
+            match_score=100.0,
+            price=3500.0,
+        ),
+    ]
     assert allows_custom_manual_entry(result) is False
 
 

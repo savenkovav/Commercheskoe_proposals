@@ -631,7 +631,40 @@ function emptyItemPricing(item) {
 }
 
 function allowsCustomEntry(item) {
-  return Boolean(item?.allows_custom_entry);
+  return Boolean(item?.allows_custom_entry) || needsManualPriceEntry(item);
+}
+
+function needsManualPriceEntry(item) {
+  if (!item || item.kit_components?.length) return false;
+  const hasLocalPrice =
+    item.unit_base_price != null &&
+    ["catalog", "price_list", "registry"].includes(item.source) &&
+    item.status !== "not_found";
+  if (hasLocalPrice) return false;
+  if (item.unit_base_price != null || item.unit_cost != null) return false;
+  if (item.internet_priced && item.unit_base_price != null) return false;
+  const localSources = (item.comparison || []).some(
+    (q) =>
+      (q.source === "catalog" || q.source === "price_list") &&
+      (q.price != null || q.cost != null) &&
+      (q.match_score == null || q.match_score >= 95),
+  );
+  if (localSources) return false;
+  const pricedCompetitor = (item.comparison || []).some(
+    (q) =>
+      q.source === "web" &&
+      (q.price != null || q.cost != null) &&
+      q.url &&
+      !isMarketplaceUrl(q.url) &&
+      !isSearchListingUrl(q.url),
+  );
+  if (pricedCompetitor) return false;
+  return (
+    item.status === "not_found" ||
+    item.source === "none" ||
+    !item.source ||
+    ((item.match_score || 0) < 95 && item.unit_base_price == null)
+  );
 }
 
 function shouldAutoEnableCustomEntry(item) {
@@ -2785,7 +2818,6 @@ function renderComparisonTable(item) {
       ${renderMarketEstimateInfo(item)}
       ${primaryBlock}
       ${meta.length ? `<p class="compare-block__meta">${meta.join(" · ")}</p>` : ""}
-      ${renderCustomManualBlock(item)}
       ${renderWebComparisonRows(item)}
       ${
         comparisonRows
@@ -3145,7 +3177,7 @@ function renderProcessResult(data, options = {}) {
         const showInternetLabels = initialPricing.internetPriced;
         const tzSalePriceNote = item.target_sale_price != null ? '<br><small class="muted">из ТЗ</small>' : "";
         const customEntryNote = allowsCustomEntry(item)
-          ? '<br><small class="muted tz-row__custom-hint">▼ ручной ввод цены</small>'
+          ? '<br><small class="muted tz-row__custom-hint">укажите цену в строке ниже</small>'
           : "";
         return `
       <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" data-item-number="${item.number}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
@@ -3175,6 +3207,11 @@ function renderProcessResult(data, options = {}) {
         <td class="tz-row__line-total">${fmtMoney(initialPricing.totalPrice)}</td>
       </tr>
       ${
+        allowsCustomEntry(item)
+          ? `<tr class="tz-custom-inline" data-item-number="${item.number}"><td colspan="10">${renderCustomManualBlock(item)}</td></tr>`
+          : ""
+      }
+      ${
         hasDetails
           ? `<tr class="tz-detail hidden" id="${detailId}"><td colspan="10">${renderComparisonTable(item)}</td></tr>`
           : ""
@@ -3190,6 +3227,10 @@ function renderProcessResult(data, options = {}) {
       detail.classList.toggle("hidden");
       row.classList.toggle("tz-row--open");
     });
+  });
+
+  tbody.querySelectorAll(".tz-custom-inline").forEach((row) => {
+    row.addEventListener("click", (event) => event.stopPropagation());
   });
 
   data.items

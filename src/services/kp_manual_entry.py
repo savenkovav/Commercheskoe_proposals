@@ -29,17 +29,8 @@ def _has_confident_local_price_quote(result: MatchResult) -> bool:
     return False
 
 
-def _has_confident_registry_quote(result: MatchResult) -> bool:
-    for quote in result.comparison:
-        if quote.source != "registry":
-            continue
-        score = _quote_score(quote)
-        if score is not None and score >= LOCAL_MATCH_THRESHOLD:
-            return True
-    return False
-
-
-def _has_confident_competitor_quote(result: MatchResult) -> bool:
+def _has_priced_competitor_quote(result: MatchResult) -> bool:
+    """Конкурент с ценой — ручной ввод не нужен (есть строка в интернете)."""
     for quote in [*result.comparison, *result.competitors]:
         if quote.source != "web":
             continue
@@ -49,30 +40,36 @@ def _has_confident_competitor_quote(result: MatchResult) -> bool:
         score = _quote_score(quote)
         if score is None:
             continue
-        if meets_web_display_threshold(url, score):
+        if not meets_web_display_threshold(url, score):
+            continue
+        if quote.price is not None or quote.cost is not None:
             return True
     return False
 
 
+def _has_usable_local_price(result: MatchResult) -> bool:
+    if result.source in (MatchSource.CATALOG, MatchSource.PRICE_LIST):
+        if (
+            result.status != MatchStatus.NOT_FOUND
+            and result.unit_base_price is not None
+            and result.match_score >= LOCAL_MATCH_THRESHOLD
+        ):
+            return True
+    if result.source == MatchSource.REGISTRY and result.status != MatchStatus.NOT_FOUND:
+        return True
+    if result.source == MatchSource.WEB and result.unit_base_price is not None and result.internet_priced:
+        return True
+    return _has_confident_local_price_quote(result)
+
+
 def allows_custom_manual_entry(result: MatchResult) -> bool:
-    """Нет уверенного совпадения в прайсе/каталоге/реестре и на сайтах конкурентов."""
+    """Нет цены из прайса/каталога/реестра и нет цены у конкурента."""
     if result.is_kit and result.kit_components:
         return False
-
-    if result.source in (MatchSource.CATALOG, MatchSource.PRICE_LIST):
-        if result.status != MatchStatus.NOT_FOUND and result.unit_base_price is not None:
-            return False
-
-    if result.source == MatchSource.REGISTRY and result.status != MatchStatus.NOT_FOUND:
+    if _has_usable_local_price(result):
         return False
-
-    if _has_confident_local_price_quote(result):
+    if _has_priced_competitor_quote(result):
         return False
-
-    if _has_confident_registry_quote(result):
+    if result.unit_base_price is not None or result.unit_cost is not None:
         return False
-
-    if _has_confident_competitor_quote(result):
-        return False
-
     return True
