@@ -49,6 +49,7 @@ _SITEMAP_CATALOG_MIN_PRODUCTS: dict[str, int] = {
     "epp24.ru": 1000,
     "zarnitza.ru": 500,
     "xn--54-vlc3b6bza.xn--p1ai": 400,
+    "detsadyar.ru": 50,
 }
 
 _TD_SCHOOL_DEFAULT_SAMPLE_URL = "https://td-school.ru/index.php?page=100"
@@ -159,6 +160,11 @@ _ORIONEDU_SAMPLE_URL = (
 _TYI_YA_SAMPLE_URL = (
     "https://xn--54-vlc3b6bza.xn--p1ai/products/stellazh-uyutbuk-s-zonoy-dlya-chteniya/"
 )
+_DETSADYAR_DOMAIN = "detsadyar.ru"
+_DETSADYAR_SAMPLE_URL = (
+    "https://detsadyar.ru/catalog/nabory_perkusii/"
+    "nabor_perkussii_7_vidov_10_predmetov_fleet_flt_ps5/"
+)
 
 _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
     "rostcom.com": CompetitorParsingHints(
@@ -195,6 +201,12 @@ _DOMAIN_DEFAULT_PARSING_HINTS: dict[str, CompetitorParsingHints] = {
         price_html_hint='<div class="product-buy__price"',
         articul_html_hint='Артикул:',
         description_html_hint='<dl class="product-info__list"',
+    ),
+    _DETSADYAR_DOMAIN: CompetitorParsingHints(
+        product_sample_url=_DETSADYAR_SAMPLE_URL,
+        price_html_hint='<div class="product-item-detail-price-current',
+        articul_html_hint='product-item-detail-properties-name">Артикул',
+        description_html_hint='id="properties"',
     ),
 }
 
@@ -1032,6 +1044,10 @@ _CATALOG_SEED_URLS: dict[str, list[str]] = {
     "xn--54-vlc3b6bza.xn--p1ai": [
         "https://xn--54-vlc3b6bza.xn--p1ai/sitemap.xml",
         "https://xn--54-vlc3b6bza.xn--p1ai/catalog/",
+    ],
+    "detsadyar.ru": [
+        "https://detsadyar.ru/catalog/",
+        "https://detsadyar.ru/sitemap.xml",
     ],
 }
 
@@ -2561,6 +2577,192 @@ def _parse_zarnitza_page(
         domain=domain,
         site_label=site_label,
         page_url=page_url,
+    )
+
+
+def _is_detsadyar_domain(domain: str) -> bool:
+    return domain.lower().removeprefix("www.") == _DETSADYAR_DOMAIN
+
+
+def _is_detsadyar_product_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if not _is_detsadyar_domain(parsed.netloc):
+        return False
+    return "/catalog/" in parsed.path.lower() and is_competitor_product_page_url(url)
+
+
+def _is_detsadyar_product_page_html(html: str) -> bool:
+    return (
+        "product-item-detail-price-current" in html
+        and "product-item-detail-properties" in html
+    )
+
+
+def _parse_detsadyar_price(html: str) -> float | None:
+    match = re.search(
+        r'class="product-item-detail-price-current[^"]*"[^>]*>\s*'
+        r"(?P<price>(?:\d[\d\s&nbsp;]*)(?:[.,]\d+)?)\s*(?:руб|₽)",
+        html,
+        re.I | re.S,
+    )
+    if match:
+        return _parse_price(match.group("price"))
+    match = re.search(
+        r'id="[^"]*_price"[^>]*>\s*(?P<price>(?:\d[\d\s&nbsp;]*)(?:[.,]\d+)?)\s*(?:руб|₽)',
+        html,
+        re.I | re.S,
+    )
+    if match:
+        return _parse_price(match.group("price"))
+    return None
+
+
+def _parse_detsadyar_articul(html: str) -> str | None:
+    match = re.search(
+        r'product-item-detail-properties-name">\s*Артикул\s*</span>.*?'
+        r'product-item-detail-properties-value">\s*(?P<articul>[^<]+?)\s*</span>',
+        html,
+        re.I | re.S,
+    )
+    if match:
+        return match.group("articul").strip()
+    return None
+
+
+def _extract_detsadyar_properties(html: str) -> str | None:
+    block_match = re.search(
+        r'id="properties"[^>]*>(?P<body>.*?)</div>\s*</div>',
+        html,
+        re.I | re.S,
+    )
+    if not block_match:
+        return None
+
+    parts: list[str] = []
+    for item_match in re.finditer(
+        r'product-item-detail-properties-item.*?'
+        r'product-item-detail-properties-name">\s*(?P<name>[^<]+?)\s*</span>.*?'
+        r'product-item-detail-properties-value">\s*(?P<value>[^<]*?)\s*</span>',
+        block_match.group("body"),
+        re.I | re.S,
+    ):
+        name = re.sub(r"\s+", " ", item_match.group("name")).strip().rstrip(":")
+        value = re.sub(r"\s+", " ", item_match.group("value")).strip()
+        if not name or not value:
+            continue
+        parts.append(f"{name}: {value}")
+    if not parts:
+        return None
+    return "; ".join(parts)[:4000]
+
+
+def _extract_detsadyar_product_image(
+    html: str,
+    *,
+    domain: str,
+    page_url: str,
+) -> str | None:
+    og_match = re.search(r'property="og:image"\s+content="([^"]+)"', html, re.I)
+    if og_match:
+        url = og_match.group(1).strip()
+        if url and not url.startswith("data:"):
+            return _absolute_url(domain, url, page_url)
+
+    slider_match = re.search(
+        r'product-item-detail-slider-controls-image[^>]*>\s*<img\s+src="(?P<url>[^"]+)"',
+        html,
+        re.I | re.S,
+    )
+    if slider_match:
+        return _absolute_url(domain, slider_match.group("url"), page_url)
+
+    main_match = re.search(
+        r'product-item-detail-slider-image[^>]*>\s*<img[^>]+src="(?P<url>[^"]+)"',
+        html,
+        re.I | re.S,
+    )
+    if main_match:
+        return _absolute_url(domain, main_match.group("url"), page_url)
+    return None
+
+
+def _parse_detsadyar_product_html(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> CompetitorCatalogProduct | None:
+    if not _is_detsadyar_product_page_html(html):
+        return None
+
+    name_match = re.search(r"<h1[^>]*>\s*(?P<name>.*?)\s*</h1>", html, re.I | re.S)
+    if not name_match:
+        return None
+    name = re.sub(r"\s+", " ", _strip_html_text(name_match.group("name"))).strip()
+    if len(name) < 4:
+        return None
+
+    price = _parse_detsadyar_price(html)
+    articul = _parse_detsadyar_articul(html)
+    properties = _extract_detsadyar_properties(html)
+    price_label = price_on_request_label(html[:80_000]) if price is None else None
+
+    return CompetitorCatalogProduct(
+        domain=domain,
+        site_label=site_label,
+        name=name[:300],
+        price=price,
+        url=page_url.split("#")[0],
+        articul=articul,
+        price_label=price_label,
+        image_url=_extract_detsadyar_product_image(html, domain=domain, page_url=page_url),
+        description=properties,
+        details=properties,
+    )
+
+
+def _parse_detsadyar_page(
+    html: str,
+    *,
+    domain: str,
+    site_label: str,
+    page_url: str,
+) -> list[CompetitorCatalogProduct]:
+    if not _is_detsadyar_domain(domain):
+        return []
+    product = _parse_detsadyar_product_html(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    return [product] if product else []
+
+
+def fetch_detsadyar_catalog(
+    site: CompetitorSite,
+    *,
+    checkpoint_every: int = 500,
+) -> list[CompetitorCatalogProduct]:
+    apply_default_domain_parsing_hints(site.domain)
+    hints = get_domain_parsing_hints(site.domain)
+    sample_url = hints.product_sample_url if hints else _DETSADYAR_SAMPLE_URL
+    product_urls = _discover_generic_sitemap_product_urls(site.domain, sample_url)
+    if sample_url and sample_url not in product_urls:
+        product_urls = [sample_url, *product_urls]
+    if not product_urls:
+        append_index_log(site.domain, "Каталог detsadyar.ru пуст — обход seed URL", level="error")
+        return fetch_catalog_products(site, max_pages=24)
+
+    append_index_log(
+        site.domain,
+        f"Индексация detsadyar.ru: {len(product_urls)} URL товаров",
+    )
+    return _fetch_products_from_url_list(
+        site,
+        product_urls,
+        checkpoint_every=checkpoint_every,
     )
 
 
@@ -4321,6 +4523,15 @@ def parse_catalog_html(html: str, *, domain: str, site_label: str, page_url: str
     if zarnitza_products:
         return zarnitza_products
 
+    detsadyar_products = _parse_detsadyar_page(
+        html,
+        domain=domain,
+        site_label=site_label,
+        page_url=page_url,
+    )
+    if detsadyar_products:
+        return detsadyar_products
+
     if _is_product_detail_path(urlparse(page_url).path.lower()):
         detail_products = _parse_product_detail_page(
             html,
@@ -4554,6 +4765,8 @@ def fetch_catalog_products(
         return fetch_orionedu_catalog(site)
     if normalized_domain == _TYI_YA_DOMAIN:
         return fetch_ty_i_ya_catalog(site)
+    if normalized_domain == _DETSADYAR_DOMAIN:
+        return fetch_detsadyar_catalog(site)
 
     apply_default_domain_parsing_hints(normalized_domain)
     hints = get_domain_parsing_hints(normalized_domain)

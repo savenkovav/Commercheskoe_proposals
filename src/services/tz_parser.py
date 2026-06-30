@@ -737,6 +737,265 @@ def _parse_price_request_text(text: str) -> list[TZItem]:
     return items
 
 
+_NUMBERED_LIST_ITEM_RE = re.compile(
+    r"^\s*(?:(?P<dup>\d+)\s+)?(?P<num>\d+)\s*[\.\)]\s*(?:\.\s*)?(?P<name>.+?)\.?\s*$"
+)
+_NUMBERED_LIST_SKIP_MARKERS = (
+    "приложение",
+    "описание объекта",
+    "форма коммерческ",
+    "форма коммерч",
+    "итого",
+    "наименование",
+    "№ п/п",
+    "кол-во",
+    "количество",
+)
+_NUMBERED_LIST_SECTION_HEADERS = (
+    "базовый (практический) комплект",
+    "базовый комплект",
+    "практический комплект",
+)
+
+
+def _looks_like_numbered_equipment_list(text: str) -> bool:
+    if not text.strip():
+        return False
+    lower = text.lower()
+    if any(marker in lower for marker in ("наименование", "№ п/п", "кол-во", "количество")):
+        if "наимен" in lower and ("кол" in lower or "ед" in lower):
+            return False
+    entries = _collect_numbered_list_entries(text)
+    numbered_valid = [
+        entry
+        for entry in entries
+        if entry[0] is not None and _is_valid_numbered_list_name(entry[1])
+    ]
+    return len(numbered_valid) >= 3
+
+
+def _is_valid_numbered_list_name(name: str) -> bool:
+    cleaned = _normalize_tz_product_name(name)
+    if not _is_valid_tz_product_name(cleaned):
+        return False
+    lower = cleaned.lower()
+    if any(marker in lower for marker in _NUMBERED_LIST_SKIP_MARKERS):
+        return False
+    if lower.rstrip(".") in _NUMBERED_LIST_SECTION_HEADERS:
+        return False
+    if re.search(r"@|mail\.ru|yandex|инн\s*:|егр[юл]", lower):
+        return False
+    if any(
+        token in lower
+        for token in (
+            "министерство",
+            "казенное",
+            "учреждение",
+            "област",
+            "ответствен",
+            "директор",
+            "заместител",
+            "тел.",
+            "телефон",
+            "e-mail",
+            "email",
+            "факс",
+        )
+    ):
+        return False
+    if re.search(r"\d{5,}", cleaned):
+        return False
+    if not any("а" <= char <= "я" or char == "ё" for char in lower):
+        return False
+    latin_letters = sum(1 for char in cleaned if char.isascii() and char.isalpha())
+    if latin_letters / max(len(cleaned), 1) > 0.22:
+        return False
+    words = [word for word in re.split(r"[\s|]+", lower) if len(word) > 2]
+    if len(words) < 2 and len(cleaned) < 22:
+        return False
+    return True
+
+
+def _is_numbered_list_section_header(name: str) -> bool:
+    lower = _normalize_tz_product_name(name).lower().rstrip(".")
+    return lower in _NUMBERED_LIST_SECTION_HEADERS
+
+
+def _collect_numbered_list_entries(text: str) -> list[tuple[int | None, str]]:
+    entries: list[tuple[int | None, str]] = []
+    current_num: int | None = None
+    current_parts: list[str] = []
+    numbered_seen = 0
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        match = _NUMBERED_LIST_ITEM_RE.match(line)
+        if match:
+            if current_num is not None or current_parts:
+                entries.append((current_num, " ".join(current_parts)))
+            current_num = int(match.group("num"))
+            current_parts = [match.group("name").strip().rstrip(".")]
+            numbered_seen += 1
+            continue
+
+        if current_num is not None and not _looks_like_numbered_list_boundary(line):
+            if _is_numbered_list_section_header(line):
+                entries.append((current_num, " ".join(current_parts)))
+                current_num = None
+                current_parts = []
+                continue
+            if numbered_seen >= 3 and _looks_like_unnumbered_list_item(line):
+                entries.append((current_num, " ".join(current_parts)))
+                entries.append((None, line.rstrip(".")))
+                current_num = None
+                current_parts = []
+                continue
+            current_parts.append(line.rstrip("."))
+            continue
+
+        if current_parts:
+            entries.append((current_num, " ".join(current_parts)))
+            current_num = None
+            current_parts = []
+
+        if numbered_seen >= 3 and _looks_like_unnumbered_list_item(line):
+            entries.append((None, line.rstrip(".")))
+
+    if current_parts:
+        entries.append((current_num, " ".join(current_parts)))
+
+    return entries
+
+
+def _looks_like_numbered_list_boundary(line: str) -> bool:
+    lower = line.lower()
+    if _NUMBERED_LIST_ITEM_RE.match(line):
+        return True
+    if any(marker in lower for marker in _NUMBERED_LIST_SKIP_MARKERS):
+        return True
+    if lower.startswith("приложение"):
+        return True
+    return False
+
+
+def _looks_like_unnumbered_list_item(line: str) -> bool:
+    if _NUMBERED_LIST_ITEM_RE.match(line):
+        return False
+    if _is_numbered_list_section_header(line):
+        return False
+    if len(line) < 12:
+        return False
+    lower = line.lower()
+    if any(marker in lower for marker in _NUMBERED_LIST_SKIP_MARKERS):
+        return False
+    if lower.startswith("приложение"):
+        return False
+    if not re.search(r"[а-яa-zё]{4,}", lower):
+        return False
+    return _is_valid_numbered_list_name(line)
+
+
+def _parse_numbered_list_text(text: str) -> list[TZItem]:
+    if not text.strip():
+        return []
+
+    text = _repair_ocr_cyrillic_text(text)
+    if not _looks_like_numbered_equipment_list(text):
+        return []
+
+    items: list[TZItem] = []
+    seen_numbers: set[int] = set()
+    auto_number = 0
+
+    for raw_number, raw_name in _collect_numbered_list_entries(text):
+        name = _normalize_tz_product_name(raw_name)
+        if not _is_valid_numbered_list_name(name):
+            continue
+
+        if raw_number is not None and raw_number > 0 and raw_number not in seen_numbers:
+            number = raw_number
+            seen_numbers.add(number)
+            auto_number = max(auto_number, number)
+        else:
+            auto_number += 1
+            number = auto_number
+
+        items.append(
+            TZItem(
+                number=number,
+                name=name,
+                unit="шт.",
+                quantity=1.0,
+            )
+        )
+
+    if len(items) < 3:
+        return []
+
+    return items
+
+
+def _looks_like_procurement_cover_letter(text: str) -> bool:
+    normalized = _repair_ocr_cyrillic_text(text).lower()
+    markers = (
+        "запрос",
+        "3апрос",
+        "zampoc",
+        "коммерч",
+        "kouмep",
+        "koммep",
+        "коммерческ",
+        "приложен",
+        "прилоx",
+        "npu nox",
+        "npunox",
+        "ценов",
+        "ценовой",
+        "mpeдlo",
+        "предложen",
+        "предложен",
+        "mpeocma",
+        "mpeдocma",
+    )
+    org_markers = (
+        "учтендер",
+        "yutender",
+        "yuten",
+        "uten",
+        "уten",
+        "казенное",
+        "образovan",
+        "образован",
+        "закупк",
+        "аукцион",
+    )
+    marker_hits = sum(1 for marker in markers if marker in normalized)
+    org_hits = sum(1 for marker in org_markers if marker in normalized)
+    if marker_hits >= 2 or (marker_hits >= 1 and org_hits >= 1) or org_hits >= 2:
+        return not _looks_like_numbered_equipment_list(text)
+    return False
+
+
+def _ocr_text_looks_like_official_letter(text: str) -> bool:
+    if not text.strip():
+        return False
+    upper_lines = 0
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if len(line) < 18:
+            continue
+        letters = [char for char in line if char.isalpha()]
+        if len(letters) < 12:
+            continue
+        upper_count = sum(1 for char in letters if char.isupper())
+        if upper_count / len(letters) >= 0.82:
+            upper_lines += 1
+    return upper_lines >= 3
+
+
 def _parse_price_request_tables(tables: Iterable[list[list[str]]]) -> list[TZItem]:
     items: list[TZItem] = []
     for table in tables:
@@ -1946,6 +2205,10 @@ def _parse_tz_docx(path: Path) -> list[TZItem]:
         return items
 
     text = _extract_docx_text(path)
+    items = _parse_numbered_list_text(text)
+    if items:
+        return items
+
     items = _parse_zakupki_loose_text(text)
     if items:
         return items
@@ -2080,6 +2343,10 @@ def _parse_tz_pdf(path: Path) -> list[TZItem]:
     if items:
         return items
 
+    items = _parse_numbered_list_text(text)
+    if items:
+        return items
+
     items = _parse_tz_tables(_tables_from_text(text))
     if items:
         return items
@@ -2091,9 +2358,17 @@ def _parse_tz_pdf(path: Path) -> list[TZItem]:
             "(Docker: tesseract-ocr tesseract-ocr-rus; macOS: brew install tesseract tesseract-lang)."
         )
 
+    if _looks_like_procurement_cover_letter(text) or (
+        _pdf_page_is_image_only(path) and _ocr_text_looks_like_official_letter(text)
+    ):
+        raise ValueError(
+            "PDF содержит сопроводительное письмо (запрос КП) без списка позиций. "
+            "Загрузите приложение с перечнем оборудования или файл со списком позиций."
+        )
+
     raise ValueError(
-        "Не удалось извлечь таблицу позиций из PDF. "
-        "Убедитесь, что есть колонка «Наименование». "
+        "Не удалось извлечь позиции из PDF. "
+        "Поддерживаются таблицы с колонкой «Наименование» и нумерованные списки (1. …, 2. …). "
         "Для сканов установите Tesseract и включите TZ_PDF_OCR_ENABLED=true."
     )
 

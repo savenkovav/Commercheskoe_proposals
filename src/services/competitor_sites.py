@@ -108,6 +108,11 @@ COMPETITOR_SITES: tuple[CompetitorSite, ...] = (
         "Music Expert",
         "https://www.music-expert.ru/search/?q={query}",
     ),
+    CompetitorSite(
+        "detsadyar.ru",
+        "ДетсадЯр",
+        "https://detsadyar.ru/search/?q={query}",
+    ),
 )
 
 _DOMAIN_TO_LABEL: dict[str, str] = {
