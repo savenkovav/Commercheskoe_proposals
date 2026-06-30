@@ -151,7 +151,7 @@
             <button type="button" class="kp-chat-hint" data-hint="Задача 1+2: найди в каталогах и подбери конкурентные цены">Поиск + конкуренты</button>
             <button type="button" class="kp-chat-hint" data-hint="Рассчитай с наценкой 30% и сформируй Excel">Наценка 30%</button>
             <button type="button" class="kp-chat-hint" data-hint="Сформируй Excel КП">Сформировать Excel</button>
-            <button type="button" class="kp-chat-hint" data-hint="Запомни как правило: для гипсовых моделей бери составляющие из прайса ПИШ">Запомни правило</button>
+            <button type="button" class="kp-chat-hint" id="btnKpPishSearch" data-pish-search aria-pressed="false">Поиск из ПИШ</button>
           </div>
           <div class="chat-messages kp-chat-messages" id="kpChatMessages" aria-live="polite">
             <div class="chat-welcome">
@@ -201,6 +201,9 @@
               <div class="chat-welcome">
                 <p>Задайте вопрос о товаре — поиск в каталоге, прайсах, реестре и на сайтах конкурентов выполняется по отправке запроса.</p>
               </div>
+            </div>
+            <div class="kp-chat-hints lookup-chat-hints" id="lookupChatHints">
+              <button type="button" class="kp-chat-hint" id="btnPishSearch" data-pish-search aria-pressed="false">Поиск из ПИШ</button>
             </div>
             <form class="chat-compose" id="chatForm">
               <textarea

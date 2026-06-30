@@ -137,7 +137,14 @@ class KpChatService:
         logger.info("KP free session created: %s", session_id)
         return session_id
 
-    def chat(self, session_id: str, message: str) -> dict:
+    def chat(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        pish_only: bool = False,
+        refresh_lookup: bool = False,
+    ) -> dict:
         session = self.store.get(session_id)
         if not session:
             raise ValueError("Сессия не найдена. Загрузите ТЗ заново.")
@@ -147,14 +154,20 @@ class KpChatService:
             raise ValueError("Введите сообщение")
 
         logger.info(
-            "KP chat session=%s tz_items=%s message=%r",
+            "KP chat session=%s tz_items=%s message=%r pish_only=%s refresh=%s",
             session_id,
             len(session.tz_items),
             text[:120],
+            pish_only,
+            refresh_lookup,
         )
         started = time.perf_counter()
 
-        session.chat_history.append(ChatTurn(role="user", text=text))
+        if refresh_lookup:
+            while session.chat_history and session.chat_history[-1].role == "assistant":
+                session.chat_history.pop()
+        else:
+            session.chat_history.append(ChatTurn(role="user", text=text))
 
         lookup_query = resolve_freeform_product_lookup(text, session.tz_items)
         lookup_result = None
@@ -167,6 +180,7 @@ class KpChatService:
             lookup_result = self.lookup.lookup(
                 lookup_query.product_name,
                 lookup_query.requested_fields,
+                pish_only=pish_only,
             )
 
         items_summary = self._items_summary(session.results, session.tz_items)

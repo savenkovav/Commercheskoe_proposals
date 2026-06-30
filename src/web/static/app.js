@@ -3046,11 +3046,14 @@ function resetKpChat(sessionId) {
   renderKpChatMessages({ scrollToBottom: true });
 }
 
-async function sendKpChatMessage(text, isRetry = false) {
+async function sendKpChatMessage(text, options = {}) {
   const message = text.trim();
   if (!message || kpChatLoading) return;
+  const isRetry = Boolean(options.isRetry);
+  const replaceLast = Boolean(options.replaceLast);
+  const refreshLookup = Boolean(options.refreshLookup);
 
-  if (!isRetry) {
+  if (!isRetry && !replaceLast) {
     kpChatMessages.push({ role: "user", text: message, ts: Date.now() });
   }
   kpChatLoading = true;
@@ -3062,25 +3065,43 @@ async function sendKpChatMessage(text, isRetry = false) {
     const data = await api("/api/kp/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: kpSessionId, message }),
+      body: JSON.stringify({
+        session_id: kpSessionId,
+        message,
+        pish_only: pishSearchOnly,
+        refresh_lookup: refreshLookup,
+      }),
     });
     if (data.session_id) {
       kpSessionId = data.session_id;
     }
-    if (data.session_recreated && !isRetry) {
+    if (data.session_recreated && !isRetry && !replaceLast) {
       kpChatMessages.push({
         role: "assistant",
         text: "Сессия была обновлена. Поиск по товару продолжается; для КП по ТЗ загрузите файл заново.",
         ts: Date.now(),
       });
     }
-    kpChatMessages.push({
+    const assistantMsg = {
       role: "assistant",
       text: data.reply,
       actions: data.actions,
       lookup: data.lookup || null,
       ts: Date.now(),
-    });
+    };
+    if (replaceLast) {
+      const lastAssistantIdx = [...kpChatMessages]
+        .map((msg, idx) => ({ msg, idx }))
+        .reverse()
+        .find(({ msg }) => msg.role === "assistant")?.idx;
+      if (lastAssistantIdx != null) {
+        kpChatMessages[lastAssistantIdx] = assistantMsg;
+      } else {
+        kpChatMessages.push(assistantMsg);
+      }
+    } else {
+      kpChatMessages.push(assistantMsg);
+    }
     if (data.markup_percent != null) {
       setMarkupInput(data.markup_percent);
     }
@@ -3095,12 +3116,25 @@ async function sendKpChatMessage(text, isRetry = false) {
       showToast("Ответ получен");
     }
   } catch (e) {
-    if (!isRetry && /сессия не найдена/i.test(String(e.message || ""))) {
+    if (!isRetry && !replaceLast && /сессия не найдена/i.test(String(e.message || ""))) {
       kpSessionId = null;
       kpSessionPromise = null;
-      return sendKpChatMessage(text, true);
+      return sendKpChatMessage(text, { ...options, isRetry: true });
     }
-    kpChatMessages.push({ role: "error", text: e.message, ts: Date.now() });
+    const errorMsg = { role: "error", text: e.message, ts: Date.now() };
+    if (replaceLast) {
+      const lastAssistantIdx = [...kpChatMessages]
+        .map((msg, idx) => ({ msg, idx }))
+        .reverse()
+        .find(({ msg }) => msg.role === "assistant")?.idx;
+      if (lastAssistantIdx != null) {
+        kpChatMessages[lastAssistantIdx] = errorMsg;
+      } else {
+        kpChatMessages.push(errorMsg);
+      }
+    } else {
+      kpChatMessages.push(errorMsg);
+    }
     showToast(e.message, true);
   } finally {
     kpChatLoading = false;
@@ -3112,6 +3146,9 @@ async function sendKpChatMessage(text, isRetry = false) {
 function initKpChat() {
   const form = $("#kpChatForm");
   if (!form) return;
+
+  loadPishSearchState();
+  updatePishSearchButtons();
 
   ensureKpSession()
     .then(() => {
@@ -3139,6 +3176,11 @@ function initKpChat() {
   });
 
   $("#kpChatHints")?.addEventListener("click", (e) => {
+    const pishBtn = e.target.closest("[data-pish-search]");
+    if (pishBtn) {
+      togglePishSearch();
+      return;
+    }
     const btn = e.target.closest("[data-hint]");
     if (!btn) return;
     sendKpChatMessage(btn.dataset.hint);
@@ -3364,10 +3406,53 @@ function initUpload() {
 }
 
 const CHAT_STORAGE_KEY = "kp_lookup_chat_v1";
+const PISH_SEARCH_STORAGE_KEY = "lookup_pish_only";
 
 let chatMessages = [];
 let chatHistoryIndex = [];
 let chatLoading = false;
+let pishSearchOnly = false;
+
+function loadPishSearchState() {
+  try {
+    pishSearchOnly = localStorage.getItem(PISH_SEARCH_STORAGE_KEY) === "1";
+  } catch {
+    pishSearchOnly = false;
+  }
+}
+
+function savePishSearchState() {
+  try {
+    localStorage.setItem(PISH_SEARCH_STORAGE_KEY, pishSearchOnly ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function updatePishSearchButtons() {
+  ["#btnPishSearch", "#btnKpPishSearch"].forEach((selector) => {
+    const btn = $(selector);
+    if (!btn) return;
+    btn.classList.toggle("kp-chat-hint--active", pishSearchOnly);
+    btn.setAttribute("aria-pressed", pishSearchOnly ? "true" : "false");
+  });
+}
+
+function togglePishSearch() {
+  pishSearchOnly = !pishSearchOnly;
+  savePishSearchState();
+  updatePishSearchButtons();
+
+  const lastLookupQuery = [...chatMessages].reverse().find((msg) => msg.role === "user")?.text;
+  if (lastLookupQuery && !chatLoading) {
+    sendChatMessage(lastLookupQuery, { replaceLast: true });
+  }
+
+  const lastKpQuery = [...kpChatMessages].reverse().find((msg) => msg.role === "user")?.text;
+  if (lastKpQuery && !kpChatLoading) {
+    sendKpChatMessage(lastKpQuery, { replaceLast: true, refreshLookup: true });
+  }
+}
 
 function loadChatState() {
   try {
@@ -3506,41 +3591,74 @@ function newChatId() {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function sendChatMessage(text) {
+async function sendChatMessage(text, options = {}) {
   const query = text.trim();
   if (!query || chatLoading) return;
+  const replaceLast = Boolean(options.replaceLast);
 
-  const userMsg = { id: newChatId(), role: "user", text: query, ts: Date.now() };
-  chatMessages.push(userMsg);
-  addHistoryEntry(query, userMsg.id);
+  if (!replaceLast) {
+    const userMsg = { id: newChatId(), role: "user", text: query, ts: Date.now() };
+    chatMessages.push(userMsg);
+    addHistoryEntry(query, userMsg.id);
+  }
   chatLoading = true;
   renderChatMessages();
-  renderChatHistorySidebar();
-  saveChatState();
+  if (!replaceLast) {
+    renderChatHistorySidebar();
+    saveChatState();
+  }
 
   try {
     const data = await api("/api/lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, pish_only: pishSearchOnly }),
     });
-    chatMessages.push({
+    const assistantMsg = {
       id: newChatId(),
       role: "assistant",
       result: data,
       ts: Date.now(),
-    });
+    };
+    if (replaceLast) {
+      const lastAssistantIdx = [...chatMessages]
+        .map((msg, idx) => ({ msg, idx }))
+        .reverse()
+        .find(({ msg }) => msg.role === "assistant")?.idx;
+      if (lastAssistantIdx != null) {
+        chatMessages[lastAssistantIdx] = assistantMsg;
+      } else {
+        chatMessages.push(assistantMsg);
+      }
+    } else {
+      chatMessages.push(assistantMsg);
+    }
   } catch (e) {
-    chatMessages.push({
+    const errorMsg = {
       id: newChatId(),
       role: "error",
       text: e.message,
       ts: Date.now(),
-    });
+    };
+    if (replaceLast) {
+      const lastAssistantIdx = [...chatMessages]
+        .map((msg, idx) => ({ msg, idx }))
+        .reverse()
+        .find(({ msg }) => msg.role === "assistant")?.idx;
+      if (lastAssistantIdx != null) {
+        chatMessages[lastAssistantIdx] = errorMsg;
+      } else {
+        chatMessages.push(errorMsg);
+      }
+    } else {
+      chatMessages.push(errorMsg);
+    }
   } finally {
     chatLoading = false;
     renderChatMessages();
-    saveChatState();
+    if (!replaceLast) {
+      saveChatState();
+    }
   }
 }
 
@@ -3565,8 +3683,14 @@ function startNewChat() {
 
 function initChat() {
   loadChatState();
+  loadPishSearchState();
+  updatePishSearchButtons();
   renderChatMessages();
   renderChatHistorySidebar();
+
+  $("#btnPishSearch")?.addEventListener("click", () => {
+    togglePishSearch();
+  });
 
   $("#chatForm").addEventListener("submit", (e) => {
     e.preventDefault();

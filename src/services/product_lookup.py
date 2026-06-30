@@ -24,6 +24,30 @@ from src.services.web_search_service import WebSearchService
 logger = logging.getLogger(__name__)
 
 LOOKUP_MATCH_LIMIT = 20
+_PISH_ARTICUL_IN_NOTES_RE = re.compile(r"articul:\s*ПИШ", re.I)
+_PISH_PREFIXES = ("ПИШ", "PISH")
+
+
+def normalize_pish_token(value: str) -> str:
+    return value.strip().upper().replace(" ", "")
+
+
+def is_pish_articul(value: str | None) -> bool:
+    if not value:
+        return False
+    normalized = normalize_pish_token(value)
+    return any(normalized.startswith(prefix) for prefix in _PISH_PREFIXES)
+
+
+def is_pish_price_item(item: PriceListItem) -> bool:
+    return is_pish_articul(item.code) or is_pish_articul(item.supplier)
+
+
+def is_pish_competitor_item(item: dict[str, object]) -> bool:
+    if is_pish_articul(str(item.get("articul") or "")):
+        return True
+    notes = str(item.get("notes") or "")
+    return bool(_PISH_ARTICUL_IN_NOTES_RE.search(notes))
 
 
 class LookupField(str, Enum):
@@ -204,27 +228,57 @@ class ProductLookupService:
         self.ai = ai_agent
         self.web_search = web_search or WebSearchService()
 
-    def lookup(self, product_name: str, requested_fields: list[LookupField] | None = None) -> ProductLookupResult:
+    def lookup(
+        self,
+        product_name: str,
+        requested_fields: list[LookupField] | None = None,
+        *,
+        pish_only: bool = False,
+    ) -> ProductLookupResult:
         fields = requested_fields or DEFAULT_FIELDS
-        logger.info("Product lookup start: %r fields=%s", product_name, [f.value for f in fields])
+        logger.info(
+            "Product lookup start: %r fields=%s pish_only=%s",
+            product_name,
+            [f.value for f in fields],
+            pish_only,
+        )
         tz_item = TZItem(number=1, name=product_name.strip(), unit="шт.", quantity=1)
         candidates = self.matcher.find_candidates(tz_item)
 
-        catalog_hit = self._best_hit(candidates["catalog"], product_name)
-        registry_hit = self._best_hit(candidates["registry"], product_name)
-        price_hit = self._best_hit(candidates["price"], product_name)
+        price_candidates = candidates["price"]
+        if pish_only:
+            price_candidates = [
+                hit
+                for hit in price_candidates
+                if isinstance(hit.payload, PriceListItem) and is_pish_price_item(hit.payload)
+            ]
 
-        catalog_block = self._build_catalog_block(
-            catalog_hit, candidates["catalog"], product_name, self.matcher
-        )
+        if pish_only:
+            catalog_hit = None
+            registry_hit = None
+            price_hit = self._best_hit(price_candidates, product_name)
+            catalog_block: dict[str, object] = {"found": False, "items": []}
+            registry_block: dict[str, object] = {
+                "found": False,
+                "message": REGISTRY_NOT_FOUND_MESSAGE,
+                "items": [],
+            }
+        else:
+            catalog_hit = self._best_hit(candidates["catalog"], product_name)
+            registry_hit = self._best_hit(candidates["registry"], product_name)
+            price_hit = self._best_hit(price_candidates, product_name)
+            catalog_block = self._build_catalog_block(
+                catalog_hit, candidates["catalog"], product_name, self.matcher
+            )
+            registry_block = self._build_registry_block(
+                registry_hit, candidates["registry"], product_name, self.matcher
+            )
+
         price_block = self._build_price_block(
-            price_hit, candidates["price"], product_name, self.matcher
-        )
-        registry_block = self._build_registry_block(
-            registry_hit, candidates["registry"], product_name, self.matcher
+            price_hit, price_candidates, product_name, self.matcher
         )
         competitors_block = (
-            self._build_competitors_block(product_name)
+            self._build_competitors_block(product_name, pish_only=pish_only)
             if self._should_search_competitors(
                 fields,
                 tz_item,
@@ -366,7 +420,7 @@ class ProductLookupService:
         }
         return bool(price_fields.intersection(fields))
 
-    def _build_competitors_block(self, query: str) -> dict[str, object]:
+    def _build_competitors_block(self, query: str, *, pish_only: bool = False) -> dict[str, object]:
         quotes: list[PriceQuote] = []
         try:
             quotes.extend(self.web_search.search_competitor_offers(query, sort_by_match=True))
@@ -411,8 +465,12 @@ class ProductLookupService:
                 }
             )
 
+        if pish_only:
+            items = [item for item in items if is_pish_competitor_item(item)]
+
         items.sort(
             key=lambda item: (
+                0 if is_pish_competitor_item(item) else 1,
                 -(float(item.get("match_score") or 0)),
                 0 if item.get("has_price") else 1,
                 item["_sort_price"],

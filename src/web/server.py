@@ -171,6 +171,7 @@ async def log_http_requests(request, call_next):
 
 class LookupRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
+    pish_only: bool = False
 
 
 class PriceMetaUpdate(BaseModel):
@@ -185,6 +186,8 @@ class MarkupUpdate(BaseModel):
 class KpChatRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=64)
     message: str = Field(min_length=1, max_length=4000)
+    pish_only: bool = False
+    refresh_lookup: bool = False
 
 
 class KpSessionCreateRequest(BaseModel):
@@ -1083,7 +1086,12 @@ def _api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
     else:
         session_id = service.create_free_session()
         session_recreated = True
-    chat_result = service.chat(session_id, body.message)
+    chat_result = service.chat(
+        session_id,
+        body.message,
+        pish_only=body.pish_only,
+        refresh_lookup=body.refresh_lookup,
+    )
     response = _kp_chat_response(chat_result, session_id)
     response["session_recreated"] = session_recreated
     return response
@@ -1375,7 +1383,11 @@ def _api_lookup(body: LookupRequest) -> dict[str, Any]:
         processor.ai,
         processor.tz_matcher.web_search,
     )
-    result = lookup.lookup(parsed.product_name, parsed.requested_fields)
+    result = lookup.lookup(
+        parsed.product_name,
+        parsed.requested_fields,
+        pish_only=body.pish_only,
+    )
     logger.info(
         "Lookup done product=%r status=%s score=%.1f %.0fms",
         parsed.product_name,

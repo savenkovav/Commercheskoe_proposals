@@ -1376,6 +1376,23 @@ a.btn.btn--disabled {
   border-color: var(--accent);
 }
 
+.kp-chat-hint--active {
+  background: var(--primary-yellow);
+  border-color: var(--primary-yellow);
+  color: #2f2604;
+  font-weight: 600;
+}
+
+.kp-chat-hint--active:hover:not(:disabled) {
+  background: var(--primary-yellow);
+  border-color: var(--primary-yellow);
+  color: #2f2604;
+}
+
+.lookup-chat-hints {
+  margin-bottom: 12px;
+}
+
 .kp-chat-hint:disabled,
 .chat-compose__input:disabled,
 .chat-compose__send:disabled {
