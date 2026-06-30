@@ -72,11 +72,12 @@ class KpChatService:
         auto_searched: bool = False,
         rag_index: RagIndex | None = None,
         task_mode: str = "task1",
+        preferences: KpPreferences | None = None,
     ) -> str:
         from src.services.kp_session import new_session_id
 
         normalized_mode = task_mode if task_mode in ("task1", "task1_task2") else "task1"
-        preferences = KpPreferences(
+        session_preferences = preferences or KpPreferences(
             search_kit_component_links=SEARCH_KIT_COMPONENT_LINKS,
         )
         session = KpSession(
@@ -86,7 +87,7 @@ class KpChatService:
             summary=summary,
             output_path=output_path or (OUTPUT_DIR / "pending.xlsx"),
             use_ai=use_ai,
-            preferences=preferences,
+            preferences=session_preferences,
             task_mode=normalized_mode,
             stage="parsed" if parsed_only else "searched",
             search_completed=not parsed_only,
@@ -162,6 +163,8 @@ class KpChatService:
             refresh_lookup,
         )
         started = time.perf_counter()
+
+        session.preferences.pish_only = pish_only
 
         if refresh_lookup:
             while session.chat_history and session.chat_history[-1].role == "assistant":

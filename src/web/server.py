@@ -799,6 +799,7 @@ def _process_tz_upload(
     filename: str = "",
     tz_items: list | None = None,
     rag_index=None,
+    pish_only: bool = False,
 ) -> dict[str, Any]:
     task_mode = _normalize_task_mode(task_mode)
     include_web = task_mode == "task1_task2"
@@ -812,7 +813,7 @@ def _process_tz_upload(
             parsed_items,
             filename=filename or tz_path.name,
         )
-    prefs = KpPreferences()
+    prefs = KpPreferences(pish_only=pish_only)
     results = processor.search_tz_items(
         parsed_items,
         use_ai=use_ai,
@@ -832,6 +833,7 @@ def _process_tz_upload(
         auto_searched=True,
         rag_index=rag_index,
         task_mode=task_mode,
+        preferences=prefs,
     )
     session = _kp_chat_service().store.get(session_id)
     welcome = session.chat_history[-1].text if session and session.chat_history else ""
@@ -866,6 +868,7 @@ def _process_tz_path(
     task_mode: str = "task1",
     parse_only: bool | None = None,
     filename: str = "",
+    pish_only: bool = False,
 ) -> dict[str, Any]:
     normalized_mode = _normalize_task_mode(task_mode, parse_only=parse_only)
     processor = get_processor()
@@ -883,6 +886,7 @@ def _process_tz_path(
         filename=filename,
         tz_items=parsed_items,
         rag_index=rag_index,
+        pish_only=pish_only,
     )
 
 
@@ -1316,6 +1320,7 @@ async def api_process_upload(
     task_mode: str = Form(default="task1"),
     markup_percent: float | None = Form(default=None),
     parse_only: bool | None = Form(default=None),
+    pish_only: bool = Form(default=False),
 ) -> dict[str, Any]:
     try:
         content = await file.read()
@@ -1337,6 +1342,7 @@ async def api_process_upload(
                     task_mode=task_mode,
                     parse_only=parse_only,
                     filename=filename,
+                    pish_only=pish_only,
                 )
 
             payload = await run_in_threadpool(_run_upload)

@@ -13,6 +13,7 @@ class KpPreferences:
     disabled_sources: list[str] = field(default_factory=list)
     search_kit_component_links: bool = False
     force_kit_component_pricing: bool = False
+    pish_only: bool = False
     rules: list[str] = field(default_factory=list)
 
     def merge_ai_patch(self, patch: dict) -> None:
@@ -53,6 +54,7 @@ class KpPreferences:
             "disabled_sources": list(self.disabled_sources),
             "search_kit_component_links": self.search_kit_component_links,
             "force_kit_component_pricing": self.force_kit_component_pricing,
+            "pish_only": self.pish_only,
             "rules": list(self.rules),
         }
 
@@ -80,6 +82,8 @@ def local_quote_meets_match_threshold(quote: object) -> bool:
 
 
 def filter_comparison_quotes(quotes: list, preferences: KpPreferences) -> list:
+    from src.services.product_lookup import is_pish_quote
+
     filtered: list = []
     for quote in quotes:
         source = str(getattr(quote, "source", "") or "")
@@ -114,6 +118,16 @@ def filter_comparison_quotes(quotes: list, preferences: KpPreferences) -> list:
         elif not local_quote_meets_match_threshold(quote):
             continue
         filtered.append(quote)
+
+    if preferences.pish_only:
+        filtered = [quote for quote in filtered if is_pish_quote(quote)]
+
+    filtered.sort(
+        key=lambda quote: (
+            0 if is_pish_quote(quote) else 1,
+            -(float(getattr(quote, "match_score", 0) or 0)),
+        )
+    )
     return filtered
 
 

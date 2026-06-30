@@ -50,6 +50,29 @@ def is_pish_competitor_item(item: dict[str, object]) -> bool:
     return bool(_PISH_ARTICUL_IN_NOTES_RE.search(notes))
 
 
+def is_pish_quote(quote: object) -> bool:
+    if is_pish_articul(getattr(quote, "articul", None)):
+        return True
+    notes = str(getattr(quote, "notes", "") or "")
+    if _PISH_ARTICUL_IN_NOTES_RE.search(notes):
+        return True
+    code_match = re.search(r"код\s+(\S+)", notes, re.I)
+    if code_match and is_pish_articul(code_match.group(1)):
+        return True
+    return is_pish_articul(getattr(quote, "supplier", None))
+
+
+def sort_pish_first(items: list[dict[str, object]]) -> None:
+    items.sort(
+        key=lambda item: (
+            0 if is_pish_competitor_item(item) else 1,
+            -(float(item.get("match_score") or 0)),
+            0 if item.get("has_price") else 1,
+            item.get("_sort_price", float("inf")),
+        )
+    )
+
+
 class LookupField(str, Enum):
     COST = "cost"
     PRICE = "price"
@@ -468,14 +491,7 @@ class ProductLookupService:
         if pish_only:
             items = [item for item in items if is_pish_competitor_item(item)]
 
-        items.sort(
-            key=lambda item: (
-                0 if is_pish_competitor_item(item) else 1,
-                -(float(item.get("match_score") or 0)),
-                0 if item.get("has_price") else 1,
-                item["_sort_price"],
-            )
-        )
+        sort_pish_first(items)
         for item in items:
             item.pop("_sort_price", None)
         return {"found": bool(items), "items": items}

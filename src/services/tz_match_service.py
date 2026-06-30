@@ -108,18 +108,34 @@ class TZMatchService:
             search_kit_component_links=SEARCH_KIT_COMPONENT_LINKS,
         )
         candidates = self.matcher.find_candidates(tz_item)
+        if prefs.pish_only:
+            from src.services.models import PriceListItem
+            from src.services.product_lookup import is_pish_price_item
+
+            candidates = {
+                **candidates,
+                "catalog": [],
+                "registry": [],
+                "price": [
+                    hit
+                    for hit in candidates["price"]
+                    if isinstance(hit.payload, PriceListItem)
+                    and is_pish_price_item(hit.payload)
+                ],
+            }
         local_floor = self._compute_local_floor(tz_item, candidates)
 
         catalog_hit = self._pick_validated_hit(
             candidates["catalog"], tz_item, use_ai, min_score=local_floor
         )
-        direct_catalog = self._find_direct_catalog_hit(
-            tz_item, use_ai=use_ai, min_score=local_floor
-        )
-        if direct_catalog and (
-            catalog_hit is None or direct_catalog.score > catalog_hit.score
-        ):
-            catalog_hit = direct_catalog
+        if not prefs.pish_only:
+            direct_catalog = self._find_direct_catalog_hit(
+                tz_item, use_ai=use_ai, min_score=local_floor
+            )
+            if direct_catalog and (
+                catalog_hit is None or direct_catalog.score > catalog_hit.score
+            ):
+                catalog_hit = direct_catalog
         if catalog_hit and self.matcher.is_distinctive_mismatch(
             tz_item.name, catalog_hit.name
         ):
@@ -131,6 +147,11 @@ class TZMatchService:
             candidates["registry"], tz_item, use_ai, min_score=local_floor
         )
         goods_hit = self._match_goods_report(tz_item, min_score=local_floor)
+
+        if prefs.pish_only:
+            catalog_hit = None
+            registry_hit = None
+            goods_hit = None
 
         comparison: list[PriceQuote] = []
         kit_components: list[KitComponentLine] = []

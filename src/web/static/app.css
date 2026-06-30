@@ -1393,6 +1393,10 @@ a.btn.btn--disabled {
   margin-bottom: 12px;
 }
 
+.upload-pish-hints {
+  margin-top: 12px;
+}
+
 .kp-chat-hint:disabled,
 .chat-compose__input:disabled,
 .chat-compose__send:disabled {

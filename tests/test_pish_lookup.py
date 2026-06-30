@@ -39,6 +39,28 @@ def test_is_pish_competitor_item_from_articul_or_notes() -> None:
     assert not is_pish_competitor_item({"articul": "ABC123", "notes": "обычная заметка"})
 
 
+def test_is_pish_quote_from_price_code() -> None:
+    from src.services.product_lookup import is_pish_quote
+    from src.services.models import PriceQuote
+
+    assert is_pish_quote(
+        PriceQuote(
+            source="price_list",
+            label="Прайс",
+            matched_name="Модель",
+            notes="код ПИШ001",
+        )
+    )
+    assert not is_pish_quote(
+        PriceQuote(
+            source="price_list",
+            label="Прайс",
+            matched_name="Модель",
+            notes="код ABC001",
+        )
+    )
+
+
 def test_build_competitors_block_prioritizes_pish_items() -> None:
     class StubWebSearch:
         def search_competitor_offers(self, query: str, sort_by_match: bool = False) -> list[PriceQuote]:

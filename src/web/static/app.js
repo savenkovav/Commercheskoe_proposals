@@ -1,6 +1,64 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+const PISH_SEARCH_STORAGE_KEY = "lookup_pish_only";
+let pishSearchOnly = false;
+
+function loadPishSearchState() {
+  try {
+    pishSearchOnly = localStorage.getItem(PISH_SEARCH_STORAGE_KEY) === "1";
+  } catch {
+    pishSearchOnly = false;
+  }
+}
+
+function savePishSearchState() {
+  try {
+    localStorage.setItem(PISH_SEARCH_STORAGE_KEY, pishSearchOnly ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function updatePishSearchButtons() {
+  document.querySelectorAll("[data-pish-search]").forEach((btn) => {
+    btn.classList.toggle("kp-chat-hint--active", pishSearchOnly);
+    btn.setAttribute("aria-pressed", pishSearchOnly ? "true" : "false");
+  });
+}
+
+function togglePishSearch() {
+  pishSearchOnly = !pishSearchOnly;
+  savePishSearchState();
+  updatePishSearchButtons();
+  showToast(
+    pishSearchOnly
+      ? "Включён поиск только из прайса ПИШ"
+      : "Поиск из всех источников",
+  );
+
+  const lastLookupQuery = [...chatMessages].reverse().find((msg) => msg.role === "user")?.text;
+  if (lastLookupQuery && !chatLoading) {
+    sendChatMessage(lastLookupQuery, { replaceLast: true });
+  }
+
+  const lastKpQuery = [...kpChatMessages].reverse().find((msg) => msg.role === "user")?.text;
+  if (lastKpQuery && !kpChatLoading) {
+    sendKpChatMessage(lastKpQuery, { replaceLast: true, refreshLookup: true });
+  }
+}
+
+function initPishSearchControls() {
+  loadPishSearchState();
+  updatePishSearchButtons();
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-pish-search]");
+    if (!btn || btn.disabled) return;
+    e.preventDefault();
+    togglePishSearch();
+  });
+}
+
 const ALLOWED_TZ_EXTENSIONS = [".doc", ".docx", ".pdf", ".xlsx", ".xls"];
 
 function isAllowedTzFile(name) {
@@ -3033,7 +3091,7 @@ function updateKpChatFormState() {
   const enabled = !kpChatLoading;
   if (input) input.disabled = !enabled;
   if (sendBtn) sendBtn.disabled = !enabled;
-  $("#kpChatHints")?.querySelectorAll(".kp-chat-hint").forEach((btn) => {
+  $("#kpChatHints")?.querySelectorAll(".kp-chat-hint:not([data-pish-search])").forEach((btn) => {
     btn.disabled = !enabled;
   });
 }
@@ -3147,9 +3205,6 @@ function initKpChat() {
   const form = $("#kpChatForm");
   if (!form) return;
 
-  loadPishSearchState();
-  updatePishSearchButtons();
-
   ensureKpSession()
     .then(() => {
       updateKpChatFormState();
@@ -3176,11 +3231,7 @@ function initKpChat() {
   });
 
   $("#kpChatHints")?.addEventListener("click", (e) => {
-    const pishBtn = e.target.closest("[data-pish-search]");
-    if (pishBtn) {
-      togglePishSearch();
-      return;
-    }
+    if (e.target.closest("[data-pish-search]")) return;
     const btn = e.target.closest("[data-hint]");
     if (!btn) return;
     sendKpChatMessage(btn.dataset.hint);
@@ -3335,6 +3386,7 @@ async function processUpload(taskMode) {
   form.append("use_ai", $("#useAiUpload").checked);
   form.append("task_mode", taskMode);
   form.append("markup_percent", String(getCurrentMarkupPercent()));
+  form.append("pish_only", pishSearchOnly ? "true" : "false");
 
   try {
     const data = await api("/api/process/upload", { method: "POST", body: form });
@@ -3406,53 +3458,10 @@ function initUpload() {
 }
 
 const CHAT_STORAGE_KEY = "kp_lookup_chat_v1";
-const PISH_SEARCH_STORAGE_KEY = "lookup_pish_only";
 
 let chatMessages = [];
 let chatHistoryIndex = [];
 let chatLoading = false;
-let pishSearchOnly = false;
-
-function loadPishSearchState() {
-  try {
-    pishSearchOnly = localStorage.getItem(PISH_SEARCH_STORAGE_KEY) === "1";
-  } catch {
-    pishSearchOnly = false;
-  }
-}
-
-function savePishSearchState() {
-  try {
-    localStorage.setItem(PISH_SEARCH_STORAGE_KEY, pishSearchOnly ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
-}
-
-function updatePishSearchButtons() {
-  ["#btnPishSearch", "#btnKpPishSearch"].forEach((selector) => {
-    const btn = $(selector);
-    if (!btn) return;
-    btn.classList.toggle("kp-chat-hint--active", pishSearchOnly);
-    btn.setAttribute("aria-pressed", pishSearchOnly ? "true" : "false");
-  });
-}
-
-function togglePishSearch() {
-  pishSearchOnly = !pishSearchOnly;
-  savePishSearchState();
-  updatePishSearchButtons();
-
-  const lastLookupQuery = [...chatMessages].reverse().find((msg) => msg.role === "user")?.text;
-  if (lastLookupQuery && !chatLoading) {
-    sendChatMessage(lastLookupQuery, { replaceLast: true });
-  }
-
-  const lastKpQuery = [...kpChatMessages].reverse().find((msg) => msg.role === "user")?.text;
-  if (lastKpQuery && !kpChatLoading) {
-    sendKpChatMessage(lastKpQuery, { replaceLast: true, refreshLookup: true });
-  }
-}
 
 function loadChatState() {
   try {
@@ -3682,15 +3691,8 @@ function startNewChat() {
 }
 
 function initChat() {
-  loadChatState();
-  loadPishSearchState();
-  updatePishSearchButtons();
   renderChatMessages();
   renderChatHistorySidebar();
-
-  $("#btnPishSearch")?.addEventListener("click", () => {
-    togglePishSearch();
-  });
 
   $("#chatForm").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -4990,6 +4992,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const authed = await ensureAuth();
   if (!authed) return;
 
+  initPishSearchControls();
+  loadChatState();
   initAuth();
   initTabs();
   initUpload();
