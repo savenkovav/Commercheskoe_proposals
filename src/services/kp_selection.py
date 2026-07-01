@@ -22,6 +22,9 @@ class KpSelectionItem:
     custom_enabled: bool = False
     custom_unit_price: float | None = None
     custom_quantity: float | None = None
+    manual_quantity: float | None = None
+    manual_unit_base_price: float | None = None
+    manual_margin_percent: float | None = None
 
 
 def _is_market_estimate_quote(quote: PriceQuote) -> bool:
@@ -280,6 +283,44 @@ def apply_custom_manual_selection(
     return cloned
 
 
+def apply_row_manual_overrides(
+    result: MatchResult,
+    *,
+    quantity: float | None = None,
+    unit_base_price: float | None = None,
+    margin_percent: float | None = None,
+) -> MatchResult:
+    if quantity is None and unit_base_price is None and margin_percent is None:
+        return result
+
+    cloned = copy.deepcopy(result)
+    qty = cloned.tz_item.quantity
+    if quantity is not None and quantity > 0:
+        qty = float(quantity)
+        cloned.tz_item.quantity = qty
+
+    if unit_base_price is not None and unit_base_price >= 0:
+        cloned.unit_base_price = round(float(unit_base_price), 2)
+        cloned.unit_cost = round(float(unit_base_price), 2)
+        cloned.internet_priced = False
+
+    if margin_percent is not None and cloned.unit_base_price is not None:
+        cloned.unit_price = round(cloned.unit_base_price * (1 + float(margin_percent) / 100), 2)
+        cloned.applied_markup_pct = float(margin_percent)
+        cloned.internet_priced = False
+    elif unit_base_price is not None or quantity is not None:
+        apply_kp_pricing(cloned)
+        return cloned
+
+    if cloned.unit_cost is not None:
+        cloned.total_cost = round(cloned.unit_cost * qty, 2)
+    if cloned.unit_base_price is not None:
+        cloned.total_base_price = round(cloned.unit_base_price * qty, 2)
+    if cloned.unit_price is not None:
+        cloned.total_price = round(cloned.unit_price * qty, 2)
+    return cloned
+
+
 def apply_kp_selections(
     results: list[MatchResult],
     selections: list[KpSelectionItem],
@@ -307,14 +348,24 @@ def apply_kp_selections(
         with_kit = apply_kit_component_selection(applied, kit_indices)
         with_web = apply_web_addon_selection(with_kit, web_indices, manual_prices)
         if selection.custom_enabled and selection.custom_unit_price is not None:
-            selected.append(
-                apply_custom_manual_selection(
-                    with_web,
-                    enabled=True,
-                    unit_price=selection.custom_unit_price,
-                    quantity=selection.custom_quantity,
-                )
+            applied = apply_custom_manual_selection(
+                with_web,
+                enabled=True,
+                unit_price=selection.custom_unit_price,
+                quantity=selection.custom_quantity,
             )
         else:
-            selected.append(with_web)
+            applied = with_web
+        if (
+            selection.manual_quantity is not None
+            or selection.manual_unit_base_price is not None
+            or selection.manual_margin_percent is not None
+        ):
+            applied = apply_row_manual_overrides(
+                applied,
+                quantity=selection.manual_quantity,
+                unit_base_price=selection.manual_unit_base_price,
+                margin_percent=selection.manual_margin_percent,
+            )
+        selected.append(applied)
     return selected

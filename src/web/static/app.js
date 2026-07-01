@@ -793,6 +793,216 @@ function setCustomDraft(itemNumber, patch) {
   kpCustomDraft[itemNumber] = { ...getCustomDraft(itemNumber), ...patch };
 }
 
+let kpRowDraft = {};
+
+function getRowDraft(itemNumber) {
+  return kpRowDraft[itemNumber] || {};
+}
+
+function setRowDraft(itemNumber, patch) {
+  kpRowDraft[itemNumber] = { ...getRowDraft(itemNumber), ...patch };
+}
+
+function restoreRowDraftFromSelections() {
+  if (!kpSavedSelections?.length) return;
+  for (const selection of kpSavedSelections) {
+    const patch = {};
+    if (selection.manual_quantity != null && selection.manual_quantity > 0) {
+      patch.quantity = selection.manual_quantity;
+    }
+    if (selection.manual_unit_base_price != null) {
+      patch.unitBasePrice = selection.manual_unit_base_price;
+    }
+    if (selection.manual_margin_percent != null) {
+      patch.marginPercent = selection.manual_margin_percent;
+    }
+    if (Object.keys(patch).length) {
+      setRowDraft(selection.number, patch);
+    }
+  }
+}
+
+function rowAllowsPriceMarginEdit(item, selection = {}) {
+  if (item.kit_components?.length) return false;
+  if (allowsCustomEntry(item) && isCustomEntryChecked(item.number, selection)) return false;
+  return true;
+}
+
+function hasRowManualQuantity(itemNumber, selection = null) {
+  if (selection?.manual_quantity != null) return true;
+  return getRowDraft(itemNumber).quantity != null;
+}
+
+function hasRowManualBasePrice(itemNumber, selection = null) {
+  if (selection?.manual_unit_base_price != null) return true;
+  return getRowDraft(itemNumber).unitBasePrice != null;
+}
+
+function hasRowManualMargin(itemNumber, selection = null) {
+  if (selection?.manual_margin_percent != null) return true;
+  return getRowDraft(itemNumber).marginPercent != null;
+}
+
+function hasRowManualOverride(itemNumber, selection = null) {
+  return (
+    hasRowManualQuantity(itemNumber, selection) ||
+    hasRowManualBasePrice(itemNumber, selection) ||
+    hasRowManualMargin(itemNumber, selection)
+  );
+}
+
+function getRowQuantity(item, itemNumber = item?.number, selection = null) {
+  if (selection?.manual_quantity != null && selection.manual_quantity > 0) {
+    return selection.manual_quantity;
+  }
+  const saved = kpSavedSelections?.find((row) => row.number === itemNumber);
+  if (saved?.manual_quantity != null && saved.manual_quantity > 0) {
+    return saved.manual_quantity;
+  }
+  const draft = getRowDraft(itemNumber).quantity;
+  if (draft != null && draft > 0) return draft;
+  const input = document.querySelector(`.tz-row__qty-input[data-item="${itemNumber}"]`);
+  if (input) {
+    const parsed = Number(String(input.value || "").replace(",", "."));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return item?.quantity || 1;
+}
+
+function getRowUnitBasePrice(itemNumber, fallback = null, selection = null) {
+  if (selection?.manual_unit_base_price != null) {
+    return roundMoney(selection.manual_unit_base_price);
+  }
+  const saved = kpSavedSelections?.find((row) => row.number === itemNumber);
+  if (saved?.manual_unit_base_price != null) {
+    return roundMoney(saved.manual_unit_base_price);
+  }
+  const draft = getRowDraft(itemNumber).unitBasePrice;
+  if (draft != null) return roundMoney(draft);
+  return fallback;
+}
+
+function readMarginInputValue(itemNumber) {
+  const input = document.querySelector(`.tz-row__margin-input[data-item="${itemNumber}"]`);
+  if (!input || !input.value.trim()) return null;
+  const parsed = Number(String(input.value).replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getRowMarginPercentForCalc(
+  item,
+  unitCost,
+  unitBasePrice,
+  unitPrice,
+  internetPriced,
+  selection = null,
+) {
+  const itemNumber = item.number;
+  if (selection?.manual_margin_percent != null) return selection.manual_margin_percent;
+  const draft = getRowDraft(itemNumber).marginPercent;
+  if (draft != null) return draft;
+  const saved = kpSavedSelections?.find((row) => row.number === itemNumber);
+  if (saved?.manual_margin_percent != null) return saved.manual_margin_percent;
+  const fromInput = readMarginInputValue(itemNumber);
+  if (fromInput != null) return fromInput;
+  if (unitPrice != null && (unitCost != null || unitBasePrice != null)) {
+    return calcMarginPercent(unitCost ?? unitBasePrice, unitPrice);
+  }
+  if (internetPriced) return -WEB_PRICE_DISCOUNT_PERCENT;
+  return getCurrentMarkupPercent();
+}
+
+function formatMarginInputValue(value) {
+  if (value == null || !Number.isFinite(value)) return "";
+  const rounded = Math.round(value * 10) / 10;
+  return String(rounded).replace(".", ",");
+}
+
+function applyRowManualOverrides(item, pricing, selection = {}) {
+  const itemNumber = item.number;
+  if (!hasRowManualOverride(itemNumber, selection)) {
+    return pricing;
+  }
+
+  const qty = getRowQuantity(item, itemNumber, selection);
+  const canEditPrice = rowAllowsPriceMarginEdit(item, selection);
+  let unitBase = pricing.unitBasePrice;
+  let unitCost = pricing.unitCost;
+  let internetPriced = pricing.internetPriced;
+  let unitPrice = pricing.unitPrice;
+
+  if (canEditPrice && hasRowManualBasePrice(itemNumber, selection)) {
+    const manualBase = getRowUnitBasePrice(itemNumber, pricing.unitBasePrice, selection);
+    if (manualBase != null) {
+      unitBase = manualBase;
+      unitCost = manualBase;
+      internetPriced = false;
+    }
+  }
+
+  if (
+    canEditPrice &&
+    unitBase != null &&
+    (hasRowManualBasePrice(itemNumber, selection) || hasRowManualMargin(itemNumber, selection))
+  ) {
+    const margin = getRowMarginPercentForCalc(
+      item,
+      unitCost,
+      unitBase,
+      unitPrice,
+      internetPriced,
+      selection,
+    );
+    if (margin != null) {
+      unitPrice = roundMoney(unitBase * (1 + margin / 100));
+      internetPriced = false;
+    }
+  }
+
+  return {
+    ...pricing,
+    unitCost,
+    unitBasePrice: unitBase,
+    unitPrice,
+    internetPriced,
+    totalCost: unitCost != null ? roundMoney(unitCost * qty) : pricing.totalCost,
+    totalBasePrice: unitBase != null ? roundMoney(unitBase * qty) : pricing.totalBasePrice,
+    totalPrice: unitPrice != null ? roundMoney(unitPrice * qty) : pricing.totalPrice,
+  };
+}
+
+function renderRowQtyCell(item) {
+  const qty = getRowQuantity(item, item.number);
+  const display = Number.isInteger(qty) ? String(qty) : String(qty).replace(".", ",");
+  return `<input type="text" class="tz-row__qty-input" data-item="${item.number}" value="${escapeHtml(display)}" inputmode="decimal" title="Количество">`;
+}
+
+function renderRowPriceCell(item, pricing, selection = {}) {
+  if (!rowAllowsPriceMarginEdit(item, selection)) {
+    return `${fmtMoney(pricing.unitBasePrice)}${
+      pricing.internetPriced ? '<br><small class="muted">интернет</small>' : ""
+    }`;
+  }
+  const base = getRowUnitBasePrice(item.number, pricing.unitBasePrice, selection);
+  const display = base != null ? formatMoneyInputValue(base) : "";
+  return `<input type="text" class="tz-row__price-input" data-item="${item.number}" value="${escapeHtml(display)}" placeholder="—" inputmode="decimal" title="Цена">`;
+}
+
+function renderRowMarginCell(item, pricing, selection = {}) {
+  if (!rowAllowsPriceMarginEdit(item, selection)) {
+    return fmtMarginPercent(pricing.unitCost, pricing.unitPrice);
+  }
+  const margin = getRowMarginPercentForCalc(
+    item,
+    pricing.unitCost,
+    pricing.unitBasePrice,
+    pricing.unitPrice,
+    pricing.internetPriced,
+    selection,
+  );
+  return `<input type="text" class="tz-row__margin-input" data-item="${item.number}" value="${escapeHtml(formatMarginInputValue(margin))}" placeholder="—" inputmode="decimal" title="Маржа, %">`;
+}
+
 function isCustomEntryChecked(itemNumber, selection = null) {
   if (selection?.custom_enabled != null) return Boolean(selection.custom_enabled);
   const saved = kpSavedSelections?.find((row) => row.number === itemNumber);
@@ -1086,6 +1296,10 @@ function isKitComponentChecked(itemNumber, index) {
 }
 
 function computeItemPricing(item, selection = {}) {
+  return applyRowManualOverrides(item, computeItemPricingInternal(item, selection), selection);
+}
+
+function computeItemPricingInternal(item, selection = {}) {
   if (allowsCustomEntry(item) && isCustomEntryChecked(item.number, selection)) {
     const customPricing = buildCustomEntryPricing(item, selection);
     if (customPricing.unitBasePrice != null) {
@@ -1184,29 +1398,38 @@ function updateTzRowPricing(itemNumber) {
   const row = document.querySelector(`.tz-row[data-item-number="${itemNumber}"]`);
   if (!item || !row) return;
 
-  const pricing = computeItemPricing(item, {
+  const selection = {
     variant: savedVariantIdForItem(itemNumber),
     kit_indices: getKitIndicesFromUI(itemNumber),
     web_indices: getWebIndicesFromUI(itemNumber),
-  });
+  };
+  const pricing = computeItemPricing(item, selection);
+  const priceInput = row.querySelector(".tz-row__price-input");
+  const marginInput = row.querySelector(".tz-row__margin-input");
   const unitBaseCell = row.querySelector(".tz-row__price-base");
-  const unitKpCell = row.querySelector(".tz-row__price-kp");
-  const lineTotalCell = row.querySelector(".tz-row__line-total");
-  if (unitBaseCell) {
+  if (unitBaseCell && !priceInput) {
     unitBaseCell.innerHTML = `${fmtMoney(pricing.unitBasePrice)}${
       pricing.internetPriced ? '<br><small class="muted">интернет</small>' : ""
     }`;
   }
+  const unitKpCell = row.querySelector(".tz-row__price-kp");
+  const tzSalePriceNote =
+    item.target_sale_price != null && !hasRowManualOverride(itemNumber, selection)
+      ? '<br><small class="muted">из ТЗ</small>'
+      : "";
   if (unitKpCell) {
     unitKpCell.innerHTML = `${fmtMoney(pricing.unitPrice)}${
-      pricing.internetPriced ? '<br><small class="muted">−5%</small>' : ""
-    }`;
+      pricing.internetPriced && !hasRowManualBasePrice(itemNumber, selection)
+        ? '<br><small class="muted">−5%</small>'
+        : ""
+    }${tzSalePriceNote}`;
   }
+  const lineTotalCell = row.querySelector(".tz-row__line-total");
   if (lineTotalCell) {
     lineTotalCell.textContent = fmtMoney(pricing.totalPrice);
   }
   const marginCell = row.querySelector(".tz-row__margin");
-  if (marginCell) {
+  if (marginCell && !marginInput) {
     marginCell.textContent = fmtMarginPercent(pricing.unitCost, pricing.unitPrice);
   }
 
@@ -1741,6 +1964,29 @@ function getSelectionsFromUI() {
         selection.custom_quantity = customQty;
       }
     }
+    const rowQty = getRowQuantity(item, item.number);
+    if (rowQty > 0 && rowQty !== item.quantity) {
+      selection.manual_quantity = rowQty;
+    }
+    if (rowAllowsPriceMarginEdit(item, selection)) {
+      if (hasRowManualBasePrice(item.number)) {
+        const rowBase = getRowUnitBasePrice(item.number, null);
+        if (rowBase != null) {
+          selection.manual_unit_base_price = rowBase;
+        }
+      }
+      if (hasRowManualMargin(item.number)) {
+        selection.manual_margin_percent = getRowDraft(item.number).marginPercent;
+      } else {
+        const marginInput = document.querySelector(`.tz-row__margin-input[data-item="${item.number}"]`);
+        if (marginInput && hasRowManualBasePrice(item.number)) {
+          const margin = readMarginInputValue(item.number);
+          if (margin != null) {
+            selection.manual_margin_percent = margin;
+          }
+        }
+      }
+    }
     return selection;
   });
 }
@@ -1842,6 +2088,44 @@ function bindKpSelectionHandlers() {
       resetKpSavedSelection();
       updateCustomEntryTotals(itemNumber);
       updateTzRowPricing(itemNumber);
+      return;
+    }
+    if (target.classList.contains("tz-row__price-input")) {
+      const itemNumber = Number(target.dataset.item);
+      const price = parseMoneyInput(target.value);
+      if (price != null) {
+        setRowDraft(itemNumber, { unitBasePrice: price });
+      } else {
+        const nextDraft = { ...getRowDraft(itemNumber) };
+        delete nextDraft.unitBasePrice;
+        kpRowDraft[itemNumber] = nextDraft;
+      }
+      resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
+      return;
+    }
+    if (target.classList.contains("tz-row__margin-input")) {
+      const itemNumber = Number(target.dataset.item);
+      const parsed = Number(String(target.value || "").replace(",", "."));
+      if (Number.isFinite(parsed)) {
+        setRowDraft(itemNumber, { marginPercent: parsed });
+      } else {
+        const nextDraft = { ...getRowDraft(itemNumber) };
+        delete nextDraft.marginPercent;
+        kpRowDraft[itemNumber] = nextDraft;
+      }
+      resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
+      return;
+    }
+    if (target.classList.contains("tz-row__qty-input")) {
+      const itemNumber = Number(target.dataset.item);
+      const parsed = Number(String(target.value || "").replace(",", "."));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        setRowDraft(itemNumber, { quantity: parsed });
+      }
+      resetKpSavedSelection();
+      updateTzRowPricing(itemNumber);
     }
   });
 
@@ -1862,6 +2146,27 @@ function bindKpSelectionHandlers() {
         if (price != null) {
           target.value = formatMoneyInputValue(price);
         }
+        return;
+      }
+      if (target.classList.contains("tz-row__price-input")) {
+        const price = parseMoneyInput(target.value);
+        if (price != null) {
+          target.value = formatMoneyInputValue(price);
+        }
+        return;
+      }
+      if (target.classList.contains("tz-row__margin-input")) {
+        const parsed = Number(String(target.value || "").replace(",", "."));
+        if (Number.isFinite(parsed)) {
+          target.value = formatMarginInputValue(parsed);
+        }
+        return;
+      }
+      if (target.classList.contains("tz-row__qty-input")) {
+        const parsed = Number(String(target.value || "").replace(",", "."));
+        if (Number.isFinite(parsed) && parsed > 0) {
+          target.value = Number.isInteger(parsed) ? String(parsed) : String(parsed).replace(".", ",");
+        }
       }
     },
     true,
@@ -1881,7 +2186,11 @@ function bindKpSelectionHandlers() {
       updateTzRowPricing(itemNumber);
       return;
     }
-    if (event.target.closest(".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell, .kp-custom-select-cell, .kp-custom-price-cell, .kp-custom-qty-input")) {
+    if (
+      event.target.closest(
+        ".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell, .kp-custom-select-cell, .kp-custom-price-cell, .kp-custom-qty-input, .tz-row__qty-input, .tz-row__price-input, .tz-row__margin-input",
+      )
+    ) {
       event.stopPropagation();
     }
   });
@@ -2740,6 +3049,10 @@ function updateCustomEntryTotals(itemNumber) {
 }
 
 function itemRequiresPricingSource(item, selection = {}) {
+  if (hasRowManualBasePrice(item.number, selection)) {
+    const base = getRowUnitBasePrice(item.number, null, selection);
+    if (base != null && base > 0) return false;
+  }
   if (item.kit_components?.length || collectWebProductEntries(item).length) {
     return !hasPositionDetailSelection(item, selection);
   }
@@ -3292,6 +3605,7 @@ function initKpChat() {
 
 function renderProcessResult(data, options = {}) {
   const fromLookupToggle = Boolean(options.fromLookupToggle);
+  const previousSessionId = kpSessionId;
   kpProcessData = data;
   kpFormed = Boolean(data.kp_formed);
   kpExportSummary = kpFormed ? data.summary : null;
@@ -3299,6 +3613,10 @@ function renderProcessResult(data, options = {}) {
     kpSavedSelections = null;
     kpSelectionSaved = false;
   }
+  if (data.session_id && data.session_id !== previousSessionId) {
+    kpRowDraft = {};
+  }
+  restoreRowDraftFromSelections();
   updateAssistantMode(data);
   const parsedOnly = !data.search_completed;
   const summaryCard = $("#processSummaryCard");
@@ -3345,10 +3663,10 @@ function renderProcessResult(data, options = {}) {
             : ""
         }</td>
         <td>${statusBadge(item.status, item.notes)}</td>
-        <td>${fmtQty(item.quantity, item.unit)}</td>
-        <td class="tz-row__price-base">${fmtMoney(initialPricing.unitBasePrice)}${showInternetLabels ? '<br><small class="muted">интернет</small>' : ""}</td>
-        <td class="tz-row__price-kp">${fmtMoney(initialPricing.unitPrice)}${showInternetLabels ? '<br><small class="muted">−5%</small>' : ""}${tzSalePriceNote}</td>
-        <td class="tz-row__margin">${fmtMarginPercent(initialPricing.unitCost, initialPricing.unitPrice)}</td>
+        <td class="tz-row__qty">${renderRowQtyCell(item)}</td>
+        <td class="tz-row__price-base">${renderRowPriceCell(item, initialPricing)}</td>
+        <td class="tz-row__price-kp">${fmtMoney(initialPricing.unitPrice)}${showInternetLabels && !hasRowManualBasePrice(item.number) ? '<br><small class="muted">−5%</small>' : ""}${tzSalePriceNote}</td>
+        <td class="tz-row__margin">${renderRowMarginCell(item, initialPricing)}</td>
         <td class="tz-row__line-total">${fmtMoney(initialPricing.totalPrice)}</td>
       </tr>
       ${

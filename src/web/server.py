@@ -206,6 +206,9 @@ class KpSelectionItemRequest(BaseModel):
     custom_enabled: bool = False
     custom_unit_price: float | None = Field(default=None, ge=0)
     custom_quantity: float | None = Field(default=None, gt=0)
+    manual_quantity: float | None = Field(default=None, gt=0)
+    manual_unit_base_price: float | None = Field(default=None, ge=0)
+    manual_margin_percent: float | None = None
 
 
 class KpFormRequest(BaseModel):
@@ -1232,6 +1235,9 @@ def _kp_selection_items(body: KpFormRequest) -> list:
             custom_enabled=item.custom_enabled,
             custom_unit_price=item.custom_unit_price,
             custom_quantity=item.custom_quantity,
+            manual_quantity=item.manual_quantity,
+            manual_unit_base_price=item.manual_unit_base_price,
+            manual_margin_percent=item.manual_margin_percent,
         )
         for item in body.selections
     ]

@@ -86,3 +86,57 @@ def test_manual_web_price_is_used() -> None:
     )
     assert selected[0].unit_base_price == 4100.0
     assert selected[0].unit_price == 3895.0
+
+
+def test_row_manual_overrides_recalculate_kp_price() -> None:
+    result = MatchResult(
+        tz_item=TZItem(number=1, name="Стол", unit="шт", quantity=2),
+        status=MatchStatus.EXACT,
+        source=MatchSource.CATALOG,
+        matched_name="Стол ученический",
+        match_score=100.0,
+        unit_cost=1000.0,
+        unit_base_price=1000.0,
+        unit_price=1300.0,
+        total_cost=2000.0,
+        total_price=2600.0,
+        applied_markup_pct=30.0,
+    )
+    selected = apply_kp_selections(
+        [result],
+        [
+            KpSelectionItem(
+                number=1,
+                included=True,
+                variant="primary",
+                manual_unit_base_price=1200.0,
+                manual_margin_percent=25.0,
+            ),
+        ],
+    )
+    assert len(selected) == 1
+    assert selected[0].unit_base_price == 1200.0
+    assert selected[0].unit_price == 1500.0
+    assert selected[0].total_price == 3000.0
+
+
+def test_row_manual_quantity_override() -> None:
+    result = MatchResult(
+        tz_item=TZItem(number=2, name="Стул", unit="шт", quantity=1),
+        status=MatchStatus.EXACT,
+        source=MatchSource.CATALOG,
+        matched_name="Стул",
+        match_score=100.0,
+        unit_cost=500.0,
+        unit_base_price=500.0,
+        unit_price=650.0,
+        total_cost=500.0,
+        total_price=650.0,
+        applied_markup_pct=30.0,
+    )
+    selected = apply_kp_selections(
+        [result],
+        [KpSelectionItem(number=2, included=True, variant="primary", manual_quantity=4.0)],
+    )
+    assert selected[0].tz_item.quantity == 4.0
+    assert selected[0].total_price == 2600.0

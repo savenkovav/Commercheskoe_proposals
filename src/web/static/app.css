@@ -539,6 +539,17 @@ a.btn.btn--disabled {
   font: inherit;
 }
 
+.tz-row__qty-input,
+.tz-row__price-input,
+.tz-row__margin-input {
+  width: 100%;
+  max-width: 7rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+}
+
 .compare-table--custom {
   margin-top: 0.75rem;
 }
