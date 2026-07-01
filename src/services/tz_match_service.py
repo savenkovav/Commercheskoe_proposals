@@ -227,7 +227,9 @@ class TZMatchService:
             self.matcher,
             min_score=local_floor,
         )
-        internet_searched = WEB_SEARCH_ENABLED and not skip_competitors
+        internet_searched = (
+            WEB_SEARCH_ENABLED and not skip_competitors and not prefs.base_only
+        )
         web_quote, competitors = self._fetch_internet_comparison(
             tz_item,
             prefs,
@@ -250,7 +252,7 @@ class TZMatchService:
             candidates=candidates,
             local_miss=local_miss,
             local_floor=local_floor,
-            internet_allowed="web" not in prefs.disabled_sources,
+            internet_allowed=prefs.web_search_allowed(),
         )
 
         if primary.supplier is None and supplier:
@@ -746,7 +748,7 @@ class TZMatchService:
         local_miss: bool = True,
         skip_competitors: bool = False,
     ) -> tuple[PriceQuote | None, list[PriceQuote]]:
-        if "web" in preferences.disabled_sources:
+        if preferences.base_only or "web" in preferences.disabled_sources:
             return None, []
 
         quotes: list[PriceQuote] = []

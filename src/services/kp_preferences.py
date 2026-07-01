@@ -14,6 +14,7 @@ class KpPreferences:
     search_kit_component_links: bool = False
     force_kit_component_pricing: bool = False
     pish_only: bool = False
+    base_only: bool = False
     rules: list[str] = field(default_factory=list)
 
     def merge_ai_patch(self, patch: dict) -> None:
@@ -55,8 +56,12 @@ class KpPreferences:
             "search_kit_component_links": self.search_kit_component_links,
             "force_kit_component_pricing": self.force_kit_component_pricing,
             "pish_only": self.pish_only,
+            "base_only": self.base_only,
             "rules": list(self.rules),
         }
+
+    def web_search_allowed(self) -> bool:
+        return not self.base_only and "web" not in self.disabled_sources
 
 
 def platform_is_excluded(label: str, url: str | None, excluded: list[str]) -> bool:

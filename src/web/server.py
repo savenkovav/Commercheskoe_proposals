@@ -172,6 +172,7 @@ async def log_http_requests(request, call_next):
 class LookupRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     pish_only: bool = False
+    base_only: bool = False
 
 
 class PriceMetaUpdate(BaseModel):
@@ -187,6 +188,7 @@ class KpChatRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=64)
     message: str = Field(min_length=1, max_length=4000)
     pish_only: bool = False
+    base_only: bool = False
     refresh_lookup: bool = False
 
 
@@ -800,9 +802,10 @@ def _process_tz_upload(
     tz_items: list | None = None,
     rag_index=None,
     pish_only: bool = False,
+    base_only: bool = False,
 ) -> dict[str, Any]:
     task_mode = _normalize_task_mode(task_mode)
-    include_web = task_mode == "task1_task2"
+    include_web = task_mode == "task1_task2" and not base_only
     processor = get_processor()
     start = time.perf_counter()
     parsed_items = tz_items if tz_items is not None else processor.parse_tz_file(tz_path)
@@ -813,7 +816,7 @@ def _process_tz_upload(
             parsed_items,
             filename=filename or tz_path.name,
         )
-    prefs = KpPreferences(pish_only=pish_only)
+    prefs = KpPreferences(pish_only=pish_only, base_only=base_only)
     results = processor.search_tz_items(
         parsed_items,
         use_ai=use_ai,
@@ -869,6 +872,7 @@ def _process_tz_path(
     parse_only: bool | None = None,
     filename: str = "",
     pish_only: bool = False,
+    base_only: bool = False,
 ) -> dict[str, Any]:
     normalized_mode = _normalize_task_mode(task_mode, parse_only=parse_only)
     processor = get_processor()
@@ -887,6 +891,7 @@ def _process_tz_path(
         tz_items=parsed_items,
         rag_index=rag_index,
         pish_only=pish_only,
+        base_only=base_only,
     )
 
 
@@ -1094,6 +1099,7 @@ def _api_kp_chat(body: KpChatRequest) -> dict[str, Any]:
         session_id,
         body.message,
         pish_only=body.pish_only,
+        base_only=body.base_only,
         refresh_lookup=body.refresh_lookup,
     )
     response = _kp_chat_response(chat_result, session_id)
@@ -1321,6 +1327,7 @@ async def api_process_upload(
     markup_percent: float | None = Form(default=None),
     parse_only: bool | None = Form(default=None),
     pish_only: bool = Form(default=False),
+    base_only: bool = Form(default=False),
 ) -> dict[str, Any]:
     try:
         content = await file.read()
@@ -1343,6 +1350,7 @@ async def api_process_upload(
                     parse_only=parse_only,
                     filename=filename,
                     pish_only=pish_only,
+                    base_only=base_only,
                 )
 
             payload = await run_in_threadpool(_run_upload)
@@ -1393,6 +1401,7 @@ def _api_lookup(body: LookupRequest) -> dict[str, Any]:
         parsed.product_name,
         parsed.requested_fields,
         pish_only=body.pish_only,
+        base_only=body.base_only,
     )
     logger.info(
         "Lookup done product=%r status=%s score=%.1f %.0fms",

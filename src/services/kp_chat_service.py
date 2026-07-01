@@ -144,6 +144,7 @@ class KpChatService:
         message: str,
         *,
         pish_only: bool = False,
+        base_only: bool = False,
         refresh_lookup: bool = False,
     ) -> dict:
         session = self.store.get(session_id)
@@ -155,16 +156,18 @@ class KpChatService:
             raise ValueError("Введите сообщение")
 
         logger.info(
-            "KP chat session=%s tz_items=%s message=%r pish_only=%s refresh=%s",
+            "KP chat session=%s tz_items=%s message=%r pish_only=%s base_only=%s refresh=%s",
             session_id,
             len(session.tz_items),
             text[:120],
             pish_only,
+            base_only,
             refresh_lookup,
         )
         started = time.perf_counter()
 
         session.preferences.pish_only = pish_only
+        session.preferences.base_only = base_only
 
         if refresh_lookup:
             while session.chat_history and session.chat_history[-1].role == "assistant":
@@ -184,6 +187,7 @@ class KpChatService:
                 lookup_query.product_name,
                 lookup_query.requested_fields,
                 pish_only=pish_only,
+                base_only=base_only,
             )
 
         items_summary = self._items_summary(session.results, session.tz_items)

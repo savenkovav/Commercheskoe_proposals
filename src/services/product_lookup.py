@@ -257,13 +257,15 @@ class ProductLookupService:
         requested_fields: list[LookupField] | None = None,
         *,
         pish_only: bool = False,
+        base_only: bool = False,
     ) -> ProductLookupResult:
         fields = requested_fields or DEFAULT_FIELDS
         logger.info(
-            "Product lookup start: %r fields=%s pish_only=%s",
+            "Product lookup start: %r fields=%s pish_only=%s base_only=%s",
             product_name,
             [f.value for f in fields],
             pish_only,
+            base_only,
         )
         tz_item = TZItem(number=1, name=product_name.strip(), unit="шт.", quantity=1)
         candidates = self.matcher.find_candidates(tz_item)
@@ -302,7 +304,8 @@ class ProductLookupService:
         )
         competitors_block = (
             self._build_competitors_block(product_name, pish_only=pish_only)
-            if self._should_search_competitors(
+            if not base_only
+            and self._should_search_competitors(
                 fields,
                 tz_item,
                 catalog_hit,
@@ -322,6 +325,7 @@ class ProductLookupService:
             price_block,
             registry_block,
             competitors_block,
+            base_only=base_only,
         )
 
         if not best_hit or best_hit.score < SIMILAR_MATCH_THRESHOLD:
@@ -523,14 +527,16 @@ class ProductLookupService:
         price_block: dict[str, object],
         registry_block: dict[str, object],
         competitors_block: dict[str, object],
+        *,
+        base_only: bool = False,
     ) -> dict[str, object]:
         if not self._all_sources_missing(
             catalog_block, price_block, registry_block, competitors_block
         ):
             return {"found": False, "requested": False}
-        return self._build_ai_insight(tz_item)
+        return self._build_ai_insight(tz_item, base_only=base_only)
 
-    def _build_ai_insight(self, tz_item: TZItem) -> dict[str, object]:
+    def _build_ai_insight(self, tz_item: TZItem, *, base_only: bool = False) -> dict[str, object]:
         if not self.ai or not self.ai.enabled:
             return {
                 "found": False,
@@ -550,7 +556,7 @@ class ProductLookupService:
         status = AIAgent.parse_status(ai_result.get("status", "not_found"))
         source = AIAgent.parse_source(ai_result.get("source", "none"))
 
-        if status == MatchStatus.NOT_FOUND and source == MatchSource.NONE:
+        if status == MatchStatus.NOT_FOUND and source == MatchSource.NONE and not base_only:
             ai_result = self.ai.estimate_web_price(tz_item)
             status = AIAgent.parse_status(ai_result.get("status", "not_found"))
             source = AIAgent.parse_source(ai_result.get("source", "none"))

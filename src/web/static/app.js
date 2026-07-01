@@ -2,7 +2,9 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 const PISH_SEARCH_STORAGE_KEY = "lookup_pish_only";
+const BASE_SEARCH_STORAGE_KEY = "lookup_base_only";
 let pishSearchOnly = false;
+let baseSearchOnly = false;
 
 function loadPishSearchState() {
   try {
@@ -20,6 +22,22 @@ function savePishSearchState() {
   }
 }
 
+function loadBaseSearchState() {
+  try {
+    baseSearchOnly = localStorage.getItem(BASE_SEARCH_STORAGE_KEY) === "1";
+  } catch {
+    baseSearchOnly = false;
+  }
+}
+
+function saveBaseSearchState() {
+  try {
+    localStorage.setItem(BASE_SEARCH_STORAGE_KEY, baseSearchOnly ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
 function updatePishSearchButtons() {
   document.querySelectorAll("[data-pish-search]").forEach((btn) => {
     btn.classList.toggle("kp-chat-hint--active", pishSearchOnly);
@@ -27,16 +45,14 @@ function updatePishSearchButtons() {
   });
 }
 
-function togglePishSearch() {
-  pishSearchOnly = !pishSearchOnly;
-  savePishSearchState();
-  updatePishSearchButtons();
-  showToast(
-    pishSearchOnly
-      ? "Включён поиск только из прайса ПИШ"
-      : "Поиск из всех источников",
-  );
+function updateBaseSearchButtons() {
+  document.querySelectorAll("[data-base-search]").forEach((btn) => {
+    btn.classList.toggle("kp-chat-hint--active", baseSearchOnly);
+    btn.setAttribute("aria-pressed", baseSearchOnly ? "true" : "false");
+  });
+}
 
+function refreshLastSearchAfterToggle() {
   const lastLookupQuery = [...chatMessages].reverse().find((msg) => msg.role === "user")?.text;
   if (lastLookupQuery && !chatLoading) {
     sendChatMessage(lastLookupQuery, { replaceLast: true });
@@ -48,14 +64,47 @@ function togglePishSearch() {
   }
 }
 
-function initPishSearchControls() {
-  loadPishSearchState();
+function togglePishSearch() {
+  pishSearchOnly = !pishSearchOnly;
+  savePishSearchState();
   updatePishSearchButtons();
+  showToast(
+    pishSearchOnly
+      ? "Включён поиск только из прайса ПИШ"
+      : "Поиск из всех источников",
+  );
+  refreshLastSearchAfterToggle();
+}
+
+function toggleBaseSearch() {
+  baseSearchOnly = !baseSearchOnly;
+  saveBaseSearchState();
+  updateBaseSearchButtons();
+  showToast(
+    baseSearchOnly
+      ? "Включён поиск только по базе (каталог, прайсы, реестр)"
+      : "Поиск по всем источникам",
+  );
+  refreshLastSearchAfterToggle();
+}
+
+function initSearchFilterControls() {
+  loadPishSearchState();
+  loadBaseSearchState();
+  updatePishSearchButtons();
+  updateBaseSearchButtons();
   document.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-pish-search]");
-    if (!btn || btn.disabled) return;
-    e.preventDefault();
-    togglePishSearch();
+    const pishBtn = e.target.closest("[data-pish-search]");
+    if (pishBtn && !pishBtn.disabled) {
+      e.preventDefault();
+      togglePishSearch();
+      return;
+    }
+    const baseBtn = e.target.closest("[data-base-search]");
+    if (baseBtn && !baseBtn.disabled) {
+      e.preventDefault();
+      toggleBaseSearch();
+    }
   });
 }
 
@@ -3091,7 +3140,9 @@ function updateKpChatFormState() {
   const enabled = !kpChatLoading;
   if (input) input.disabled = !enabled;
   if (sendBtn) sendBtn.disabled = !enabled;
-  $("#kpChatHints")?.querySelectorAll(".kp-chat-hint:not([data-pish-search])").forEach((btn) => {
+  $("#kpChatHints")?.querySelectorAll(
+    ".kp-chat-hint:not([data-pish-search]):not([data-base-search])",
+  ).forEach((btn) => {
     btn.disabled = !enabled;
   });
 }
@@ -3127,6 +3178,7 @@ async function sendKpChatMessage(text, options = {}) {
         session_id: kpSessionId,
         message,
         pish_only: pishSearchOnly,
+        base_only: baseSearchOnly,
         refresh_lookup: refreshLookup,
       }),
     });
@@ -3231,7 +3283,7 @@ function initKpChat() {
   });
 
   $("#kpChatHints")?.addEventListener("click", (e) => {
-    if (e.target.closest("[data-pish-search]")) return;
+    if (e.target.closest("[data-pish-search]") || e.target.closest("[data-base-search]")) return;
     const btn = e.target.closest("[data-hint]");
     if (!btn) return;
     sendKpChatMessage(btn.dataset.hint);
@@ -3387,6 +3439,7 @@ async function processUpload(taskMode) {
   form.append("task_mode", taskMode);
   form.append("markup_percent", String(getCurrentMarkupPercent()));
   form.append("pish_only", pishSearchOnly ? "true" : "false");
+  form.append("base_only", baseSearchOnly ? "true" : "false");
 
   try {
     const data = await api("/api/process/upload", { method: "POST", body: form });
@@ -3621,7 +3674,7 @@ async function sendChatMessage(text, options = {}) {
     const data = await api("/api/lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, pish_only: pishSearchOnly }),
+      body: JSON.stringify({ query, pish_only: pishSearchOnly, base_only: baseSearchOnly }),
     });
     const assistantMsg = {
       id: newChatId(),
@@ -4992,7 +5045,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const authed = await ensureAuth();
   if (!authed) return;
 
-  initPishSearchControls();
+  initSearchFilterControls();
   loadChatState();
   initAuth();
   initTabs();

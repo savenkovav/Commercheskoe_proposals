@@ -166,6 +166,8 @@ def _decode_preferences(data: dict[str, Any] | None) -> KpPreferences:
         disabled_sources=[str(item) for item in payload.get("disabled_sources") or []],
         search_kit_component_links=bool(payload.get("search_kit_component_links")),
         force_kit_component_pricing=bool(payload.get("force_kit_component_pricing")),
+        pish_only=bool(payload.get("pish_only")),
+        base_only=bool(payload.get("base_only")),
         rules=[str(item) for item in payload.get("rules") or []],
     )
 
