@@ -1,0 +1,7 @@
+# Дополнение к docker-compose.prod.yml для VPS без внешнего reverse-proxy.
+# Прямой доступ: http://<IP>:8080
+
+services:
+  kp-web:
+    ports:
+      - "8080:8080"

@@ -143,6 +143,7 @@ def _decode_match_result(data: dict[str, Any]) -> MatchResult:
         is_kit=bool(data.get("is_kit")),
         internet_priced=bool(data.get("internet_priced")),
         applied_markup_pct=data.get("applied_markup_pct"),
+        lookup_kp_key=data.get("lookup_kp_key"),
     )
 
 

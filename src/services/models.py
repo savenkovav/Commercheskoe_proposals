@@ -137,6 +137,7 @@ class MatchResult:
     is_kit: bool = False
     internet_priced: bool = False
     applied_markup_pct: Optional[float] = None
+    lookup_kp_key: Optional[str] = None
 
 
 @dataclass

@@ -43,7 +43,8 @@ class AIAgent:
         from src.services.concurrency_limits import ai_request_slot
 
         with ai_request_slot(label="chat"):
-            return self._create_chat_completion(**kwargs)
+            assert self.client is not None
+            return self.client.chat.completions.create(**kwargs)
 
     def match_item(
         self,

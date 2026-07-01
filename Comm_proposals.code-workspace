@@ -1,0 +1,15 @@
+{
+  "folders": [
+    {
+      "name": "comm-proposals",
+      "path": "."
+    },
+    {
+      "name": "kp_meilisearch",
+      "path": "kp_meilisearch"
+    }
+  ],
+  "settings": {
+    "python.terminal.activateEnvironment": true
+  }
+}

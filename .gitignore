@@ -1,5 +1,9 @@
 .env
+id_rsa/
+id_rsa
+*.pem
 deploy/github-vps-dotenv.secret
+deploy/vps.deploy.env
 deploy/*.secret
 .venv/
 venv/

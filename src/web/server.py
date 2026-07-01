@@ -214,8 +214,10 @@ class KpFormRequest(BaseModel):
 
 
 class KpLookupCompetitorItem(BaseModel):
+    source_type: str = "competitor"
     label: str = ""
     name: str = ""
+    display_name: str | None = None
     match_score: float = 0
     price: str | None = None
     price_amount: float | None = None
@@ -226,6 +228,15 @@ class KpLookupCompetitorItem(BaseModel):
     articul: str | None = None
     image_url: str | None = None
     has_price: bool = True
+    row_index: int | None = None
+    cost: str | None = None
+    cost_amount: float | None = None
+    code: str | None = None
+    supplier: str | None = None
+    unit: str | None = None
+    quantity: str | float | None = None
+    condition: str | None = None
+    link: str | None = None
 
 
 class KpLookupItemToggleRequest(BaseModel):
@@ -417,6 +428,8 @@ def _match_result_to_dict(result: MatchResult) -> dict[str, Any]:
 
 
 def _lookup_kp_key_from_result(result: MatchResult) -> str | None:
+    if result.lookup_kp_key:
+        return result.lookup_kp_key
     for quote in [*result.competitors, *result.comparison]:
         if quote.url:
             return quote.url
@@ -923,6 +936,7 @@ def _lookup_result_to_dict(result: ProductLookupResult) -> dict[str, Any]:
         "price_list": result.price_list,
         "registry": registry,
         "competitors": result.competitors,
+        "marketplace": result.marketplace,
         "ai_insight": result.ai_insight,
         "photo_urls": photo_urls,
         "photo_url": photo_urls[0] if photo_urls else None,

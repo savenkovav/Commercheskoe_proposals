@@ -18,7 +18,7 @@ from src.services.data_loader import format_catalog_supplier, normalize_name
 from src.services.models import CatalogItem, MatchSource, MatchStatus, PriceListItem, PriceQuote, RegistryItem, TZItem
 from src.services.ai_agent import AIAgent
 from src.services.matcher import FuzzyHit, ItemMatcher
-from src.services.web_quote_priority import meets_web_display_threshold
+from src.services.web_quote_priority import is_marketplace_url, meets_web_display_threshold
 from src.services.web_search_service import WebSearchService
 
 logger = logging.getLogger(__name__)
@@ -237,6 +237,7 @@ class ProductLookupResult:
     price_list: dict[str, object] = field(default_factory=dict)
     registry: dict[str, object] = field(default_factory=dict)
     competitors: dict[str, object] = field(default_factory=dict)
+    marketplace: dict[str, object] = field(default_factory=dict)
     ai_insight: dict[str, object] = field(default_factory=dict)
 
 
@@ -313,10 +314,25 @@ class ProductLookupService:
             )
             else {"found": False, "items": []}
         )
+        marketplace_block = (
+            self._build_marketplace_block(product_name)
+            if not base_only
+            and self._should_search_marketplaces(
+                catalog_block,
+                price_block,
+                registry_block,
+                competitors_block,
+            )
+            else {"found": False, "items": []}
+        )
 
         best_hit = self._select_primary_hit(catalog_hit, price_hit)
         any_found = self._any_source_found(
-            catalog_block, price_block, registry_block, competitors_block
+            catalog_block,
+            price_block,
+            registry_block,
+            competitors_block,
+            marketplace_block,
         )
 
         ai_insight = self._maybe_build_ai_insight(
@@ -325,6 +341,7 @@ class ProductLookupService:
             price_block,
             registry_block,
             competitors_block,
+            marketplace_block,
             base_only=base_only,
         )
 
@@ -343,6 +360,7 @@ class ProductLookupService:
                     price_list=price_block,
                     registry=registry_block,
                     competitors=competitors_block,
+                    marketplace=marketplace_block,
                     ai_insight=ai_insight,
                 )
 
@@ -367,6 +385,7 @@ class ProductLookupService:
                 price_list=price_block,
                 registry=registry_block,
                 competitors=competitors_block,
+                marketplace=marketplace_block,
                 ai_insight=ai_insight,
             )
 
@@ -397,6 +416,7 @@ class ProductLookupService:
             price_list=price_block,
             registry=registry_block,
             competitors=competitors_block,
+            marketplace=marketplace_block,
             ai_insight=ai_insight,
         )
 
@@ -406,13 +426,16 @@ class ProductLookupService:
         price_block: dict[str, object],
         registry_block: dict[str, object],
         competitors_block: dict[str, object] | None = None,
+        marketplace_block: dict[str, object] | None = None,
     ) -> bool:
         competitors_block = competitors_block or {"found": False}
+        marketplace_block = marketplace_block or {"found": False}
         return (
             not catalog_block.get("found")
             and not price_block.get("found")
             and not registry_block.get("found")
             and not competitors_block.get("found")
+            and not marketplace_block.get("found")
         )
 
     @staticmethod
@@ -421,13 +444,48 @@ class ProductLookupService:
         price_block: dict[str, object],
         registry_block: dict[str, object],
         competitors_block: dict[str, object],
+        marketplace_block: dict[str, object] | None = None,
     ) -> bool:
         return not ProductLookupService._all_sources_missing(
             catalog_block,
             price_block,
             registry_block,
             competitors_block,
+            marketplace_block,
         )
+
+    @staticmethod
+    def _lookup_item_has_price(item: dict[str, object]) -> bool:
+        if item.get("has_price") is False:
+            return False
+        if item.get("price_amount") is not None:
+            return True
+        price = item.get("price")
+        return bool(price and str(price).strip() not in {"", "—", "-"})
+
+    @staticmethod
+    def _should_search_marketplaces(
+        catalog_block: dict[str, object],
+        price_block: dict[str, object],
+        registry_block: dict[str, object],
+        competitors_block: dict[str, object],
+    ) -> bool:
+        if not WEB_SEARCH_ENABLED:
+            return False
+        if (
+            catalog_block.get("found")
+            or price_block.get("found")
+            or registry_block.get("found")
+        ):
+            return False
+        items = competitors_block.get("items")
+        if isinstance(items, list) and items:
+            return not any(
+                ProductLookupService._lookup_item_has_price(item)
+                for item in items
+                if isinstance(item, dict)
+            )
+        return True
 
     def _should_search_competitors(
         self,
@@ -457,9 +515,42 @@ class ProductLookupService:
             logger.warning("Competitor lookup failed for %r", query, exc_info=True)
             return {"found": False, "items": []}
 
+        items = self._quotes_to_lookup_items(
+            quotes,
+            query,
+            pish_only=pish_only,
+            include_marketplaces=False,
+        )
+        return {"found": bool(items), "items": items}
+
+    def _build_marketplace_block(self, query: str) -> dict[str, object]:
+        try:
+            quotes = self.web_search.search_marketplace_offers(query, limit=3)
+        except Exception:
+            logger.warning("Marketplace lookup failed for %r", query, exc_info=True)
+            return {"found": False, "items": []}
+        items = self._quotes_to_lookup_items(
+            quotes,
+            query,
+            include_marketplaces=True,
+        )
+        return {"found": bool(items), "items": items}
+
+    def _quotes_to_lookup_items(
+        self,
+        quotes: list[PriceQuote],
+        query: str,
+        *,
+        pish_only: bool = False,
+        include_marketplaces: bool = False,
+    ) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
         seen_urls: set[str] = set()
         for quote in quotes:
+            if not include_marketplaces and is_marketplace_url(quote.url):
+                continue
+            if include_marketplaces and not is_marketplace_url(quote.url):
+                continue
             if not meets_web_display_threshold(quote.url, float(quote.match_score or 0)):
                 continue
             if quote.url and quote.url in seen_urls:
@@ -476,7 +567,7 @@ class ProductLookupService:
             price_display = quote.price_label or self._format_money(base_price)
             items.append(
                 {
-                    "label": quote.label or "Конкурент",
+                    "label": quote.label or ("Маркетплейс" if include_marketplaces else "Конкурент"),
                     "name": quote.matched_name or query,
                     "match_score": round(float(quote.match_score or 0), 1),
                     "price": price_display,
@@ -485,6 +576,7 @@ class ProductLookupService:
                     "url": quote.url,
                     "notes": quote.notes or "",
                     "articul": quote.articul,
+                    "description": quote.description,
                     "has_price": base_price is not None,
                     "price_amount": base_price,
                     "image_url": quote.image_url,
@@ -498,7 +590,7 @@ class ProductLookupService:
         sort_pish_first(items)
         for item in items:
             item.pop("_sort_price", None)
-        return {"found": bool(items), "items": items}
+        return items
 
     @staticmethod
     def _resolve_display_name(
@@ -527,11 +619,16 @@ class ProductLookupService:
         price_block: dict[str, object],
         registry_block: dict[str, object],
         competitors_block: dict[str, object],
+        marketplace_block: dict[str, object] | None = None,
         *,
         base_only: bool = False,
     ) -> dict[str, object]:
         if not self._all_sources_missing(
-            catalog_block, price_block, registry_block, competitors_block
+            catalog_block,
+            price_block,
+            registry_block,
+            competitors_block,
+            marketplace_block,
         ):
             return {"found": False, "requested": False}
         return self._build_ai_insight(tz_item, base_only=base_only)
@@ -747,6 +844,10 @@ class ProductLookupService:
             {
                 "label": "Ozon",
                 "url": f"https://www.ozon.ru/search/?text={encoded}&from_global=true",
+            },
+            {
+                "label": "Wildberries",
+                "url": f"https://www.wildberries.ru/catalog/0/search.aspx?search={encoded}",
             },
             {
                 "label": "Яндекс.Маркет",
@@ -1417,10 +1518,11 @@ def kp_lookup_reply(result: ProductLookupResult) -> str:
         result.price_list,
         result.registry,
         result.competitors,
+        result.marketplace,
     ):
         return (
             f"По запросу «{result.query_name}» ничего не найдено "
-            "в каталоге, прайсах, реестре и на сайтах конкурентов."
+            "в каталоге, прайсах, реестре, на сайтах конкурентов и маркетплейсах."
         )
 
     name = result.matched_name or result.query_name
@@ -1485,6 +1587,7 @@ def _format_source_blocks(result: ProductLookupResult) -> list[str]:
     lines.extend(_format_price_source_lines(result.price_list))
     lines.extend(_format_registry_source_lines(result.registry))
     lines.extend(_format_competitors_source_lines(result.competitors))
+    lines.extend(_format_marketplace_source_lines(result.marketplace))
     return lines
 
 
@@ -1512,6 +1615,35 @@ def _format_competitors_source_lines(competitors: dict[str, object]) -> list[str
             lines.append("    — цена не указана")
         if item.get("price_kp"):
             lines.append(f"    — цена КП (−{WEB_PRICE_DISCOUNT_PERCENT}%): {item['price_kp']}")
+        if item.get("description"):
+            lines.append(f"    — {item['description']}")
+        if item.get("url"):
+            lines.append(f"    — {item['url']}")
+    return lines
+
+
+def _format_marketplace_source_lines(marketplace: dict[str, object]) -> list[str]:
+    if not marketplace.get("found"):
+        return ["• Маркетплейсы: не найдено"]
+
+    items = marketplace.get("items")
+    if not isinstance(items, list) or not items:
+        return ["• Маркетплейсы: не найдено"]
+
+    lines = ["• Маркетплейсы:"]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"  ◦ {item.get('label', 'Маркетплейс')}: {item.get('name')} "
+            f"({item.get('match_score')}%)"
+        )
+        if item.get("price"):
+            lines.append(f"    — цена: {item['price']}")
+        if item.get("articul"):
+            lines.append(f"    — артикул: {item['articul']}")
+        if item.get("description"):
+            lines.append(f"    — {item['description']}")
         if item.get("url"):
             lines.append(f"    — {item['url']}")
     return lines

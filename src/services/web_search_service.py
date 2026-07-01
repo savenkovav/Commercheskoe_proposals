@@ -21,6 +21,7 @@ from src.config import (
     COMPETITOR_SEARCH_PARALLEL_WORKERS,
     COMPETITOR_SEARCH_TIMEOUT,
     INTERNET_SEARCH_BUDGET_SECONDS,
+    SIMILAR_MATCH_THRESHOLD,
     WEB_SEARCH_EXACT_THRESHOLD,
     WEB_SEARCH_FETCH_PAGES,
     WEB_SEARCH_MAX_PAGE_FETCHES,
@@ -199,6 +200,53 @@ _PRODUCT_PATH_RES = (
         re.I,
     ),
 )
+
+_OZON_RELATIVE_PRODUCT_RE = re.compile(r'href="(/product/[^"?#]+)"', re.I)
+_WB_RELATIVE_PRODUCT_RE = re.compile(
+    r'href="(/catalog/(\d+)/detail\.aspx[^"]*)"',
+    re.I,
+)
+_MARKETPLACE_JSON_PRODUCT_RES = (
+    re.compile(r'"(?:link|url)"\s*:\s*"(https://www\.ozon\.ru/product/[^"]+)"', re.I),
+    re.compile(
+        r'"(?:link|url)"\s*:\s*"(https://www\.wildberries\.ru/catalog/\d+/detail\.aspx[^"]*)"',
+        re.I,
+    ),
+    re.compile(
+        r'"(?:link|url)"\s*:\s*"(https://market\.yandex\.ru/product[^"]+)"',
+        re.I,
+    ),
+)
+
+_MARKETPLACE_PLATFORM_DOMAINS = {
+    "ozon": "ozon.ru",
+    "яндекс.маркет": "market.yandex.ru",
+    "яндекс": "market.yandex.ru",
+    "маркет": "market.yandex.ru",
+    "wildberries": "wildberries.ru",
+}
+
+
+def _marketplace_domain_for_platform(platform: str) -> str | None:
+    platform_lower = platform.lower()
+    for key, domain in _MARKETPLACE_PLATFORM_DOMAINS.items():
+        if key in platform_lower:
+            return domain
+    return None
+
+_MARKETPLACE_PRICE_RES = (
+    re.compile(r'class="tsHeadline600Large"[^>]*>([^<]+)</span>', re.I),
+    re.compile(r'class="tsHeadline500Medium"[^>]*>([^<]+)</span>', re.I),
+    re.compile(r'class="[^"]*priceBlockFinalPrice[^"]*"[^>]*>([^<]+)</ins>', re.I),
+    re.compile(r'itemprop="price"[^>]*content="(\d[\d\s.]{0,12})"', re.I),
+)
+
+_OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"',
+    re.I,
+)
+_OZON_IMAGE_RE = re.compile(r'src="(https://ir\.ozone\.ru/[^"]+)"', re.I)
+_WB_IMAGE_RE = re.compile(r'src="(https://[^"]*wbbasket\.ru/[^"]+)"', re.I)
 
 _OG_TITLE_RE = re.compile(
     r'<meta[^>]+(?:property="og:title"|name="title")[^>]+content="([^"]+)"',
@@ -384,6 +432,150 @@ def _pick_best_price(prices: list[float]) -> float | None:
     if len(prices) == 1:
         return prices[0]
     return min(prices)
+
+
+def _absolutize_marketplace_url(url: str, platform: str) -> str:
+    cleaned = unescape(url).strip().split("&")[0]
+    if cleaned.startswith("http://") or cleaned.startswith("https://"):
+        return cleaned
+    platform_lower = platform.lower()
+    if cleaned.startswith("/") and "ozon" in platform_lower:
+        return f"https://www.ozon.ru{cleaned}"
+    if cleaned.startswith("/") and "wildberries" in platform_lower:
+        return f"https://www.wildberries.ru{cleaned}"
+    if cleaned.startswith("/") and ("yandex" in platform_lower or "маркет" in platform_lower):
+        return f"https://market.yandex.ru{cleaned}"
+    return cleaned
+
+
+def _extract_marketplace_product_url(page_text: str, platform: str) -> str | None:
+    if not page_text:
+        return None
+    platform_lower = platform.lower()
+
+    for pattern in _MARKETPLACE_JSON_PRODUCT_RES:
+        for match in pattern.finditer(page_text):
+            url = _absolutize_marketplace_url(match.group(1), platform)
+            if _extract_product_url_matches_platform(url, platform_lower):
+                return url
+
+    for pattern in _PRODUCT_PATH_RES:
+        for match in pattern.finditer(page_text):
+            url = _absolutize_marketplace_url(match.group(1), platform)
+            if _extract_product_url_matches_platform(url, platform_lower):
+                return url
+
+    if "ozon" in platform_lower:
+        relative = _OZON_RELATIVE_PRODUCT_RE.search(page_text)
+        if relative:
+            return _absolutize_marketplace_url(relative.group(1), platform)
+
+    if "wildberries" in platform_lower:
+        relative = _WB_RELATIVE_PRODUCT_RE.search(page_text)
+        if relative:
+            return _absolutize_marketplace_url(relative.group(1), platform)
+
+    return None
+
+
+def _extract_product_url_matches_platform(url: str, platform_lower: str) -> bool:
+    lower = url.lower()
+    if "ozon" in platform_lower:
+        return "ozon.ru/product" in lower
+    if "wildberries" in platform_lower:
+        return "wildberries.ru/catalog" in lower and "/detail.aspx" in lower
+    if "yandex" in platform_lower or "маркет" in platform_lower:
+        return "market.yandex.ru/product" in lower
+    return False
+
+
+def _extract_marketplace_price(page_text: str, *, fallback: float | None = None) -> float | None:
+    if not page_text:
+        return fallback
+    for pattern in _MARKETPLACE_PRICE_RES:
+        match = pattern.search(page_text)
+        if not match:
+            continue
+        value = _parse_price_value(_strip_html(match.group(1)))
+        if value is not None:
+            return value
+    prices = extract_prices_from_text(page_text[:120_000])
+    return _pick_best_price(prices) if prices else fallback
+
+
+def _extract_marketplace_image(page_text: str, platform: str) -> str | None:
+    if not page_text:
+        return None
+    og = _OG_IMAGE_RE.search(page_text)
+    if og:
+        return unescape(og.group(1)).strip()
+    platform_lower = platform.lower()
+    if "ozon" in platform_lower:
+        match = _OZON_IMAGE_RE.search(page_text)
+        if match:
+            return match.group(1)
+    if "wildberries" in platform_lower:
+        match = _WB_IMAGE_RE.search(page_text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _extract_marketplace_description(page_text: str, platform: str) -> str | None:
+    if not page_text:
+        return None
+    platform_lower = platform.lower()
+    if "ozon" in platform_lower:
+        block = re.search(
+            r'data-widget="webShortCharacteristics"[^>]*>(.*?)</div>\s*</div>\s*</div>',
+            page_text,
+            re.I | re.S,
+        )
+        if block:
+            pairs = re.findall(
+                r'<span[^>]*tsBodyM[^>]*>([^<]+)</span>.*?'
+                r'<span[^>]*tsBody400Small[^>]*>([^<]+)</span>',
+                block.group(1),
+                re.I | re.S,
+            )
+            lines = [
+                f"{_strip_html(key)}: {_strip_html(value)}"
+                for key, value in pairs[:6]
+                if key and value
+            ]
+            if lines:
+                return "; ".join(lines)
+    if "wildberries" in platform_lower:
+        pairs = re.findall(
+            r'class="cellKey[^"]*"[^>]*>.*?cellWrapper[^>]*>([^<]+)</span>.*?'
+            r'class="cellValue[^"]*"[^>]*>.*?mo-typography_color_primary[^>]*>([^<]+)</',
+            page_text,
+            re.I | re.S,
+        )
+        lines = [
+            f"{_strip_html(key)}: {_strip_html(value)}"
+            for key, value in pairs[:6]
+            if key and value and key.lower() != "артикул"
+        ]
+        if lines:
+            return "; ".join(lines)
+    return None
+
+
+def _extract_wildberries_articul(url: str, page_text: str) -> str | None:
+    match = re.search(r"wildberries\.ru/catalog/(\d+)/detail\.aspx", url, re.I)
+    if match:
+        return match.group(1)
+    match = re.search(
+        r'class="[^"]*cellCopy[^"]*"[^>]*>.*?>(\d{5,})</span>',
+        page_text or "",
+        re.I | re.S,
+    )
+    return match.group(1) if match else None
+
+
+def _marketplace_title_threshold() -> int:
+    return min(WEB_SEARCH_EXACT_THRESHOLD, max(SIMILAR_MATCH_THRESHOLD, 75))
 
 
 def _quote_has_display_price(quote: PriceQuote) -> bool:
@@ -1197,94 +1389,174 @@ class WebSearchService:
         limit: int | None = None,
         deadline: _SearchDeadline | None = None,
     ) -> list[PriceQuote]:
+        if deadline is None and INTERNET_SEARCH_BUDGET_SECONDS > 0:
+            deadline = _SearchDeadline.from_budget(INTERNET_SEARCH_BUDGET_SECONDS)
         if deadline and deadline.expired():
             return []
         query = product_name.strip()
         if not query:
             return []
 
-        max_results = limit or WEB_SEARCH_MAX_RESULTS
-        normalized_query = normalize_name(query)
+        max_results = limit or 3
         quotes: list[PriceQuote] = []
         seen_urls: set[str] = set()
+        title_threshold = _marketplace_title_threshold()
 
         for platform, template in _MARKETPLACE_SEARCH:
             if deadline and deadline.expired():
                 break
             if len(quotes) >= max_results:
                 break
-            search_url = template.format(query=quote_plus(query))
-            fetch_timeout = (
-                deadline.request_timeout(WEB_SEARCH_TIMEOUT)
-                if deadline
-                else WEB_SEARCH_TIMEOUT
-            )
-            search_text, _search_price = self._fetch_page_price(
-                search_url,
-                timeout=fetch_timeout,
-            )
-            product_url = self._extract_product_url(search_text, platform)
-            if not product_url:
-                continue
-
-            page_text, page_price = self._fetch_page_price(
-                product_url,
-                timeout=fetch_timeout,
-            )
-            price = page_price
-            title = self._extract_page_title(page_text) or query
-            if not is_exact_title_match(
+            quote = self._search_marketplace_platform(
                 query,
-                title,
-                threshold=WEB_SEARCH_EXACT_THRESHOLD,
-            ):
-                continue
-            matched_title = _strip_html(title)
-
-            if price is None and page_text:
-                page_prices = extract_prices_from_text(page_text[:120_000])
-                price = _pick_best_price(page_prices)
-
-            if price is None:
-                continue
-
-            if product_url in seen_urls:
-                continue
-            seen_urls.add(product_url)
-            quotes.append(
-                PriceQuote(
-                    source="web",
-                    label=f"Маркетплейс: {platform}",
-                    matched_name=matched_title,
-                    price=price,
-                    cost=price,
-                    match_score=100.0,
-                    url=product_url,
-                    notes="Карточка товара на маркетплейсе (100% совпадение)",
-                )
+                platform,
+                template,
+                deadline=deadline,
+                title_threshold=title_threshold,
+                seen_urls=seen_urls,
             )
-            if max_results == 1:
-                break
+            if quote:
+                quotes.append(quote)
 
         return quotes
 
-    @staticmethod
-    def _extract_product_url(page_text: str, platform: str) -> str | None:
-        if not page_text:
+    def _search_marketplace_platform(
+        self,
+        query: str,
+        platform: str,
+        search_template: str,
+        *,
+        deadline: _SearchDeadline | None,
+        title_threshold: int,
+        seen_urls: set[str],
+    ) -> PriceQuote | None:
+        fetch_timeout = (
+            deadline.request_timeout(WEB_SEARCH_TIMEOUT) if deadline else WEB_SEARCH_TIMEOUT
+        )
+        search_url = search_template.format(query=quote_plus(query))
+        search_text, _search_price = self._fetch_page_price(
+            search_url,
+            timeout=fetch_timeout,
+        )
+        product_url = _extract_marketplace_product_url(search_text, platform)
+        if not product_url:
+            product_url = self._search_marketplace_product_url_via_serp(
+                query,
+                platform,
+                deadline=deadline,
+            )
+        if not product_url or product_url in seen_urls:
             return None
-        platform_lower = platform.lower()
-        for pattern in _PRODUCT_PATH_RES:
-            for match in pattern.finditer(page_text):
-                url = match.group(1)
-                if "ozon" in platform_lower and "ozon.ru/product" not in url.lower():
-                    continue
-                if "yandex" in platform_lower or "маркет" in platform_lower:
-                    if "market.yandex.ru/product" not in url.lower():
-                        continue
-                if "wildberries" in platform_lower and "wildberries.ru/catalog" not in url.lower():
-                    continue
+
+        return self._build_marketplace_quote(
+            query,
+            platform,
+            product_url,
+            deadline=deadline,
+            title_threshold=title_threshold,
+            seen_urls=seen_urls,
+        )
+
+    def _search_marketplace_product_url_via_serp(
+        self,
+        query: str,
+        platform: str,
+        *,
+        deadline: _SearchDeadline | None,
+    ) -> str | None:
+        domain = _marketplace_domain_for_platform(platform)
+        if not domain:
+            return None
+        hits = self._search_duckduckgo(
+            query,
+            quoted=True,
+            site_domains=[domain],
+            deadline=deadline,
+        )
+        for hit in hits:
+            url = hit.get("url") or ""
+            if not url or _is_blocked_url(url):
+                continue
+            if not is_product_page_url(url):
+                continue
+            if _extract_product_url_matches_platform(url, platform.lower()):
                 return url.split("&")[0]
         return None
+
+    def _build_marketplace_quote(
+        self,
+        query: str,
+        platform: str,
+        product_url: str,
+        *,
+        deadline: _SearchDeadline | None,
+        title_threshold: int,
+        seen_urls: set[str],
+    ) -> PriceQuote | None:
+        fetch_timeout = (
+            deadline.request_timeout(WEB_SEARCH_TIMEOUT) if deadline else WEB_SEARCH_TIMEOUT
+        )
+        page_text, page_price = self._fetch_page_price(
+            product_url,
+            timeout=fetch_timeout,
+            max_chars=WEB_SEARCH_PAGE_MAX_CHARS,
+        )
+        if not page_text:
+            return None
+
+        title = self._extract_page_title(page_text) or query
+        if not is_exact_title_match(
+            query,
+            title,
+            threshold=title_threshold,
+            snippet=page_text[:500],
+        ):
+            return None
+
+        matched_title = _strip_html(title)
+        normalized_query = normalize_name(query)
+        cleaned_title = _clean_title_for_match(title)
+        if (
+            normalized_query in normalize_name(matched_title)
+            or _token_set(normalized_query) == _token_set(cleaned_title)
+        ):
+            match_score = 100.0
+        else:
+            match_score = float(name_match_score(normalized_query, cleaned_title))
+
+        price = _extract_marketplace_price(page_text, fallback=page_price)
+        if price is None:
+            return None
+
+        image_url = _extract_marketplace_image(page_text, platform)
+        description = _extract_marketplace_description(page_text, platform)
+        articul = None
+        if "wildberries" in platform.lower():
+            articul = _extract_wildberries_articul(product_url, page_text)
+
+        seen_urls.add(product_url)
+        notes = "Карточка товара на маркетплейсе"
+        if description:
+            notes = f"{notes} · {description}"
+
+        return PriceQuote(
+            source="web",
+            label=f"Маркетплейс: {platform}",
+            matched_name=matched_title,
+            price=price,
+            cost=price,
+            price_label=f"{price:,.2f} ₽".replace(",", " "),
+            articul=articul,
+            match_score=match_score,
+            url=product_url,
+            notes=notes,
+            image_url=image_url,
+            description=description,
+        )
+
+    @staticmethod
+    def _extract_product_url(page_text: str, platform: str) -> str | None:
+        return _extract_marketplace_product_url(page_text, platform)
 
     @staticmethod
     def _extract_page_title(page_text: str) -> str | None:

@@ -493,7 +493,7 @@ class KpChatService:
         included: bool,
     ) -> KpSession:
         from src.services.kp_lookup_import import (
-            build_match_result_from_lookup_competitor,
+            build_match_result_from_lookup_item,
             find_result_by_lookup_key,
         )
 
@@ -506,7 +506,7 @@ class KpChatService:
             if existing is not None:
                 return session
             next_number = max((r.tz_item.number for r in session.results), default=0) + 1
-            result = build_match_result_from_lookup_competitor(
+            result = build_match_result_from_lookup_item(
                 query_name,
                 next_number,
                 item,

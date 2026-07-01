@@ -3767,7 +3767,7 @@ function initChat() {
   $("#btnNewChat").addEventListener("click", startNewChat);
 }
 
-function renderMatchVariants(title, block, buildLines, missingText) {
+function renderMatchVariants(title, block, buildLines, missingText, options = {}) {
   const items = block?.items?.length ? block.items : block?.found ? [block] : [];
   if (!items.length) {
     return `
@@ -3777,22 +3777,37 @@ function renderMatchVariants(title, block, buildLines, missingText) {
       </div>`;
   }
 
+  const kpSelect = options.kpSelect || null;
+  const sourceType = options.sourceType || "";
+
   const variants = items
     .map((item) => {
       const lines = buildLines(item).filter(Boolean);
       const primaryBadge = item.is_primary
         ? '<span class="match-badge match-badge--primary">основной</span>'
         : "";
+      const selectItem = kpSelect && sourceType
+        ? { ...item, source_type: sourceType }
+        : null;
+      const selectHtml = selectItem
+        ? renderLookupKpSelectHtml(selectItem, kpSelect)
+        : "";
+      const layoutClass = selectHtml ? " match-variant--with-select" : "";
       return `
-        <li class="match-variant${item.is_primary ? " match-variant--primary" : ""}">
-          <div class="match-variant__head">
-            <strong>${escapeHtml(item.display_name || item.name)}</strong>
-            <span class="match-variant__score">${Math.round(item.match_score || 0)}%</span>
-            ${primaryBadge}
+        <li class="match-variant${item.is_primary ? " match-variant--primary" : ""}${layoutClass}">
+          <div class="match-variant__layout">
+            ${selectHtml ? `<div class="match-variant__aside">${selectHtml}</div>` : ""}
+            <div class="match-variant__body">
+              <div class="match-variant__head">
+                <strong>${escapeHtml(item.display_name || item.name)}</strong>
+                <span class="match-variant__score">${Math.round(item.match_score || 0)}%</span>
+                ${primaryBadge}
+              </div>
+              <ul class="match-variant__details">
+                ${lines.map((line) => `<li>${line}</li>`).join("")}
+              </ul>
+            </div>
           </div>
-          <ul class="match-variant__details">
-            ${lines.map((line) => `<li>${line}</li>`).join("")}
-          </ul>
         </li>`;
     })
     .join("");
@@ -3943,6 +3958,32 @@ function renderAiInsightBlock(ai) {
     </div>`;
 }
 
+function renderMarketplaceBlock(marketplace, options = {}) {
+  const items = marketplace?.items?.length
+    ? marketplace.items
+    : marketplace?.found
+      ? [marketplace]
+      : [];
+  if (!items.length) {
+    return "";
+  }
+
+  const rows = items
+    .map((item) =>
+      renderCompetitorResultItem(item, {
+        showPriceKp: true,
+        kpSelect: options.kpSelect ? { queryName: options.kpSelect.queryName } : null,
+      }),
+    )
+    .join("");
+
+  return `
+    <div class="source-block source-block--marketplace">
+      <h4>Маркетплейсы <span class="muted match-count">${items.length}</span></h4>
+      <div class="competitor-result-list">${rows}</div>
+    </div>`;
+}
+
 function renderCompetitorsBlock(competitors, options = {}) {
   const items = competitors?.items?.length
     ? competitors.items
@@ -3974,6 +4015,10 @@ function renderCompetitorsBlock(competitors, options = {}) {
 }
 
 function renderLookupResultHtml(data, options = {}) {
+  const kpSelectOpts = options.enableKpSelect
+    ? { kpSelect: { queryName: data.query_name || "" } }
+    : {};
+
   const registryBlock = data.registry?.found
     ? renderMatchVariants(
         "Реестр остатков",
@@ -3983,6 +4028,8 @@ function renderLookupResultHtml(data, options = {}) {
           item.condition ? `Состояние: ${escapeHtml(item.condition)}` : null,
           item.link ? `Ссылка: ${escapeHtml(item.link)}` : null,
         ],
+        undefined,
+        { ...kpSelectOpts, sourceType: "registry" },
       )
     : `<div class="source-block source-block--warning">
          <h4>Реестр остатков</h4>
@@ -4003,6 +4050,7 @@ function renderLookupResultHtml(data, options = {}) {
       item.unit ? `Ед. изм.: ${escapeHtml(item.unit)}` : null,
     ],
     "В каталоге не найдено",
+    { ...kpSelectOpts, sourceType: "catalog" },
   );
 
   const priceBlock = renderMatchVariants(
@@ -4017,10 +4065,14 @@ function renderLookupResultHtml(data, options = {}) {
       `Сумма: ${item.order_sum ?? "—"}`,
     ],
     "В прайсах не найдено",
+    { ...kpSelectOpts, sourceType: "price_list" },
   );
 
   const aiBlock = renderAiInsightBlock(data.ai_insight);
   const competitorsBlock = renderCompetitorsBlock(data.competitors, {
+    kpSelect: options.enableKpSelect ? { queryName: data.query_name || "" } : null,
+  });
+  const marketplaceBlock = renderMarketplaceBlock(data.marketplace, {
     kpSelect: options.enableKpSelect ? { queryName: data.query_name || "" } : null,
   });
 
@@ -4032,6 +4084,7 @@ function renderLookupResultHtml(data, options = {}) {
         ${priceBlock}
         ${registryBlock}
         ${competitorsBlock}
+        ${marketplaceBlock}
         ${aiBlock}
         ${
           data.alternatives.length
@@ -4054,6 +4107,7 @@ function renderLookupResultHtml(data, options = {}) {
       ${priceBlock}
       ${registryBlock}
       ${competitorsBlock}
+      ${marketplaceBlock}
       ${aiBlock}
       ${
         data.alternatives.length
@@ -4702,8 +4756,10 @@ function formatCompetitorSiteLabel(label) {
 
 function serializeLookupKpItem(item) {
   return JSON.stringify({
+    source_type: item.source_type || (item.url ? "competitor" : "competitor"),
     label: item.label || "",
     name: item.name || item.matched_name || "",
+    display_name: item.display_name || null,
     match_score: item.match_score || 0,
     price: item.price || null,
     price_amount: item.price_amount ?? null,
@@ -4714,14 +4770,47 @@ function serializeLookupKpItem(item) {
     articul: item.articul || null,
     image_url: item.image_url || null,
     has_price: item.has_price !== false,
+    row_index: item.row_index ?? null,
+    cost: item.cost ?? null,
+    cost_amount: item.cost_amount ?? null,
+    code: item.code ?? null,
+    supplier: item.supplier ?? null,
+    unit: item.unit ?? null,
+    quantity: item.quantity ?? null,
+    condition: item.condition ?? null,
+    link: item.link ?? null,
   });
 }
 
 function lookupKpItemKey(item) {
+  const source = String(item.source_type || "").trim() || (item.url ? "competitor" : "");
+  const name = String(item.name || item.matched_name || "").trim();
+
+  if (source === "catalog") {
+    const rowIndex = item.row_index;
+    if (rowIndex != null && rowIndex !== "") {
+      return `catalog|${name}|row:${rowIndex}`;
+    }
+    return `catalog|${name}`;
+  }
+
+  if (source === "price_list" || source === "price") {
+    const code = String(item.code || "").trim();
+    const supplier = String(item.supplier || "").trim();
+    return `price_list|${name}|code:${code}|supplier:${supplier}`;
+  }
+
+  if (source === "registry") {
+    const link = String(item.link || "").trim();
+    if (link) {
+      return `registry|${name}|link:${link}`;
+    }
+    return `registry|${name}`;
+  }
+
   const url = String(item.url || "").trim();
   if (url) return url;
   const label = String(item.label || "").trim();
-  const name = String(item.name || item.matched_name || "").trim();
   return `${label}|${name}`;
 }
 
@@ -4810,6 +4899,21 @@ function initLookupKpSelection() {
   });
 }
 
+function renderLookupKpSelectHtml(item, kpSelect) {
+  const matchedName = item.display_name || item.name || item.matched_name || "";
+  return `<label class="competitor-result-item__kp-select match-variant__kp-select" title="Добавить в детализацию КП">
+        <input
+          type="checkbox"
+          class="lookup-kp-select"
+          data-lookup-query="${escapeHtml(kpSelect.queryName || "")}"
+          data-lookup-item="${escapeHtml(encodeURIComponent(serializeLookupKpItem(item)))}"
+          ${isLookupKpSelected(item) ? "checked" : ""}
+          aria-label="Добавить «${escapeHtml(matchedName)}» в детализацию КП"
+        >
+        <span class="competitor-result-item__kp-select-label">В КП</span>
+      </label>`;
+}
+
 function renderCompetitorResultItem(item, options = {}) {
   const showPriceKp = Boolean(options.showPriceKp);
   const matchedName = item.matched_name || item.name || "—";
@@ -4824,17 +4928,10 @@ function renderCompetitorResultItem(item, options = {}) {
     : "";
 
   const selectHtml = options.kpSelect
-    ? `<label class="competitor-result-item__kp-select" title="Добавить в детализацию КП">
-        <input
-          type="checkbox"
-          class="lookup-kp-select"
-          data-lookup-query="${escapeHtml(options.kpSelect.queryName || "")}"
-          data-lookup-item="${escapeHtml(encodeURIComponent(serializeLookupKpItem(item)))}"
-          ${isLookupKpSelected(item) ? "checked" : ""}
-          aria-label="Добавить «${escapeHtml(matchedName)}» в детализацию КП"
-        >
-        <span class="competitor-result-item__kp-select-label">В КП</span>
-      </label>`
+    ? renderLookupKpSelectHtml(
+        { ...item, source_type: item.source_type || "competitor" },
+        options.kpSelect,
+      )
     : "";
 
   const asideHtml =
@@ -4863,6 +4960,10 @@ function renderCompetitorResultItem(item, options = {}) {
     ? `<div class="muted">Артикул: ${escapeHtml(item.articul)}</div>`
     : "";
 
+  const descriptionHtml = item.description
+    ? `<div class="muted">${escapeHtml(item.description)}</div>`
+    : "";
+
   const matchHtml = item.match_score
     ? `<div class="muted">${Math.round(item.match_score)}% совпадение</div>`
     : "";
@@ -4888,6 +4989,7 @@ function renderCompetitorResultItem(item, options = {}) {
         </div>
         <div class="competitor-result-item__name">${escapeHtml(matchedName)}</div>
         ${articulHtml}
+        ${descriptionHtml}
         ${matchHtml}
         ${missingPriceHtml}
         ${priceKpHtml}

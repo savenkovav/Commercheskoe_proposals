@@ -1594,8 +1594,13 @@ a.btn.btn--disabled {
   background: linear-gradient(180deg, rgba(124, 108, 240, 0.1), var(--surface));
 }
 
-.source-block--ai h4 {
-  color: #c4b5fd;
+.source-block--marketplace {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.08), var(--surface));
+}
+
+.source-block--marketplace h4 {
+  color: #93c5fd;
 }
 
 .source-block--ai a {
@@ -1892,6 +1897,30 @@ code {
   padding: 10px 12px;
   min-width: 0;
   overflow: hidden;
+}
+
+.match-variant__layout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.match-variant__aside {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.match-variant__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.match-variant__kp-select {
+  flex-shrink: 0;
 }
 
 .match-variant--primary {
