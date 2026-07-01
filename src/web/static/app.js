@@ -822,10 +822,8 @@ function restoreRowDraftFromSelections() {
   }
 }
 
-function rowAllowsPriceMarginEdit(item, selection = {}) {
-  if (item.kit_components?.length) return false;
-  if (allowsCustomEntry(item) && isCustomEntryChecked(item.number, selection)) return false;
-  return true;
+function rowAllowsPriceMarginEdit(item) {
+  return !(item.kit_components?.length);
 }
 
 function hasRowManualQuantity(itemNumber, selection = null) {
@@ -861,7 +859,7 @@ function getRowQuantity(item, itemNumber = item?.number, selection = null) {
   }
   const draft = getRowDraft(itemNumber).quantity;
   if (draft != null && draft > 0) return draft;
-  const input = document.querySelector(`.tz-row__qty-input[data-item="${itemNumber}"]`);
+  const input = document.querySelector(`.tz-card__qty-input[data-item="${itemNumber}"]`);
   if (input) {
     const parsed = Number(String(input.value || "").replace(",", "."));
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
@@ -883,7 +881,7 @@ function getRowUnitBasePrice(itemNumber, fallback = null, selection = null) {
 }
 
 function readMarginInputValue(itemNumber) {
-  const input = document.querySelector(`.tz-row__margin-input[data-item="${itemNumber}"]`);
+  const input = document.querySelector(`.tz-card__margin-input[data-item="${itemNumber}"]`);
   if (!input || !input.value.trim()) return null;
   const parsed = Number(String(input.value).replace(",", "."));
   return Number.isFinite(parsed) ? parsed : null;
@@ -925,7 +923,7 @@ function applyRowManualOverrides(item, pricing, selection = {}) {
   }
 
   const qty = getRowQuantity(item, itemNumber, selection);
-  const canEditPrice = rowAllowsPriceMarginEdit(item, selection);
+  const canEditPrice = rowAllowsPriceMarginEdit(item);
   let unitBase = pricing.unitBasePrice;
   let unitCost = pricing.unitCost;
   let internetPriced = pricing.internetPriced;
@@ -971,25 +969,25 @@ function applyRowManualOverrides(item, pricing, selection = {}) {
   };
 }
 
-function renderRowQtyCell(item) {
+function renderPositionQtyInput(item) {
   const qty = getRowQuantity(item, item.number);
   const display = Number.isInteger(qty) ? String(qty) : String(qty).replace(".", ",");
-  return `<input type="text" class="tz-row__qty-input" data-item="${item.number}" value="${escapeHtml(display)}" inputmode="decimal" title="Количество">`;
+  return `<input type="text" class="tz-card__qty-input" data-item="${item.number}" value="${escapeHtml(display)}" inputmode="decimal" title="Количество">`;
 }
 
-function renderRowPriceCell(item, pricing, selection = {}) {
-  if (!rowAllowsPriceMarginEdit(item, selection)) {
+function renderPositionPriceInput(item, pricing, selection = {}) {
+  if (!rowAllowsPriceMarginEdit(item)) {
     return `${fmtMoney(pricing.unitBasePrice)}${
-      pricing.internetPriced ? '<br><small class="muted">интернет</small>' : ""
+      pricing.internetPriced ? ' <span class="muted">(интернет)</span>' : ""
     }`;
   }
   const base = getRowUnitBasePrice(item.number, pricing.unitBasePrice, selection);
   const display = base != null ? formatMoneyInputValue(base) : "";
-  return `<input type="text" class="tz-row__price-input" data-item="${item.number}" value="${escapeHtml(display)}" placeholder="—" inputmode="decimal" title="Цена">`;
+  return `<input type="text" class="tz-card__price-input" data-item="${item.number}" value="${escapeHtml(display)}" placeholder="—" inputmode="decimal" title="Цена">`;
 }
 
-function renderRowMarginCell(item, pricing, selection = {}) {
-  if (!rowAllowsPriceMarginEdit(item, selection)) {
+function renderPositionMarginInput(item, pricing, selection = {}) {
+  if (!rowAllowsPriceMarginEdit(item)) {
     return fmtMarginPercent(pricing.unitCost, pricing.unitPrice);
   }
   const margin = getRowMarginPercentForCalc(
@@ -1000,7 +998,53 @@ function renderRowMarginCell(item, pricing, selection = {}) {
     pricing.internetPriced,
     selection,
   );
-  return `<input type="text" class="tz-row__margin-input" data-item="${item.number}" value="${escapeHtml(formatMarginInputValue(margin))}" placeholder="—" inputmode="decimal" title="Маржа, %">`;
+  return `<input type="text" class="tz-card__margin-input" data-item="${item.number}" value="${escapeHtml(formatMarginInputValue(margin))}" placeholder="—" inputmode="decimal" title="Маржа, %">`;
+}
+
+function renderPositionPricingCard(item) {
+  const selection = {
+    variant: savedVariantIdForItem(item.number),
+    kit_indices: getKitIndicesFromUI(item.number),
+    web_indices: getWebIndicesFromUI(item.number),
+  };
+  const pricing = computeItemPricing(item, selection);
+  const tzSaleNote =
+    item.target_sale_price != null && !hasRowManualOverride(item.number, selection)
+      ? ' <span class="muted">(из ТЗ)</span>'
+      : "";
+  const internetKpNote =
+    pricing.internetPriced && !hasRowManualBasePrice(item.number, selection)
+      ? ' <span class="muted">(−5%)</span>'
+      : "";
+
+  return `
+    <div class="tz-position-card" data-item="${item.number}">
+      <h4 class="compare-block__subtitle">Параметры позиции</h4>
+      <p class="muted compare-block__kit-note">Измените количество, цену и маржу — цена КП и сумма пересчитаются автоматически.</p>
+      <div class="tz-position-card__grid">
+        <label class="tz-position-card__field">
+          <span class="tz-position-card__label">Количество</span>
+          ${renderPositionQtyInput(item)}
+          <span class="muted tz-position-card__unit">${escapeHtml(item.unit || "шт.")}</span>
+        </label>
+        <label class="tz-position-card__field">
+          <span class="tz-position-card__label">Цена</span>
+          ${renderPositionPriceInput(item, pricing, selection)}
+        </label>
+        <label class="tz-position-card__field">
+          <span class="tz-position-card__label">Маржа, %</span>
+          ${renderPositionMarginInput(item, pricing, selection)}
+        </label>
+        <div class="tz-position-card__field tz-position-card__field--readonly">
+          <span class="tz-position-card__label">Цена КП</span>
+          <strong class="tz-card__price-kp" data-item="${item.number}">${fmtMoney(pricing.unitPrice)}${internetKpNote}${tzSaleNote}</strong>
+        </div>
+        <div class="tz-position-card__field tz-position-card__field--readonly">
+          <span class="tz-position-card__label">Сумма</span>
+          <strong class="tz-card__line-total" data-item="${item.number}">${fmtMoney(pricing.totalPrice)}</strong>
+        </div>
+      </div>
+    </div>`;
 }
 
 function isCustomEntryChecked(itemNumber, selection = null) {
@@ -1300,7 +1344,11 @@ function computeItemPricing(item, selection = {}) {
 }
 
 function computeItemPricingInternal(item, selection = {}) {
-  if (allowsCustomEntry(item) && isCustomEntryChecked(item.number, selection)) {
+  if (
+    allowsCustomEntry(item) &&
+    isCustomEntryChecked(item.number, selection) &&
+    !hasRowManualOverride(item.number, selection)
+  ) {
     const customPricing = buildCustomEntryPricing(item, selection);
     if (customPricing.unitBasePrice != null) {
       return applyTzSalePriceOverride(item, customPricing, selection.variant || "primary");
@@ -1393,6 +1441,14 @@ function updateWebAddonTotal(itemNumber) {
   totalEl.textContent = fmtMoney(addon.totalPrice);
 }
 
+function refreshTzPositionCard(itemNumber) {
+  const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
+  const card = document.querySelector(`.tz-position-card[data-item="${itemNumber}"]`);
+  if (!item || !card) return;
+  card.outerHTML = renderPositionPricingCard(item);
+  updateTzRowPricing(itemNumber);
+}
+
 function updateTzRowPricing(itemNumber) {
   const item = kpProcessData?.items?.find((row) => row.number === itemNumber);
   const row = document.querySelector(`.tz-row[data-item-number="${itemNumber}"]`);
@@ -1404,10 +1460,8 @@ function updateTzRowPricing(itemNumber) {
     web_indices: getWebIndicesFromUI(itemNumber),
   };
   const pricing = computeItemPricing(item, selection);
-  const priceInput = row.querySelector(".tz-row__price-input");
-  const marginInput = row.querySelector(".tz-row__margin-input");
   const unitBaseCell = row.querySelector(".tz-row__price-base");
-  if (unitBaseCell && !priceInput) {
+  if (unitBaseCell) {
     unitBaseCell.innerHTML = `${fmtMoney(pricing.unitBasePrice)}${
       pricing.internetPriced ? '<br><small class="muted">интернет</small>' : ""
     }`;
@@ -1428,9 +1482,30 @@ function updateTzRowPricing(itemNumber) {
   if (lineTotalCell) {
     lineTotalCell.textContent = fmtMoney(pricing.totalPrice);
   }
+  const qtyCell = row.querySelector(".tz-row__qty");
+  if (qtyCell) {
+    qtyCell.textContent = fmtQty(getRowQuantity(item, itemNumber), item.unit);
+  }
   const marginCell = row.querySelector(".tz-row__margin");
-  if (marginCell && !marginInput) {
+  if (marginCell) {
     marginCell.textContent = fmtMarginPercent(pricing.unitCost, pricing.unitPrice);
+  }
+
+  const cardKpEl = document.querySelector(`.tz-card__price-kp[data-item="${itemNumber}"]`);
+  if (cardKpEl) {
+    const tzSaleNote =
+      item.target_sale_price != null && !hasRowManualOverride(itemNumber, selection)
+        ? ' <span class="muted">(из ТЗ)</span>'
+        : "";
+    const internetKpNote =
+      pricing.internetPriced && !hasRowManualBasePrice(itemNumber, selection)
+        ? ' <span class="muted">(−5%)</span>'
+        : "";
+    cardKpEl.innerHTML = `${fmtMoney(pricing.unitPrice)}${internetKpNote}${tzSaleNote}`;
+  }
+  const cardTotalEl = document.querySelector(`.tz-card__line-total[data-item="${itemNumber}"]`);
+  if (cardTotalEl) {
+    cardTotalEl.textContent = fmtMoney(pricing.totalPrice);
   }
 
   const kitTotalEl = document.querySelector(`.kp-kit-total[data-item="${itemNumber}"]`);
@@ -1968,7 +2043,7 @@ function getSelectionsFromUI() {
     if (rowQty > 0 && rowQty !== item.quantity) {
       selection.manual_quantity = rowQty;
     }
-    if (rowAllowsPriceMarginEdit(item, selection)) {
+    if (rowAllowsPriceMarginEdit(item)) {
       if (hasRowManualBasePrice(item.number)) {
         const rowBase = getRowUnitBasePrice(item.number, null);
         if (rowBase != null) {
@@ -1978,7 +2053,7 @@ function getSelectionsFromUI() {
       if (hasRowManualMargin(item.number)) {
         selection.manual_margin_percent = getRowDraft(item.number).marginPercent;
       } else {
-        const marginInput = document.querySelector(`.tz-row__margin-input[data-item="${item.number}"]`);
+        const marginInput = document.querySelector(`.tz-card__margin-input[data-item="${item.number}"]`);
         if (marginInput && hasRowManualBasePrice(item.number)) {
           const margin = readMarginInputValue(item.number);
           if (margin != null) {
@@ -2050,7 +2125,7 @@ function bindKpSelectionHandlers() {
       }
       setCustomDraft(itemNumber, { enabled: target.checked });
       resetKpSavedSelection();
-      updateTzRowPricing(itemNumber);
+      refreshTzPositionCard(itemNumber);
       updateCustomEntryTotals(itemNumber);
       return;
     }
@@ -2090,7 +2165,7 @@ function bindKpSelectionHandlers() {
       updateTzRowPricing(itemNumber);
       return;
     }
-    if (target.classList.contains("tz-row__price-input")) {
+    if (target.classList.contains("tz-card__price-input")) {
       const itemNumber = Number(target.dataset.item);
       const price = parseMoneyInput(target.value);
       if (price != null) {
@@ -2104,7 +2179,7 @@ function bindKpSelectionHandlers() {
       updateTzRowPricing(itemNumber);
       return;
     }
-    if (target.classList.contains("tz-row__margin-input")) {
+    if (target.classList.contains("tz-card__margin-input")) {
       const itemNumber = Number(target.dataset.item);
       const parsed = Number(String(target.value || "").replace(",", "."));
       if (Number.isFinite(parsed)) {
@@ -2118,7 +2193,7 @@ function bindKpSelectionHandlers() {
       updateTzRowPricing(itemNumber);
       return;
     }
-    if (target.classList.contains("tz-row__qty-input")) {
+    if (target.classList.contains("tz-card__qty-input")) {
       const itemNumber = Number(target.dataset.item);
       const parsed = Number(String(target.value || "").replace(",", "."));
       if (Number.isFinite(parsed) && parsed > 0) {
@@ -2148,21 +2223,21 @@ function bindKpSelectionHandlers() {
         }
         return;
       }
-      if (target.classList.contains("tz-row__price-input")) {
+      if (target.classList.contains("tz-card__price-input")) {
         const price = parseMoneyInput(target.value);
         if (price != null) {
           target.value = formatMoneyInputValue(price);
         }
         return;
       }
-      if (target.classList.contains("tz-row__margin-input")) {
+      if (target.classList.contains("tz-card__margin-input")) {
         const parsed = Number(String(target.value || "").replace(",", "."));
         if (Number.isFinite(parsed)) {
           target.value = formatMarginInputValue(parsed);
         }
         return;
       }
-      if (target.classList.contains("tz-row__qty-input")) {
+      if (target.classList.contains("tz-card__qty-input")) {
         const parsed = Number(String(target.value || "").replace(",", "."));
         if (Number.isFinite(parsed) && parsed > 0) {
           target.value = Number.isInteger(parsed) ? String(parsed) : String(parsed).replace(".", ",");
@@ -2183,12 +2258,12 @@ function bindKpSelectionHandlers() {
         }
       });
       resetKpSavedSelection();
-      updateTzRowPricing(itemNumber);
+      refreshTzPositionCard(itemNumber);
       return;
     }
     if (
       event.target.closest(
-        ".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell, .kp-custom-select-cell, .kp-custom-price-cell, .kp-custom-qty-input, .tz-row__qty-input, .tz-row__price-input, .tz-row__margin-input",
+        ".kp-select-cell, .kp-variant-block, .kp-kit-select-cell, .kp-web-select-cell, .kp-web-price-cell, .kp-custom-select-cell, .kp-custom-price-cell, .kp-custom-qty-input, .tz-position-card, .tz-card__qty-input, .tz-card__price-input, .tz-card__margin-input",
       )
     ) {
       event.stopPropagation();
@@ -3157,15 +3232,6 @@ function renderComparisonTable(item) {
   );
   const webEntries = collectWebEntries(item);
   const primaryBlock = renderPrimaryMatchBlock(item);
-  if (
-    !comparison.length &&
-    !webEntries.length &&
-    !(item.kit_components || []).length &&
-    !allowsCustomEntry(item) &&
-    !primaryBlock
-  ) {
-    return "";
-  }
 
   const comparisonRows = comparison
     .map(
@@ -3234,6 +3300,7 @@ function renderComparisonTable(item) {
 
   return `
     <div class="compare-block">
+      ${renderPositionPricingCard(item)}
       ${renderVariantChoices(item)}
       ${renderMarketEstimateInfo(item)}
       ${primaryBlock}
@@ -3635,20 +3702,19 @@ function renderProcessResult(data, options = {}) {
     .map(
       (item) => {
         const initialPricing = computeItemPricing(item, { variant: "primary" });
-        const hasDetails = hasItemDetails(item);
         const detailId = `tz-detail-${item.number}`;
         const showInternetLabels = initialPricing.internetPriced;
         const tzSalePriceNote = item.target_sale_price != null ? '<br><small class="muted">из ТЗ</small>' : "";
-        const customEntryNote = allowsCustomEntry(item)
-          ? '<br><small class="muted tz-row__custom-hint">укажите цену в строке ниже</small>'
+        const expandHint = allowsCustomEntry(item)
+          ? '<br><small class="muted tz-row__custom-hint">укажите цену в карточке</small>'
           : "";
         return `
-      <tr class="tz-row${hasDetails ? " tz-row--expandable" : ""}" data-item-number="${item.number}" ${hasDetails ? `data-detail="${detailId}"` : ""}>
+      <tr class="tz-row tz-row--expandable" data-item-number="${item.number}" data-detail="${detailId}">
         <td class="kp-select-cell">
           <input type="checkbox" class="kp-item-include" data-item="${item.number}" checked>
         </td>
         <td>${item.number}</td>
-        <td>${escapeHtml(item.name)}${hasDetails ? ' <span class="tz-row__hint">▼</span>' : ""}${customEntryNote}</td>
+        <td>${escapeHtml(item.name)} <span class="tz-row__hint">▼</span>${expandHint}</td>
         <td>${escapeHtml(item.matched_name || "—")}${
           item.source && item.source !== "none"
             ? `<br><small class="muted">${escapeHtml(SOURCE_LABELS[item.source] || item.source)}</small>`
@@ -3663,28 +3729,20 @@ function renderProcessResult(data, options = {}) {
             : ""
         }</td>
         <td>${statusBadge(item.status, item.notes)}</td>
-        <td class="tz-row__qty">${renderRowQtyCell(item)}</td>
-        <td class="tz-row__price-base">${renderRowPriceCell(item, initialPricing)}</td>
+        <td class="tz-row__qty">${fmtQty(getRowQuantity(item, item.number), item.unit)}</td>
+        <td class="tz-row__price-base">${fmtMoney(initialPricing.unitBasePrice)}${showInternetLabels ? '<br><small class="muted">интернет</small>' : ""}</td>
         <td class="tz-row__price-kp">${fmtMoney(initialPricing.unitPrice)}${showInternetLabels && !hasRowManualBasePrice(item.number) ? '<br><small class="muted">−5%</small>' : ""}${tzSalePriceNote}</td>
-        <td class="tz-row__margin">${renderRowMarginCell(item, initialPricing)}</td>
+        <td class="tz-row__margin">${fmtMarginPercent(initialPricing.unitCost, initialPricing.unitPrice)}</td>
         <td class="tz-row__line-total">${fmtMoney(initialPricing.totalPrice)}</td>
       </tr>
-      ${
-        allowsCustomEntry(item)
-          ? `<tr class="tz-custom-inline" data-item-number="${item.number}"><td colspan="10">${renderCustomManualBlock(item)}</td></tr>`
-          : ""
-      }
-      ${
-        hasDetails
-          ? `<tr class="tz-detail hidden" id="${detailId}"><td colspan="10">${renderComparisonTable(item)}</td></tr>`
-          : ""
-      }`;
+      <tr class="tz-detail hidden" id="${detailId}"><td colspan="10">${renderComparisonTable(item)}</td></tr>`;
       },
     )
     .join("");
 
   tbody.querySelectorAll(".tz-row--expandable").forEach((row) => {
-    row.addEventListener("click", () => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest(".kp-select-cell")) return;
       const detail = document.getElementById(row.dataset.detail);
       if (!detail) return;
       detail.classList.toggle("hidden");
@@ -3692,18 +3750,7 @@ function renderProcessResult(data, options = {}) {
     });
   });
 
-  tbody.querySelectorAll(".tz-custom-inline").forEach((row) => {
-    row.addEventListener("click", (event) => event.stopPropagation());
-  });
-
-  data.items
-    .filter(
-      (item) =>
-        item.kit_components?.length ||
-        collectWebProductEntries(item).length ||
-        allowsCustomEntry(item),
-    )
-    .forEach((item) => updateTzRowPricing(item.number));
+  data.items.forEach((item) => updateTzRowPricing(item.number));
 
   const selectAll = $("#selectAllKpItems");
   if (selectAll) {

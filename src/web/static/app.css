@@ -541,13 +541,53 @@ a.btn.btn--disabled {
 
 .tz-row__qty-input,
 .tz-row__price-input,
-.tz-row__margin-input {
+.tz-row__margin-input,
+.tz-card__qty-input,
+.tz-card__price-input,
+.tz-card__margin-input {
   width: 100%;
   max-width: 7rem;
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   font: inherit;
+}
+
+.tz-position-card {
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.tz-position-card__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 12px 16px;
+  margin-top: 0.75rem;
+}
+
+.tz-position-card__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tz-position-card__field--readonly strong {
+  font-size: 1rem;
+}
+
+.tz-position-card__label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.tz-position-card__unit {
+  font-size: 0.82rem;
 }
 
 .compare-table--custom {
@@ -1640,6 +1680,15 @@ a.btn.btn--disabled {
 
 .tz-row--expandable {
   cursor: pointer;
+}
+
+.tz-row--expandable .tz-row__qty-input,
+.tz-row--expandable .tz-row__price-input,
+.tz-row--expandable .tz-row__margin-input,
+.tz-row--expandable .tz-card__qty-input,
+.tz-row--expandable .tz-card__price-input,
+.tz-row--expandable .tz-card__margin-input {
+  cursor: text;
 }
 
 .tz-row--expandable:hover {
