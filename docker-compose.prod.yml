@@ -1,0 +1,67 @@
+# Продакшен: веб + Meilisearch (+ опциональный nginx для Beget)
+# Запуск: docker compose -f docker-compose.prod.yml up -d --build
+
+services:
+  meilisearch:
+    image: ${MEILISEARCH_IMAGE:-getmeili/meilisearch:v1.12}
+    container_name: comm-proposals-meilisearch
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_LOG_LEVEL: INFO
+    volumes:
+      - meili_data:/meili_data
+    expose:
+      - "7700"
+
+  kp-web:
+    build:
+      context: .
+      network: host
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-mirror.gcr.io/library/python:3.11-slim}
+    container_name: comm-proposals-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+      WEB_HOST: "0.0.0.0"
+      WEB_PORT: "8080"
+      WEB_BEHIND_PROXY: "true"
+      MEILISEARCH_HOST: http://meilisearch:7700
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+    expose:
+      - "8080"
+    depends_on:
+      - meilisearch
+    networks:
+      - default
+      - target_network
+    command: ["python", "-m", "src.web.server"]
+
+  nginx:
+    image: ${NGINX_IMAGE:-mirror.gcr.io/library/nginx:1.27-alpine}
+    container_name: comm-proposals-nginx
+    restart: unless-stopped
+    profiles:
+      - beget-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/beget/nginx-docker.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - kp-web
+
+volumes:
+  meili_data:
+
+networks:
+  target_network:
+    external: true
+    name: root_target_network

@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <title>КП-Ассистент — Учтендер</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="stylesheet" href="/app.css?v=20260630a">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__top">
+      <div class="site-header__inner">
+        <div class="site-header__logo">
+          <a href="https://uchtender.ru/" target="_blank" rel="noopener noreferrer">
+            <img src="/img/logo.png" class="header-logo" alt="Учтендер">
+          </a>
+        </div>
+        <div class="site-header__actions">
+          <div class="header__stats" id="headerStats"></div>
+          <div class="header__user hidden site-header__user" id="headerUser"></div>
+          <button class="btn btn--secondary btn--small hidden" type="button" id="btnLogout">Выйти</button>
+        </div>
+      </div>
+    </div>
+    <nav class="top-nav tabs" role="tablist">
+      <button class="tabs__btn tabs__btn--active" data-tab="kp" role="tab">КП-Ассистент</button>
+      <button class="tabs__btn" data-tab="lookup" role="tab">Быстрый поиск</button>
+      <button class="tabs__btn" data-tab="prices" role="tab">Прайсы</button>
+      <button class="tabs__btn" data-tab="competitors" role="tab">Сайты товаров</button>
+      <button class="tabs__btn" data-tab="status" role="tab">Статус</button>
+      <button class="tabs__btn hidden" data-tab="history" id="tabHistoryBtn" role="tab">История</button>
+      <button class="tabs__btn hidden" data-tab="users" id="tabUsersBtn" role="tab">Настройки пользователей</button>
+    </nav>
+  </header>
+
+  <div class="layout">
+
+    <main>
+      <section class="panel panel--active" id="panel-kp" data-panel="kp">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Загрузить ТЗ</h2>
+            <p class="muted">Файл: .doc, .docx, .pdf, .xlsx, .xls или текст в чате — наименования, модели и характеристики</p>
+            <label class="upload-zone" id="uploadZone">
+              <input type="file" id="tzFile" accept=".doc,.docx,.pdf,.xlsx,.xls" hidden>
+              <span class="upload-zone__icon">📄</span>
+              <span>Перетащите файл или нажмите для выбора</span>
+              <span class="upload-zone__name" id="fileName"></span>
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" id="useAiUpload" checked>
+              Использовать AI для сложных позиций
+            </label>
+            <div class="markup-bar">
+              <label class="markup-bar__label" for="markupPercent">Наценка, %</label>
+              <input
+                type="number"
+                id="markupPercent"
+                class="input input--compact"
+                value="30"
+                min="0"
+                max="1000"
+                step="0.1"
+              >
+              <button class="btn btn--secondary" type="button" id="btnApplyMarkup">Применить</button>
+            </div>
+            <div class="actions actions--tasks">
+              <button class="btn btn--primary" id="btnProcessTask1" disabled title="Поиск и идентификация товара, расчёт себестоимости и маржинальности">
+                Задача 1 — поиск и маржа
+              </button>
+              <button class="btn btn--primary" id="btnProcessTask12" disabled title="Задача 1 плюс анализ конкурентных цен и рекомендация продажной цены">
+                Задача 1 + 2 — с конкурентами
+              </button>
+            </div>
+            <div class="kp-chat-hints upload-pish-hints">
+              <button type="button" class="kp-chat-hint" data-pish-search aria-pressed="false">Поиск из ПИШ</button>
+            </div>
+          </div>
+
+          <div class="card card--logistics" id="logisticsCard">
+            <h2>Логистика</h2>
+            <p class="muted">Модуль логистики — калькулятор доставки от поставщика до склада и заказчика</p>
+            <div class="logistics-stub">
+              <div class="logistics-stub__badge">Скоро</div>
+              <ul class="logistics-stub__list">
+                <li>Местонахождение поставщика (настраиваемые данные)</li>
+                <li>Вес и объём товара (справочник или запрос у пользователя)</li>
+                <li>Тарифы ТК или фиксированные ставки</li>
+              </ul>
+              <p class="logistics-stub__note">Калькулятор будет учитывать логистику в себестоимости позиций КП.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card hidden process-summary-card" id="processSummaryCard">
+          <h2>Итоги по ТЗ</h2>
+          <div class="results-summary" id="resultsSummary"></div>
+        </div>
+
+        <div class="card hidden" id="resultsCard">
+          <div class="card__head">
+            <h2>Детализация позиций</h2>
+            <div class="card__head-actions">
+              <button class="btn btn--secondary" type="button" id="btnSaveKpSelection" disabled>Сохранить выбор</button>
+              <button class="btn btn--primary" type="button" id="btnFormKp" disabled>Сформировать КП</button>
+              <a class="btn btn--secondary btn--disabled" id="downloadPdfBtn" href="#" download aria-disabled="true">Скачать PDF</a>
+              <a class="btn btn--secondary btn--disabled" id="downloadBtn" href="#" download aria-disabled="true">Скачать Excel</a>
+            </div>
+          </div>
+          <div class="kp-saved-selection hidden" id="kpSavedSelection"></div>
+          <div class="table-wrap">
+            <table class="data-table" id="resultsTable">
+              <thead>
+                <tr>
+                  <th class="col-select">
+                    <input type="checkbox" id="selectAllKpItems" checked title="Выбрать все позиции">
+                  </th>
+                  <th>#</th>
+                  <th>Позиция ТЗ</th>
+                  <th>Найдено</th>
+                  <th>Статус</th>
+                  <th>Количество</th>
+                  <th>Цена</th>
+                  <th>Цена КП</th>
+                  <th>Маржа %</th>
+                  <th>Сумма</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card" id="kpChatCard">
+          <div class="chat-header">
+            <div class="chat-header__row">
+              <div>
+                <h2>Диалог с КП-Ассистентом</h2>
+                <p class="muted">Напишите название товара — результат сразу. Для КП по ТЗ загрузите файл и выберите задачу.</p>
+              </div>
+              <button class="btn btn--secondary btn--small" type="button" id="btnKpHistory">История</button>
+            </div>
+            <div class="assistant-mode" id="assistantMode">
+              <span class="assistant-mode__label">Задача:</span>
+              <span class="assistant-mode__value" id="taskModeLabel">не выбрана</span>
+              <span class="assistant-mode__sep">·</span>
+              <span class="assistant-mode__value" id="stageLabel">ожидание ТЗ</span>
+            </div>
+          </div>
+          <div class="kp-chat-hints" id="kpChatHints">
+            <button type="button" class="kp-chat-hint" data-hint="Задача 1: только поиск в каталогах и прайсах">Только поиск</button>
+            <button type="button" class="kp-chat-hint" data-hint="Рассчитай с наценкой 30% и сформируй Excel">Наценка 30%</button>
+            <button type="button" class="kp-chat-hint" id="btnKpPishSearch" data-pish-search aria-pressed="false">Поиск из ПИШ</button>
+          </div>
+          <div class="chat-messages kp-chat-messages" id="kpChatMessages" aria-live="polite">
+            <div class="chat-welcome">
+              <p>Я КП-Ассистент. Загрузите ТЗ или напишите запрос. Поиск начну только когда вы попросите.</p>
+            </div>
+          </div>
+          <form class="chat-compose" id="kpChatForm">
+            <textarea
+              id="kpChatInput"
+              class="input chat-compose__input"
+              rows="2"
+              placeholder="Введите запрос сюда..."
+              autocomplete="off"
+            ></textarea>
+            <button class="btn btn--primary chat-compose__send" type="submit" id="btnKpChatSend">Отправить</button>
+          </form>
+        </div>
+
+      </section>
+
+      <section class="panel" id="panel-lookup" data-panel="lookup">
+        <div class="chat-layout">
+          <aside class="chat-sidebar card">
+            <div class="chat-sidebar__head">
+              <h2>История</h2>
+              <div class="chat-sidebar__actions">
+                <button class="btn btn--secondary btn--small" type="button" id="btnNewChat">Новый</button>
+                <button class="btn btn--danger btn--small" type="button" id="btnClearChatHistory">Очистить</button>
+              </div>
+            </div>
+            <ul class="chat-history" id="chatHistoryList">
+              <li class="chat-history__empty muted">Пока нет запросов</li>
+            </ul>
+          </aside>
+
+          <div class="chat-main card">
+            <div class="chat-header">
+              <div class="chat-header__row">
+                <div>
+                  <h2>Быстрый поиск позиции</h2>
+                  <p class="muted">Без загрузки ТЗ: одна позиция — сразу каталог, прайсы, реестр и конкуренты. Пример: <code>мольберт</code> или <code>термометр | цена, остаток</code></p>
+                </div>
+                <button class="btn btn--secondary btn--small" type="button" id="btnLookupHistory">История</button>
+              </div>
+            </div>
+            <div class="chat-messages" id="chatMessages" aria-live="polite">
+              <div class="chat-welcome">
+                <p>Задайте вопрос о товаре — поиск в каталоге, прайсах, реестре и на сайтах конкурентов выполняется по отправке запроса.</p>
+              </div>
+            </div>
+            <div class="kp-chat-hints lookup-chat-hints" id="lookupChatHints">
+              <button type="button" class="kp-chat-hint" id="btnPishSearch" data-pish-search aria-pressed="false">Поиск из ПИШ</button>
+            </div>
+            <form class="chat-compose" id="chatForm">
+              <textarea
+                id="chatInput"
+                class="input chat-compose__input"
+                rows="2"
+                placeholder="Название позиции или вопрос..."
+                autocomplete="off"
+              ></textarea>
+              <button class="btn btn--primary chat-compose__send" type="submit" id="btnChatSend">Отправить</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-prices" data-panel="prices">
+        <div class="grid-2">
+          <div class="card upload-blocks">
+            <h2>Загрузка документов</h2>
+            <p class="muted">Файлы сохраняются в базе и индексируются для RAG (нейросеть использует содержимое при поиске)</p>
+
+            <div class="upload-block">
+              <h3 class="upload-block__title">Прайсы</h3>
+              <div class="form-stack">
+                <input type="text" id="priceName" class="input" placeholder="Название">
+                <input type="text" id="priceSupplier" class="input" placeholder="Поставщик">
+                <input type="file" id="priceFile" class="input" accept=".xls,.xlsx">
+                <button class="btn btn--primary" id="btnAddPrice">Загрузить прайс</button>
+              </div>
+            </div>
+
+            <div class="upload-block">
+              <h3 class="upload-block__title">Каталоги</h3>
+              <p class="muted upload-block__hint">Excel (.xlsx) с номенклатурой и ценами каталога</p>
+              <div class="form-stack">
+                <input type="file" id="catalogFile" class="input" accept=".xlsx">
+                <button class="btn btn--primary" id="btnUploadCatalog">Загрузить каталог</button>
+              </div>
+            </div>
+
+            <div class="upload-block">
+              <h3 class="upload-block__title">Остатки на складе</h3>
+              <p class="muted upload-block__hint">Excel (.xlsx) с количеством остатков по позициям</p>
+              <div class="form-stack">
+                <input type="file" id="stockFile" class="input" accept=".xlsx">
+                <button class="btn btn--primary" id="btnUploadStock">Загрузить остатки</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Загруженные таблицы</h2>
+            <p class="muted">Каталоги, прайсы и остатки на складе — отдельные разделы</p>
+            <div id="dataSourcesContainer"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-competitors" data-panel="competitors">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Добавить сайт</h2>
+            <p class="muted">Укажите адрес сайта и нажмите «Обновить каталог» для обновления каталога товаров</p>
+            <div class="form-stack">
+              <input type="url" id="competitorUrl" class="input" placeholder="https://example-shop.ru">
+              <div class="actions actions--wrap">
+                <button class="btn btn--primary" type="button" id="btnIndexCompetitor">Обновить каталог</button>
+              </div>
+            </div>
+            <div class="competitor-index-panel hidden" id="competitorIndexPanel">
+              <div class="competitor-index-status" id="competitorIndexStatus"></div>
+              <pre class="competitor-index-log" id="competitorIndexLog"></pre>
+            </div>
+            <div class="competitor-analysis hidden" id="competitorAnalysis"></div>
+          </div>
+          <div class="card">
+            <h2>Список сайтов конкурентов</h2>
+            <p class="muted">Встроенные сайты используются при поиске цен и индексации каталогов</p>
+            <div id="competitorsList" class="competitors-list-scroll"></div>
+          </div>
+        </div>
+
+        <div class="card competitor-chat-card">
+          <div class="chat-header">
+            <h2>Поиск товаров на сайтах конкурентов</h2>
+            <p class="muted">Введите название — поиск выполняется по всем подключённым сайтам конкурентов</p>
+          </div>
+          <div class="competitor-chat-hints">
+            <button type="button" class="kp-chat-hint" data-competitor-hint="термометр лабораторный">термометр</button>
+            <button type="button" class="kp-chat-hint" data-competitor-hint="мольберт деревянный">мольберт</button>
+            <button type="button" class="kp-chat-hint" data-competitor-hint="микроскоп школьный">микроскоп</button>
+          </div>
+          <div class="chat-messages competitor-chat-messages" id="competitorChatMessages" aria-live="polite">
+            <div class="chat-welcome">
+              <p>Напишите название товара — найду предложения на сайтах конкурентов из списка выше.</p>
+            </div>
+          </div>
+          <form class="chat-compose" id="competitorChatForm">
+            <textarea
+              id="competitorChatInput"
+              class="input chat-compose__input"
+              rows="2"
+              placeholder="Название товара для поиска..."
+              autocomplete="off"
+            ></textarea>
+            <button class="btn btn--primary chat-compose__send" type="submit" id="btnCompetitorChatSend">Найти</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-status" data-panel="status">
+        <div class="stats-grid" id="statusGrid"></div>
+        <div class="card">
+          <h2>Подключённые таблицы</h2>
+          <ul class="price-list" id="statusPriceList"></ul>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-history" data-panel="history">
+        <div class="card">
+          <div class="card__head">
+            <h2>История скачиваний</h2>
+            <button class="btn btn--secondary btn--small" type="button" id="btnRefreshHistory">Обновить</button>
+          </div>
+          <p class="muted" id="historyHint"></p>
+          <div class="table-wrap">
+            <table class="data-table" id="historyDownloadsTable">
+              <thead>
+                <tr>
+                  <th>Файл</th>
+                  <th class="col-history-user hidden" id="historyUserCol">Менеджер</th>
+                  <th>ТЗ</th>
+                  <th>Дата</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h2>История загрузок ТЗ</h2>
+          <div class="table-wrap">
+            <table class="data-table" id="historyUploadsTable">
+              <thead>
+                <tr>
+                  <th>Файл</th>
+                  <th class="col-history-user hidden" id="historyUploadUserCol">Менеджер</th>
+                  <th>Позиций</th>
+                  <th>Задача</th>
+                  <th>Дата</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-users" data-panel="users">
+        <div class="card" id="systemLoadCard">
+          <div class="card__head">
+            <h2>Нагрузка системы</h2>
+            <button class="btn btn--secondary btn--small" type="button" id="btnRefreshSystemStatus">Обновить</button>
+          </div>
+          <p class="muted" id="systemLoadUpdated">—</p>
+          <div class="stats-grid" id="systemLoadGrid"></div>
+          <div id="systemIndexQueue"></div>
+        </div>
+        <div class="card">
+          <div class="card__head">
+            <h2>Настройки пользователей</h2>
+            <button class="btn btn--primary" type="button" id="btnAddManager">Добавить менеджера</button>
+          </div>
+          <p class="muted">Менеджеры получают доступ к поиску и формированию КП. Администраторы могут управлять пользователями.</p>
+          <div class="table-wrap">
+            <table class="data-table" id="usersTable">
+              <thead>
+                <tr>
+                  <th>Логин</th>
+                  <th>Роль</th>
+                  <th>Создан</th>
+                  <th class="col-actions"></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal hidden" id="userCredentialsModal" role="dialog" aria-modal="true">
+    <div class="modal__backdrop" data-close-modal></div>
+    <div class="modal__dialog">
+      <h3 id="userCredentialsTitle">Учётные данные</h3>
+      <p class="muted" id="userCredentialsHint"></p>
+      <div class="credentials-box" id="userCredentialsBox"></div>
+      <div class="form-stack hidden" id="userEditForm">
+        <input type="text" id="editUserLogin" class="input" placeholder="Логин" autocomplete="off">
+        <input type="text" id="editUserPassword" class="input" placeholder="Пароль" autocomplete="new-password">
+      </div>
+      <div class="modal__actions">
+        <button class="btn btn--secondary" type="button" data-close-modal>Закрыть</button>
+        <button class="btn btn--primary hidden" type="button" id="btnSaveUserCredentials">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="historyDeleteModal" role="dialog" aria-modal="true" aria-labelledby="historyDeleteTitle">
+    <div class="modal__backdrop" data-close-history-delete></div>
+    <div class="modal__dialog">
+      <h3 id="historyDeleteTitle">Удалить файл из истории?</h3>
+      <p class="muted" id="historyDeleteMessage"></p>
+      <div class="modal__actions">
+        <button class="btn btn--danger" type="button" id="btnHistoryDeleteConfirm">Удалить</button>
+        <button class="btn btn--secondary" type="button" data-close-history-delete>Отменить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+  <div class="overlay hidden" id="overlay">
+    <div class="spinner"></div>
+    <p id="overlayText">Обработка...</p>
+  </div>
+
+  <div class="photo-modal hidden" id="photoModal" role="dialog" aria-modal="true" aria-label="Просмотр фото">
+    <div class="photo-modal__backdrop" data-close-photo></div>
+    <div class="photo-modal__dialog">
+      <button type="button" class="photo-modal__close" data-close-photo aria-label="Закрыть">×</button>
+      <img class="photo-modal__image" id="photoModalImage" src="" alt="">
+    </div>
+  </div>
+
+  <script src="/app.js?v=20260630a"></script>
+</body>
+</html>

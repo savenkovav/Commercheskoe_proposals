@@ -1,0 +1,7 @@
+# Дополнение к docker-compose.prod.yml для VPS с внешним nginx (ISPmanager/Beget).
+# Публикует приложение только на localhost — снаружи отдаёт host nginx.
+
+services:
+  kp-web:
+    ports:
+      - "127.0.0.1:18080:8080"

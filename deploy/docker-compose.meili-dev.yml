@@ -1,0 +1,7 @@
+# Временно: MEILI_ENV=development пока MEILI_MASTER_KEY в .env короче 16 байт.
+# Для продакшена задайте в .env ключ длиной >= 16 символов и уберите эту строку.
+
+services:
+  meilisearch:
+    environment:
+      MEILI_ENV: development
